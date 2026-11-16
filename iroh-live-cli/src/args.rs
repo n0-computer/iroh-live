@@ -1,165 +1,166 @@
 //! Command-line arguments.
-//!
-//! The structs here only carry what clap parsed. Turning a `--video` string
-//! into a capture config is [`crate::source`]'s job, and turning a
-//! `--renditions` list into a simulcast ladder and a capture frame rate is
-//! [`crate::rendition`]'s.
 
 use std::path::PathBuf;
 
 use clap::{Args, ValueEnum};
 use iroh::EndpointId;
-use iroh_live::ticket::LiveTicket;
-#[cfg(feature = "render")]
-use iroh_rooms::RoomTicket;
+use iroh_live::{BroadcastTicket, layout::LiveLayout, rooms::RoomTicket};
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
 
-#[cfg(feature = "render")]
-use crate::backend::DecoderArg;
 use crate::{
-    backend::EncoderArg,
+    backend::Backend,
+    record::RecordFormat,
     source_spec::{AudioSourceSpec, TestPattern, TestTone, VideoSourceSpec},
+    transport::Inbound,
 };
 
 /// Where a broadcast is served and how its address is shared.
 #[derive(Args, Debug)]
-pub struct TransportArgs {
-    /// Broadcast path, as it appears in the ticket.
+pub(crate) struct TransportArgs {
+    /// Broadcast name, as it appears in the ticket.
     #[arg(long, default_value = "hello")]
-    pub name: String,
+    pub(crate) name: String,
 
-    /// Also connect to this relay endpoint, which then carries the broadcast
-    /// on to subscribers that cannot reach this node directly.
+    /// Also push the broadcast to this relay endpoint.
+    ///
+    /// Use a relay that keeps each publisher to its own paths, as
+    /// iroh-live-relay does. Elsewhere a viewer can be served a forgery.
     #[arg(long)]
-    pub relay: Option<EndpointId>,
+    pub(crate) relay: Option<EndpointId>,
 
     /// Do not accept incoming subscriber connections.
     #[arg(long)]
-    pub no_serve: bool,
+    pub(crate) no_serve: bool,
 
     /// Suppress the terminal QR code.
     #[arg(long)]
-    pub no_qr: bool,
+    pub(crate) no_qr: bool,
 }
 
-/// The keyframe interval this CLI publishes at, in seconds.
+impl TransportArgs {
+    /// Returns whether the node accepts subscribers, which `--no-serve` turns off.
+    pub(crate) fn inbound(&self) -> Inbound {
+        if self.no_serve {
+            Inbound::Refuse
+        } else {
+            Inbound::Accept
+        }
+    }
+}
+
+/// The default keyframe interval, in seconds.
 ///
-/// Two seconds, which is upstream's default and the broadcast figure: this is
-/// a broadcast tool, and the interval trades the wait a viewer has for a first
-/// picture against how much of the bitrate goes on keyframes. A viewer arriving
-/// mid-stream draws nothing until the next keyframe, so joining costs up to
-/// this long and a rendition switch waits the same. Lower it with
-/// `--keyframe-interval` for a call or a demo where somebody is scanning a
-/// code and waiting; leave it for a stream people watch for an hour.
-///
-/// What a shorter interval costs is picture quality rather than bitrate. The
-/// encoder is given a target rate and keeps to it, so more keyframes means
-/// fewer bits for everything between them. Measured against one second the
-/// difference in bytes on the wire was inside the run-to-run variation, which
-/// is what a rate-controlled encoder should do and is why no figure is quoted.
-pub const DEFAULT_KEYFRAME_SECONDS: f64 = 2.0;
+/// Two seconds is upstream's default. The encoder keeps to its target
+/// bitrate, so a shorter interval costs picture quality, not bytes.
+pub(crate) const DEFAULT_KEYFRAME_SECONDS: f64 = 2.0;
 
 /// The `--video` specifier when none is given.
-pub const DEFAULT_VIDEO: &str = "cam";
+pub(crate) const DEFAULT_VIDEO: &str = "cam";
 
 /// The `--audio` specifier when none is given.
-pub const DEFAULT_AUDIO: &str = "mic";
+pub(crate) const DEFAULT_AUDIO: &str = "mic";
 
 /// What to capture and how to encode it.
-#[derive(Args, Debug)]
-pub struct CaptureArgs {
-    /// Video source: `cam`, `cam:<id>`, `screen`, `screen:<id>`, `window:<id>`,
-    /// `app:<id>`, `file:<path>[:loop]`, `test[:timing|:gradient]`, or `none`.
+///
+/// A `[[send]]` block of `irl run` takes the same keys.
+#[derive(Args, Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CaptureArgs {
+    /// Video source.
     ///
-    /// Run `irl devices` for the identifiers this machine accepts.
+    /// `cam`, `cam:<id>`, `screen`, `screen:<id>`, `window:<id>`, `app:<id>`,
+    /// `rpicam[:raw]`, `file:<path>[:loop]`, `test[:timing|:gradient]`, or
+    /// `none`. Run `irl devices` to list the ids. On Linux, `screen` and
+    /// `screen:portal` (or `window:portal`) open the desktop portal's picker.
     #[arg(long, default_value = DEFAULT_VIDEO, verbatim_doc_comment)]
-    pub video: String,
+    pub(crate) video: VideoSourceSpec,
 
-    /// Audio source: `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`,
-    /// `test[:beeps|:tone]`, or `none`.
+    /// Audio source.
     ///
-    /// Anything else is taken as a device name, so `hw:0,1` works as written.
+    /// `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`, `test[:beeps|:tone]`,
+    /// or `none`. Anything else is a device name, such as `hw:0,1`.
     #[arg(long, default_value = DEFAULT_AUDIO, verbatim_doc_comment)]
-    pub audio: String,
+    pub(crate) audio: AudioSourceSpec,
 
-    /// Publish the timing pattern and its beeping tone, the same as
-    /// `--video test --audio test`. The two are one diagnostic: the marker in
-    /// the picture is lit for exactly as long as each beep sounds.
+    /// Publish the test pattern and tone, as `--video test --audio test`.
     #[arg(long)]
-    pub test_source: bool,
+    pub(crate) test_source: bool,
 
     /// Video codec. H.265 needs a hardware encoder.
     #[arg(long, value_enum, default_value_t = VideoCodecArg::H264)]
-    pub codec: VideoCodecArg,
+    pub(crate) codec: VideoCodecArg,
 
-    /// Encoder to use. A backend named here is the only one tried, so a
-    /// machine without it fails rather than quietly encoding on the CPU.
-    #[arg(long, value_enum, default_value_t = EncoderArg::Auto)]
-    pub encoder: EncoderArg,
+    /// Encoder backend. A named backend has no fallback.
+    #[arg(long, value_parser = Backend::encoder_parser(), default_value = "auto")]
+    #[serde(deserialize_with = "Backend::deserialize_encoder")]
+    pub(crate) encoder: Backend,
 
-    /// Simulcast ladder, comma-separated. Each rung is `<height>p`,
-    /// `<width>x<height>`, or `<name>:<width>x<height>`; a bare name encodes at
-    /// the source's own resolution. Default: one rendition, unscaled.
+    /// Simulcast ladder, comma-separated. Default: one unscaled rendition.
     ///
-    /// An `@<fps>` suffix asks for a capture frame rate: `720p@60`, or
-    /// `high:1280x720@60,low:640x360@30`. A ladder is captured once and every
-    /// rung is fed the same pictures, so the highest rate any rung names is the
-    /// rate all of them run at, and a rung that asked for less says so in the
-    /// log. `--fps` outranks the ladder where the two disagree.
+    /// A rung is `<height>p`, `<width>x<height>`, `<name>:<width>x<height>`,
+    /// or a bare name for the source resolution. An `@<fps>` suffix requests
+    /// a capture rate: `720p@60`, `high:1280x720@60,low:640x360@30`.
+    /// All rungs share one capture at the highest rate any rung asks for.
+    /// `--fps` overrides the suffixes.
     #[arg(long, value_delimiter = ',', verbatim_doc_comment)]
-    pub renditions: Vec<String>,
+    pub(crate) renditions: Vec<String>,
 
-    /// How often the encoder inserts a keyframe, in seconds. A subscriber
-    /// cannot draw anything until the next one, so this is how long joining
-    /// takes and how long a rendition switch waits. Two is the broadcast
-    /// default; one suits a call or a demo where somebody is waiting.
+    /// Seconds between keyframes.
+    ///
+    /// A viewer waits up to this long to join or to switch rendition. One
+    /// second suits a call.
     #[arg(long, default_value_t = DEFAULT_KEYFRAME_SECONDS, value_name = "SECONDS")]
-    pub keyframe_interval: f64,
+    pub(crate) keyframe_interval: f64,
 
-    /// Target video bitrate in bits per second. Omit to derive one from the
-    /// resolution. Applies to every rung of the ladder.
+    /// Target video bitrate of the largest rung, in bits per second.
+    ///
+    /// Smaller rungs get a share by pixel count. Default: derived from the
+    /// resolution.
     #[arg(long, value_name = "BITS_PER_SECOND")]
-    pub bitrate: Option<u64>,
+    pub(crate) bitrate: Option<u64>,
 
-    /// Requested capture width. The device snaps to its nearest supported mode.
+    /// Requested capture width. The device picks its nearest mode.
     #[arg(long)]
-    pub width: Option<u32>,
+    pub(crate) width: Option<u32>,
 
     /// Requested capture height.
     #[arg(long)]
-    pub height: Option<u32>,
+    pub(crate) height: Option<u32>,
 
-    /// Requested capture framerate. It sets the rate outright and caps the
-    /// ladder's `@<fps>` rungs. Omit it to capture at 30, or at the highest
-    /// rate a rung asks for. The device snaps to the nearest rate it supports
-    /// either way.
+    /// Requested capture frame rate. Overrides the ladder's `@<fps>`.
+    ///
+    /// Default: 30, or the highest rate a rung asks for. The device picks its
+    /// nearest supported rate.
     #[arg(long, verbatim_doc_comment)]
-    pub fps: Option<u32>,
+    pub(crate) fps: Option<u32>,
 
     /// Hide the mouse cursor. Screen, window, and application capture only.
     #[arg(long)]
-    pub no_cursor: bool,
+    pub(crate) no_cursor: bool,
 
     /// Audio codec. PCM is uncompressed: lower latency, much higher bitrate.
     #[arg(long, value_enum, default_value_t = AudioCodecArg::Opus)]
-    pub audio_codec: AudioCodecArg,
+    pub(crate) audio_codec: AudioCodecArg,
 
     /// Target audio bitrate in bits per second. Opus only.
     #[arg(long, value_name = "BITS_PER_SECOND")]
-    pub audio_bitrate: Option<u32>,
+    pub(crate) audio_bitrate: Option<u32>,
 }
 
 impl Default for CaptureArgs {
-    /// The same defaults clap applies, so a caller building these by hand
-    /// (`irl run` reading a session file) starts where the flags do.
+    /// Returns the defaults clap applies.
     fn default() -> Self {
         Self {
-            video: DEFAULT_VIDEO.to_string(),
-            audio: DEFAULT_AUDIO.to_string(),
+            video: DEFAULT_VIDEO
+                .parse()
+                .expect("the default video source parses"),
+            audio: DEFAULT_AUDIO
+                .parse()
+                .expect("the default audio source parses"),
             test_source: false,
             codec: VideoCodecArg::default(),
-            encoder: EncoderArg::default(),
+            encoder: Backend::default(),
             renditions: Vec::new(),
             keyframe_interval: DEFAULT_KEYFRAME_SECONDS,
             bitrate: None,
@@ -174,39 +175,31 @@ impl Default for CaptureArgs {
 }
 
 impl CaptureArgs {
-    /// The parsed video source.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `--video` is not a recognised specifier.
-    pub fn video_source(&self) -> Result<VideoSourceSpec> {
+    /// Returns `--video`, or the test pattern under `--test-source`.
+    pub(crate) fn video_source(&self) -> VideoSourceSpec {
         if self.test_source {
-            return Ok(VideoSourceSpec::Test(TestPattern::default()));
+            return VideoSourceSpec::Test(TestPattern::default());
         }
-        VideoSourceSpec::parse(&self.video).map_err(|err| anyerr!("--video: {err}"))
+        self.video.clone()
     }
 
-    /// The parsed audio source.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `--audio` is not a recognised specifier.
-    pub fn audio_source(&self) -> Result<AudioSourceSpec> {
+    /// Returns `--audio`, or the test tone under `--test-source`.
+    pub(crate) fn audio_source(&self) -> AudioSourceSpec {
         if self.test_source {
-            return Ok(AudioSourceSpec::Test(TestTone::default()));
+            return AudioSourceSpec::Test(TestTone::default());
         }
-        AudioSourceSpec::parse(&self.audio).map_err(|err| anyerr!("--audio: {err}"))
+        self.audio.clone()
     }
 }
 
 /// The video codec `--codec` selects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum VideoCodecArg {
-    /// H.264 / AVC. The widest support, and the default.
+pub(crate) enum VideoCodecArg {
+    /// H.264 (AVC). Widest support.
     #[default]
     H264,
-    /// H.265 / HEVC. Hardware encoders only.
+    /// H.265 (HEVC). Hardware encoders only.
     H265,
 }
 
@@ -222,11 +215,11 @@ impl From<VideoCodecArg> for iroh_live::media::video::encode::Codec {
 /// The audio codec `--audio-codec` selects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum AudioCodecArg {
-    /// Opus. The default.
+pub(crate) enum AudioCodecArg {
+    /// Opus.
     #[default]
     Opus,
-    /// Uncompressed interleaved 32-bit float PCM.
+    /// Uncompressed 32-bit float PCM.
     Pcm,
 }
 
@@ -241,209 +234,164 @@ impl From<AudioCodecArg> for iroh_live::media::audio::encode::Codec {
 
 /// Arguments for `irl publish`.
 #[derive(Args, Debug)]
-pub struct PublishArgs {
+pub(crate) struct PublishArgs {
     #[command(flatten)]
-    pub capture: CaptureArgs,
+    pub(crate) capture: CaptureArgs,
 
     #[command(flatten)]
-    pub transport: TransportArgs,
+    pub(crate) transport: TransportArgs,
 
-    /// Open a preview window showing what is being published.
+    /// Open a preview window of the published video.
     ///
-    /// Capture sources only: a file source is republished verbatim, so there
-    /// are no raw frames to draw without decoding them again.
+    /// Not for `file:` and `rpicam` sources, which arrive already encoded.
     #[arg(long)]
-    pub preview: bool,
+    pub(crate) preview: bool,
 
     /// Start the preview window in fullscreen.
     #[arg(long)]
-    pub fullscreen: bool,
+    pub(crate) fullscreen: bool,
 
     /// Container of a `file:` video source.
     #[arg(long, value_enum, default_value_t = ImportFormat::Fmp4)]
-    pub format: ImportFormat,
+    pub(crate) format: ImportFormat,
 
-    /// Re-mux (or re-encode) a `file:` video source through ffmpeg first.
+    /// Pass a `file:` video source through ffmpeg first.
     ///
-    /// A plain (non-fragmented) MP4 has to go through this before it can be
-    /// read as a stream. Also what `file:<path>:loop` needs, since ffmpeg is
-    /// what repeats the input.
+    /// Needed for a plain (non-fragmented) MP4 and for `file:<path>:loop`.
     #[arg(long)]
-    pub transcode: bool,
+    pub(crate) transcode: bool,
 }
 
 /// The container a `file:` video source is read as.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-pub enum ImportFormat {
+pub(crate) enum ImportFormat {
     /// Fragmented MP4 / CMAF.
     #[default]
     Fmp4,
-    /// A raw H.264 Annex-B elementary stream.
+    /// Raw H.264 Annex-B stream.
     Avc3,
 }
 
-/// How a subscriber decodes the video it receives.
-///
-/// The counterpart of the encoder half of [`CaptureArgs`], and only meaningful
-/// where a window draws the picture: `irl record` remuxes what arrives without
-/// decoding it, and `irl watch --no-video` opens no video track at all.
-#[cfg(feature = "render")]
+/// How a subscriber decodes and plays the video in a window.
 #[derive(Args, Debug, Clone, Copy, Default)]
-pub struct PlaybackArgs {
-    /// Decoder to use. A backend named here is the only one tried, so a
-    /// machine without it fails rather than quietly falling back to software.
-    #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
-    pub decoder: DecoderArg,
+pub(crate) struct PlaybackArgs {
+    /// Decoder backend. A named backend has no fallback.
+    #[arg(long, value_parser = Backend::decoder_parser(), default_value = "auto")]
+    pub(crate) decoder: Backend,
 
-    /// How much slack the player keeps against a link that delivers unevenly.
+    /// Trade between delay and smooth playback.
     #[arg(long, value_enum, default_value_t = LatencyArg::default())]
-    pub latency: LatencyArg,
+    pub(crate) latency: LatencyArg,
 }
 
-/// What the player trades between delay and smoothness.
-///
-/// The player holds each frame back a little so that one arriving late still
-/// has somewhere to land. That hold is the largest delay it adds on its own,
-/// and the only one worth choosing: the rest belongs to the encoder, the link
-/// and the display. Pick by what the stream is for, not by the numbers.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum LatencyArg {
-    /// The least delay this player can run at. For a conversation, or anything
-    /// where being half a second behind is worse than an occasional jump.
+/// How long the player holds frames back to absorb late arrivals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum LatencyArg {
+    /// Least delay. For conversations.
     Realtime,
-    /// The default: enough slack for an ordinary network without a delay
-    /// anyone would notice.
+    /// Enough slack for an ordinary network.
     #[default]
     Balanced,
-    /// Rides out a link that stutters, at the cost of running further behind.
-    /// For watching rather than talking, over Wi-Fi or a mobile connection.
+    /// Rides out a stuttering link, with more delay.
     Smooth,
 }
 
-#[cfg(feature = "render")]
 impl LatencyArg {
-    /// The playout jitter buffer this mode asks for.
+    /// Returns the player latency for this mode.
     ///
-    /// Balanced is what the player has always used. Realtime is two frames at
-    /// 30fps, which is about as little as a link with any variance at all can
-    /// be given. Smooth is chosen to cover a Wi-Fi retransmission burst, which
-    /// is a few hundred milliseconds.
-    pub fn jitter(self) -> std::time::Duration {
+    /// `min` is the playout hold: two frames at 30 fps for Realtime, a Wi-Fi
+    /// retransmission burst for Smooth. `max` is where the player skips ahead.
+    /// It must stay above `min`, or the skip drops the frames the hold waits for.
+    pub(crate) fn latency(self) -> iroh_live::media::Delay {
+        let latency = |min, max| iroh_live::media::Delay {
+            min: Some(std::time::Duration::from_millis(min)),
+            max: Some(std::time::Duration::from_millis(max)),
+        };
         match self {
-            Self::Realtime => std::time::Duration::from_millis(60),
-            Self::Balanced => std::time::Duration::from_millis(100),
-            Self::Smooth => std::time::Duration::from_millis(400),
-        }
-    }
-
-    /// The buffered media the decoder tolerates before skipping to the live
-    /// edge.
-    ///
-    /// Kept above the jitter buffer in every mode: a skip threshold below the
-    /// slack the clock is deliberately holding would throw away the very frames
-    /// that slack exists to wait for.
-    pub fn max_latency(self) -> std::time::Duration {
-        match self {
-            Self::Realtime => std::time::Duration::from_millis(100),
-            Self::Balanced => std::time::Duration::from_millis(150),
-            Self::Smooth => std::time::Duration::from_millis(600),
+            Self::Realtime => latency(60, 100),
+            Self::Balanced => iroh_live::media::DEFAULT_LATENCY,
+            Self::Smooth => latency(400, 600),
         }
     }
 }
 
 /// Arguments for `irl call`.
-#[cfg(feature = "render")]
 #[derive(Args, Debug)]
-pub struct CallArgs {
-    /// Ticket of the peer to call, as its `irl call` printed it. Omit to wait
-    /// for somebody to call this node.
-    pub ticket: Option<LiveTicket>,
+pub(crate) struct CallArgs {
+    /// Ticket the peer's `irl call` printed. Omit to wait for a call.
+    pub(crate) ticket: Option<BroadcastTicket>,
 
     #[command(flatten)]
-    pub capture: CaptureArgs,
+    pub(crate) capture: CaptureArgs,
 
     #[command(flatten)]
-    pub playback: PlaybackArgs,
+    pub(crate) playback: PlaybackArgs,
 
-    /// Which camera the QR scanner reads, as `irl watch --scan-camera` takes
-    /// it.
-    #[arg(long, value_name = "SPEC")]
-    pub scan_camera: Option<String>,
+    /// Camera for the QR scanner, as in `irl watch --scan-camera`.
+    #[arg(long, value_name = "SPEC", value_parser = crate::scan::camera_spec)]
+    pub(crate) scan_camera: Option<VideoSourceSpec>,
 
     /// Suppress the terminal QR code.
     #[arg(long)]
-    pub no_qr: bool,
+    pub(crate) no_qr: bool,
 
     /// Start in fullscreen.
     #[arg(long)]
-    pub fullscreen: bool,
+    pub(crate) fullscreen: bool,
 }
 
 /// Arguments for `irl room`.
-#[cfg(feature = "render")]
 #[derive(Args, Debug)]
-pub struct RoomArgs {
-    /// Ticket of the room to join, as another participant's `irl room` printed
-    /// it. Omit to open a new room.
-    pub ticket: Option<RoomTicket>,
+pub(crate) struct RoomArgs {
+    /// Ticket another participant's `irl room` printed. Omit to open a new room.
+    pub(crate) ticket: Option<RoomTicket>,
 
     #[command(flatten)]
-    pub capture: CaptureArgs,
+    pub(crate) capture: CaptureArgs,
 
     #[command(flatten)]
-    pub playback: PlaybackArgs,
+    pub(crate) playback: PlaybackArgs,
 
-    /// Name the other participants see. Defaults to this node's short endpoint
-    /// id.
+    /// Name shown to other participants. Default: the short endpoint id.
     #[arg(long)]
-    pub display_name: Option<String>,
+    pub(crate) display_name: Option<String>,
 
     /// Suppress the terminal QR code.
     #[arg(long)]
-    pub no_qr: bool,
+    pub(crate) no_qr: bool,
 
     /// Start in fullscreen.
     #[arg(long)]
-    pub fullscreen: bool,
+    pub(crate) fullscreen: bool,
 }
 
-/// The remote broadcast a subscriber connects to.
-///
-/// Two spellings for one thing: the ticket a publisher printed, or the
-/// endpoint id and broadcast path it is made of. `irl watch` and `irl record`
-/// both take it, so both accept exactly the same forms.
+/// The remote broadcast, as a ticket or as endpoint id plus broadcast path.
 #[derive(Args, Debug)]
-pub struct RemoteArgs {
-    /// Connection ticket, as `irl publish` printed it.
+pub(crate) struct RemoteArgs {
+    /// Ticket that `irl publish` printed.
     #[arg(conflicts_with_all = ["endpoint_id", "broadcast_name"])]
-    pub ticket: Option<LiveTicket>,
+    pub(crate) ticket: Option<BroadcastTicket>,
 
     /// Remote endpoint id. Needs `--name`.
     #[arg(long, conflicts_with = "ticket", requires = "broadcast_name")]
-    pub endpoint_id: Option<EndpointId>,
+    pub(crate) endpoint_id: Option<EndpointId>,
 
-    /// Broadcast path, alongside `--endpoint-id`.
+    /// Broadcast name. Needs `--endpoint-id`.
     #[arg(
         long = "name",
         value_name = "NAME",
         conflicts_with = "ticket",
         requires = "endpoint_id"
     )]
-    pub broadcast_name: Option<String>,
+    pub(crate) broadcast_name: Option<String>,
 }
 
 impl RemoteArgs {
-    /// The ticket to subscribe to, from either form the flags allow.
-    ///
-    /// # Errors
-    ///
-    /// Fails if neither a positional ticket nor the
-    /// `--endpoint-id` / `--name` pair was given. clap already rejects both at
-    /// once.
-    pub fn ticket(&self) -> Result<LiveTicket> {
+    /// Returns the ticket from either form, or fails if neither was given.
+    pub(crate) fn ticket(&self) -> Result<BroadcastTicket> {
         match (&self.ticket, self.endpoint_id, &self.broadcast_name) {
             (Some(ticket), None, None) => Ok(ticket.clone()),
-            (None, Some(id), Some(name)) => Ok(LiveTicket::new(id, name.clone())),
+            (None, Some(id), Some(name)) => Ok(LiveLayout::default().ticket(id, name)?),
             _ => Err(anyerr!(
                 "provide either <TICKET> or --endpoint-id and --name"
             )),
@@ -453,141 +401,101 @@ impl RemoteArgs {
 
 /// Arguments for `irl watch`.
 #[derive(Args, Debug)]
-pub struct WatchArgs {
+pub(crate) struct WatchArgs {
     #[command(flatten)]
-    pub remote: RemoteArgs,
+    pub(crate) remote: RemoteArgs,
 
-    /// How the video is decoded. Nothing here applies under `--no-video`,
-    /// which opens no video track.
-    #[cfg(feature = "render")]
+    /// Video decoding. Unused under `--no-video`.
     #[command(flatten)]
-    pub playback: PlaybackArgs,
+    pub(crate) playback: PlaybackArgs,
 
     /// Play audio only. No window opens.
     #[arg(long)]
-    pub no_video: bool,
+    pub(crate) no_video: bool,
 
     /// Read the ticket from a QR code held up to the camera.
     ///
-    /// Supplies <TICKET>, so the window opens on the camera picture and
-    /// connects as soon as a ticket decodes. Given alongside a ticket it
-    /// starts on that one instead, and the scan screen stays a button away.
-    #[cfg(feature = "render")]
+    /// The window shows the camera and connects once a ticket decodes. With
+    /// a ticket given, it plays that one and the scanner is one button away.
     #[arg(long, conflicts_with = "no_video")]
-    pub scan: bool,
+    pub(crate) scan: bool,
 
-    /// Which camera the QR scanner reads, in the grammar `--video` takes:
-    /// `cam`, `cam:<id>` for one `irl devices` lists, or `rpicam`.
+    /// Camera for the QR scanner: `cam`, `cam:<id>`, or `rpicam`.
     ///
-    /// Omitted, the scanner takes the Raspberry Pi camera where this build can
-    /// reach one and the default camera otherwise. A Pi's `/dev/video0` is the
-    /// raw sensor and cannot produce a picture, which is why the guess is not
-    /// simply the default camera; pass `cam` on a Pi with a USB webcam.
-    #[cfg(feature = "render")]
-    #[arg(long, value_name = "SPEC")]
-    pub scan_camera: Option<String>,
+    /// Default: the Raspberry Pi camera where available, else the default
+    /// camera. On a Pi with a USB webcam, pass `cam`.
+    #[arg(long, value_name = "SPEC", value_parser = crate::scan::camera_spec)]
+    pub(crate) scan_camera: Option<VideoSourceSpec>,
 
-    /// Pin a rendition by name instead of following the downlink.
+    /// Pin a rendition by name instead of adapting to the downlink.
     #[arg(long)]
-    pub rendition: Option<String>,
+    pub(crate) rendition: Option<String>,
 
     /// Start in fullscreen.
     #[arg(long)]
-    pub fullscreen: bool,
+    pub(crate) fullscreen: bool,
 
-    /// Play through this output device, as `irl devices` lists it.
+    /// Audio output device, by the id `irl devices` lists.
     ///
-    /// Takes the id in the first column, for example `alsa:default`. Without
-    /// it, playback follows whatever the system calls its default, which on a
-    /// machine with several sinks is not always the one the speakers are on.
+    /// For example `alsa:default`. Default: the system default output.
     #[cfg(feature = "playback")]
     #[arg(long, value_name = "ID")]
-    pub audio_output: Option<String>,
+    pub(crate) audio_output: Option<String>,
 }
 
 /// Arguments for `irl run`.
 #[derive(Args, Debug)]
-pub struct RunArgs {
-    /// The TOML session file to run.
-    pub config: PathBuf,
+pub(crate) struct RunArgs {
+    /// TOML session file.
+    pub(crate) config: PathBuf,
 }
 
 /// Arguments for `irl record`.
 #[derive(Args, Debug)]
-pub struct RecordArgs {
+pub(crate) struct RecordArgs {
     #[command(flatten)]
-    pub remote: RemoteArgs,
+    pub(crate) remote: RemoteArgs,
 
-    /// Output file. Its extension picks the container unless `--format` names
-    /// one.
+    /// Output file.
+    ///
+    /// Its extension picks the container unless `--format` is set.
     #[arg(short, long, default_value = "recording.mp4")]
-    pub output: PathBuf,
+    pub(crate) output: PathBuf,
 
-    /// Container to write, overriding whatever `--output`'s extension implies.
+    /// Container format, overriding the `--output` extension.
     #[arg(long, value_enum)]
-    pub format: Option<RecordFormat>,
+    pub(crate) format: Option<RecordFormat>,
 
-    /// Record one video rendition by name, instead of every rung the catalog
-    /// offers.
+    /// Record only this video rendition. Default: all of them.
     #[arg(long)]
-    pub rendition: Option<String>,
+    pub(crate) rendition: Option<String>,
 
     /// Stop after this long. Omit to record until interrupted.
     #[arg(long, value_name = "SECONDS")]
-    pub duration: Option<u64>,
+    pub(crate) duration: Option<u64>,
 
-    /// How long a stalled group is waited for before it is skipped.
+    /// How long to wait for a stalled group before skipping it.
     #[arg(long, value_name = "MILLISECONDS", default_value_t = 2_000)]
-    pub latency: u64,
+    pub(crate) max_age: u64,
 }
 
-/// The container `irl record` writes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum RecordFormat {
-    /// Fragmented MP4 / CMAF, the shape `.mp4` names here.
-    Fmp4,
-    /// Matroska, the shape `.mkv` and `.webm` name.
-    Mkv,
-}
-
-#[cfg(all(test, feature = "render"))]
+#[cfg(test)]
 mod tests {
     use clap::ValueEnum as _;
 
     use super::LatencyArg;
 
-    /// A skip threshold below the slack the playout clock is deliberately
-    /// holding would throw away the frames that slack exists to wait for, so
-    /// the two have to move together.
+    /// Each mode skips past more than it holds, and the modes grow in delay.
     #[test]
-    fn every_mode_tolerates_more_buffering_than_it_holds() {
-        for mode in LatencyArg::value_variants() {
-            assert!(
-                mode.max_latency() > mode.jitter(),
-                "{mode:?} skips at {:?} while holding {:?}",
-                mode.max_latency(),
-                mode.jitter(),
-            );
+    fn the_latency_modes_are_ordered_and_consistent() {
+        let modes = LatencyArg::value_variants();
+        for mode in modes {
+            let latency = mode.latency();
+            assert!(latency.max > latency.min, "{mode:?}: {latency:?}");
         }
-    }
-
-    /// The three modes are a scale, and a flag whose middle setting was not in
-    /// the middle would be a trap.
-    #[test]
-    fn the_modes_are_ordered_from_least_delay_to_most() {
-        assert!(LatencyArg::Realtime.jitter() < LatencyArg::Balanced.jitter());
-        assert!(LatencyArg::Balanced.jitter() < LatencyArg::Smooth.jitter());
-        assert!(LatencyArg::Realtime.max_latency() < LatencyArg::Balanced.max_latency());
-        assert!(LatencyArg::Balanced.max_latency() < LatencyArg::Smooth.max_latency());
-    }
-
-    /// The default has to stay what the player shipped with, so upgrading does
-    /// not silently retune somebody's stream.
-    #[test]
-    fn the_default_mode_is_what_the_player_used_before_the_flag_existed() {
-        let default = LatencyArg::default();
-        assert_eq!(default, LatencyArg::Balanced);
-        assert_eq!(default.jitter(), std::time::Duration::from_millis(100));
-        assert_eq!(default.max_latency(), std::time::Duration::from_millis(150));
+        for pair in modes.windows(2) {
+            let (less, more) = (pair[0].latency(), pair[1].latency());
+            assert!(less.min < more.min && less.max < more.max, "{pair:?}");
+        }
     }
 }

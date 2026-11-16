@@ -29,7 +29,7 @@ TARGET="aarch64-unknown-linux-gnu"
 # binary runs on Raspberry Pi OS Bookworm without requiring a newer glibc.
 TARGET_WITH_GLIBC="${TARGET}.2.36"
 
-# ── Validate prerequisites ────────────────────────────────────────────
+# -- Validate prerequisites --------------------------------------------
 
 if ! command -v zig &>/dev/null; then
     echo "ERROR: zig not found. Install it:" >&2
@@ -57,7 +57,7 @@ if [ ! -d "$SYSROOT" ]; then
     exit 1
 fi
 
-# ── pkg-config: tell -sys crates where to find aarch64 .pc files ──────
+# -- pkg-config: tell -sys crates where to find aarch64 .pc files ------
 
 LIB_DIR="${SYSROOT}/usr/lib/aarch64-linux-gnu"
 
@@ -71,7 +71,7 @@ export PKG_CONFIG_PATH="${LIB_DIR}/pkgconfig:${SYSROOT}/usr/share/pkgconfig"
 export PKG_CONFIG_PATH_aarch64_unknown_linux_gnu="${LIB_DIR}/pkgconfig:${SYSROOT}/usr/share/pkgconfig"
 export PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu="${SYSROOT}"
 
-# ── C/C++ cross-compiler for -sys crate build scripts ─────────────────
+# -- C/C++ cross-compiler for -sys crate build scripts -----------------
 # Use zig as the C/C++ compiler. This ensures C code is compiled against
 # the correct glibc version (matching the zigbuild target), avoiding symbol
 # mismatches like __isoc23_sscanf that occur when host GCC links newer
@@ -144,12 +144,12 @@ export CMAKE_CXX_COMPILER="$ZIG_CXX_WRAPPER"
 export CMAKE_AR="$ZIG_AR_WRAPPER"
 export CMAKE_RANLIB="$ZIG_RANLIB_WRAPPER"
 
-# ── Linker flags ──────────────────────────────────────────────────────
+# -- Linker flags ------------------------------------------------------
 # cargo-zigbuild handles the linker itself (uses zig as linker), but it
 # needs to know where to find the target libraries.
 export RUSTFLAGS="${RUSTFLAGS:-} -L ${LIB_DIR} -L ${SYSROOT}/lib/aarch64-linux-gnu"
 
-# ── Build ─────────────────────────────────────────────────────────────
+# -- Build -------------------------------------------------------------
 
 echo "zigbuild: target=${TARGET_WITH_GLIBC}, sysroot=${SYSROOT}"
 echo "zigbuild: CC=${CC_aarch64_unknown_linux_gnu:-zig}"
@@ -159,14 +159,14 @@ cargo zigbuild \
     --target "${TARGET_WITH_GLIBC}" \
     "$@"
 
-# ── Strip ─────────────────────────────────────────────────────────────
+# -- Strip -------------------------------------------------------------
 # The release profile keeps debug info for local profiling. Strip it from
 # cross-compiled binaries since they're deployed to constrained devices.
 
 # Determine the output directory for this target + profile.
 # Respect CARGO_TARGET_DIR env, then cargo config's target-dir, then default.
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['target_directory'])" 2>/dev/null || echo "${WORKSPACE_ROOT}/target")}"
-# Detect profile: --release → release, --profile X → X, default → debug.
+# Detect profile: --release -> release, --profile X -> X, default -> debug.
 PROFILE="debug"
 PREV=""
 for arg in "$@"; do

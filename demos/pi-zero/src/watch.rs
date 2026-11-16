@@ -1,52 +1,72 @@
-//! EGL/GLES2 video viewer - windowed (winit) or direct-to-HDMI (DRM/KMS).
+//! EGL/GLES2 video viewer, in a winit window or straight to HDMI over DRM/KMS.
 //!
-//! Uses [`GlesRenderer`] for GLES2 rendering. The
-//! DRM and windowed display backends handle EGL context + buffer swapping.
+//! Both backends draw with [`GlesRenderer`] and manage their own EGL context.
 
-use std::time::{Duration, Instant};
+use std::{
+    os::{fd::AsFd, unix::io::AsRawFd},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use anyhow::{Context as _, Result};
+use drm::{Device as _, control::Device as ControlDevice};
+use gbm::AsRaw;
 use glow::HasContext;
-use iroh_live::{media::subscribe::VideoTrack, moq::MoqSession};
-use moq_video::Frame;
-use n0_future::{StreamExt, boxed::BoxStream};
+use iroh_live::media::{VideoFrames, video::Frame};
+use n0_error::{Result, StdResultExt as _, anyerr};
+use tokio::sync::mpsc as tokio_mpsc;
+use tracing::{info, warn};
+#[cfg(feature = "windowed")]
+use {
+    glutin::{
+        config::ConfigTemplateBuilder,
+        context::{ContextAttributesBuilder, NotCurrentGlContext, Version},
+        display::{GetGlDisplay, GlDisplay},
+        surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface},
+    },
+    glutin_winit::DisplayBuilder,
+    iroh_live::media::Player,
+    raw_window_handle::HasWindowHandle,
+    std::num::NonZeroU32,
+    winit::{
+        application::ApplicationHandler,
+        event::{ElementState, KeyEvent, WindowEvent},
+        event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+        keyboard::{Key, NamedKey},
+        window::{Fullscreen, Window, WindowId},
+    },
+};
 
 use crate::gles::GlesRenderer;
 
-/// Poll interval between frame checks (about 250 fps ceiling).
+/// How often the window checks for a new frame, which caps it near 250 fps.
 #[cfg(feature = "windowed")]
 const POLL_INTERVAL: Duration = Duration::from_millis(4);
 
-/// Uploads the newest frame, if one arrived since the last call, and reports
-/// whether it did.
+/// Uploads the newest frame if one arrived since the last call.
 ///
-/// `VideoTrack::take` already implements "only if new", so there is no
-/// timestamp bookkeeping to do here.
+/// Returns whether it uploaded a frame.
 #[cfg(feature = "windowed")]
 fn try_upload_frame(
     renderer: &mut GlesRenderer,
-    track: &VideoTrack,
+    frames: &mut VideoFrames,
     frame_count: &mut u64,
 ) -> bool {
-    let Some(frame) = track.take() else {
+    let Some(frame) = frames.try_next() else {
         return false;
     };
     *frame_count += 1;
     if *frame_count <= 3 {
-        tracing::info!(frame = *frame_count, size = %frame.size(), "decoding frame");
+        info!(frame = *frame_count, size = %frame.size(), "decoding frame");
     }
-    unsafe { renderer.upload_frame(frame) };
+    // SAFETY: the window made its GL context current on this thread before
+    // creating the renderer, and nothing else makes another one current.
+    unsafe { renderer.upload_frame(&frame) };
     true
 }
 
-/// Prints FPS and RTT stats every second.
-#[allow(dead_code, reason = "useful for debugging but not called in release")]
-fn print_stats(
-    session: &MoqSession,
-    track: &VideoTrack,
-    frame_count: &mut u64,
-    fps_last: &mut Instant,
-) {
+/// Prints playback stats once a second.
+#[cfg(feature = "windowed")]
+fn print_stats(player: &Player, frame_count: &mut u64, fps_last: &mut Instant) {
     let elapsed = fps_last.elapsed();
     if elapsed < Duration::from_secs(1) {
         return;
@@ -55,29 +75,10 @@ fn print_stats(
     *frame_count = 0;
     *fps_last = Instant::now();
 
-    let conn = session.conn();
-    let path_list = conn.paths();
-    let rtt = path_list
-        .iter()
-        .find(|p| p.is_selected())
-        .map(|p| p.rtt())
-        .unwrap_or_default();
-    println!(
-        "fps: {fps:.0}  rtt: {}ms  rendition: {}",
-        rtt.as_millis(),
-        track.rendition(),
-    );
+    println!("fps: {fps:.0}  {}", player.stats().summary());
 }
 
-// --- DRM/KMS direct-to-HDMI ---
-
-// --- DRM display setup (shared by run_drm + run_fb_demo) ---
-
-use std::os::fd::AsFd;
-
-use drm::{Device as _, control::Device as ControlDevice};
-use gbm::AsRaw;
-
+/// A DRM device node opened for modesetting.
 struct Card(std::fs::File);
 impl AsFd for Card {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
@@ -87,15 +88,14 @@ impl AsFd for Card {
 impl drm::Device for Card {}
 impl ControlDevice for Card {}
 
-/// Switches the current VT to graphics mode (hides the console text cursor)
-/// and takes DRM master. Returns the tty fd to restore on drop.
+/// A guard that keeps the current VT in graphics mode, which hides the console text.
+///
+/// Restores text mode on drop.
 struct VtGuard(std::fs::File);
 
 impl VtGuard {
+    /// Switches the current VT to graphics mode.
     fn activate() -> Result<Self> {
-        use std::os::unix::io::AsRawFd;
-
-        // Open current tty.
         let tty = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -106,12 +106,13 @@ impl VtGuard {
                     .write(true)
                     .open("/dev/tty")
             })
-            .context("open /dev/tty0 (run as root or from a linux console)")?;
+            .std_context("open /dev/tty0 (run as root or from a linux console)")?;
 
-        // KD_GRAPHICS = 0x01, KDSETMODE = 0x4B3A
-        let ret = unsafe { libc::ioctl(tty.as_raw_fd(), 0x4B3A, 0x01) };
+        // SAFETY: KDSETMODE takes an integer argument and touches no memory of
+        // ours, and `tty` is an open console.
+        let ret = unsafe { libc::ioctl(tty.as_raw_fd(), KDSETMODE, KD_GRAPHICS) };
         if ret != 0 {
-            tracing::warn!("KDSETMODE(KD_GRAPHICS) failed - console text may remain visible");
+            warn!("KDSETMODE(KD_GRAPHICS) failed - console text may remain visible");
         }
 
         Ok(Self(tty))
@@ -120,13 +121,22 @@ impl VtGuard {
 
 impl Drop for VtGuard {
     fn drop(&mut self) {
-        use std::os::unix::io::AsRawFd;
-        // KD_TEXT = 0x00
-        unsafe { libc::ioctl(self.0.as_raw_fd(), 0x4B3A, 0x00) };
+        // SAFETY: as in `activate`. The console is still open.
+        unsafe { libc::ioctl(self.0.as_raw_fd(), KDSETMODE, KD_TEXT) };
     }
 }
 
-/// DRM/KMS + GBM + EGL display - owns all GPU resources for direct HDMI output.
+/// The console ioctl that switches between text and graphics mode, from `linux/kd.h`.
+const KDSETMODE: libc::c_ulong = 0x4B3A;
+/// The `KDSETMODE` argument that stops the console drawing text over the picture.
+const KD_GRAPHICS: libc::c_int = 0x01;
+/// The `KDSETMODE` argument that gives the console back.
+const KD_TEXT: libc::c_int = 0x00;
+
+/// A DRM/KMS, GBM and EGL display that owns the GPU resources for HDMI output.
+///
+/// Its EGL context is current on the thread that created it. Use it on that
+/// thread only.
 struct DrmDisplay {
     renderer: GlesRenderer,
     egl: khronos_egl::DynamicInstance<khronos_egl::EGL1_4>,
@@ -145,6 +155,7 @@ struct DrmDisplay {
 }
 
 impl DrmDisplay {
+    /// Opens the first DRM device with a connected output and sets up GLES2 on it.
     fn init() -> Result<Self> {
         let card = {
             let mut found = None;
@@ -155,53 +166,51 @@ impl DrmDisplay {
                     .open(path)
                 {
                     found = Some(Card(f));
-                    tracing::info!(path, "opened DRM device");
+                    info!(path, "opened DRM device");
                     break;
                 }
             }
-            found.context("no DRM device found")?
+            found.std_context("no DRM device found")?
         };
 
-        // Switch VT to graphics mode (hides console text) and grab DRM master.
+        // Hide the console and take DRM master.
         let vt = match VtGuard::activate() {
             Ok(vt) => Some(vt),
-            Err(e) => {
-                tracing::warn!(%e, "VT switch failed - may need root or a linux console");
+            Err(err) => {
+                warn!(error = %err, "could not switch the VT, which needs root or a Linux console");
                 None
             }
         };
         card.acquire_master_lock()
-            .context("acquire DRM master (try running as root)")?;
+            .std_context("acquire DRM master (try running as root)")?;
 
-        // Find a connected output.
-        let res = card.resource_handles().context("resource_handles")?;
+        let res = card.resource_handles().std_context("resource_handles")?;
         let (connector, crtc, mode) = {
             let mut result = None;
             for &ch in res.connectors() {
-                let conn = card.get_connector(ch, false).context("get_connector")?;
+                let conn = card.get_connector(ch, false).std_context("get_connector")?;
                 if conn.state() != drm::control::connector::State::Connected {
                     continue;
                 }
                 let modes = conn.modes().to_vec();
-                let mode = *modes.first().context("connector has no modes")?;
-                let enc = conn.current_encoder().context("no encoder")?;
+                let mode = *modes.first().std_context("connector has no modes")?;
+                let enc = conn.current_encoder().std_context("no encoder")?;
                 let crtc = card
                     .get_encoder(enc)
-                    .context("get_encoder")?
+                    .std_context("get_encoder")?
                     .crtc()
-                    .context("no CRTC")?;
-                tracing::info!(connector = ?ch, mode = ?mode.size(), "found output");
+                    .std_context("no CRTC")?;
+                info!(connector = ?ch, mode = ?mode.size(), "found output");
                 result = Some((ch, crtc, mode));
                 break;
             }
-            result.context("no connected display found")?
+            result.std_context("no connected display found")?
         };
 
         let (width, height) = (mode.size().0 as u32, mode.size().1 as u32);
 
-        // GBM
-        let gbm_device = gbm::Device::new(card).context("gbm::Device::new")?;
-        // Force LINEAR modifier for scanout compatibility on vc4.
+        let gbm_device = gbm::Device::new(card).std_context("gbm::Device::new")?;
+        // vc4 scans out only LINEAR buffers.
         let gbm_surface = gbm_device
             .create_surface_with_modifiers::<()>(
                 width,
@@ -210,7 +219,6 @@ impl DrmDisplay {
                 [drm_fourcc::DrmModifier::Linear].iter().copied(),
             )
             .or_else(|_| {
-                // Fallback: no explicit modifier.
                 gbm_device.create_surface::<()>(
                     width,
                     height,
@@ -218,17 +226,20 @@ impl DrmDisplay {
                     gbm::BufferObjectFlags::SCANOUT | gbm::BufferObjectFlags::RENDERING,
                 )
             })
-            .context("create_surface")?;
+            .std_context("create_surface")?;
 
-        // EGL
+        // SAFETY: loads the system's libEGL, whose initializers have no
+        // preconditions of ours.
         let egl = unsafe {
             khronos_egl::DynamicInstance::<khronos_egl::EGL1_4>::load_required()
-                .context("load EGL")?
+                .std_context("load EGL")?
         };
+        // SAFETY: the GBM device is a valid native display, and outlives the EGL
+        // display as a field of the same struct.
         let egl_display =
             unsafe { egl.get_display(gbm_device.as_raw() as khronos_egl::NativeDisplayType) }
-                .context("eglGetDisplay")?;
-        egl.initialize(egl_display).context("eglInitialize")?;
+                .std_context("eglGetDisplay")?;
+        egl.initialize(egl_display).std_context("eglInitialize")?;
 
         let config = egl
             .choose_first_config(
@@ -249,11 +260,11 @@ impl DrmDisplay {
                     khronos_egl::NONE,
                 ],
             )
-            .context("eglChooseConfig")?
-            .context("no matching EGL config")?;
+            .std_context("eglChooseConfig")?
+            .std_context("no matching EGL config")?;
 
         egl.bind_api(khronos_egl::OPENGL_ES_API)
-            .context("eglBindAPI")?;
+            .std_context("eglBindAPI")?;
 
         let context = egl
             .create_context(
@@ -262,8 +273,10 @@ impl DrmDisplay {
                 None,
                 &[khronos_egl::CONTEXT_CLIENT_VERSION, 2, khronos_egl::NONE],
             )
-            .context("eglCreateContext")?;
+            .std_context("eglCreateContext")?;
 
+        // SAFETY: the GBM surface is a valid native window for this display,
+        // and outlives the EGL surface as a field of the same struct.
         let egl_surface = unsafe {
             egl.create_window_surface(
                 egl_display,
@@ -272,7 +285,7 @@ impl DrmDisplay {
                 None,
             )
         }
-        .context("eglCreateWindowSurface")?;
+        .std_context("eglCreateWindowSurface")?;
 
         egl.make_current(
             egl_display,
@@ -280,9 +293,10 @@ impl DrmDisplay {
             Some(egl_surface),
             Some(context),
         )
-        .context("eglMakeCurrent")?;
+        .std_context("eglMakeCurrent")?;
 
-        // GLES2
+        // SAFETY: the context is current on this thread, so EGL returns
+        // function pointers that are valid for it.
         let gl = unsafe {
             glow::Context::from_loader_function(|s| {
                 egl.get_proc_address(s)
@@ -290,33 +304,35 @@ impl DrmDisplay {
                     .unwrap_or(std::ptr::null())
             })
         };
-        tracing::info!(
+        // SAFETY: the context was made current on this thread above.
+        info!(
             renderer = unsafe { gl.get_parameter_string(glow::RENDERER) },
             "GLES2 ready"
         );
-
+        // SAFETY: as above.
         let renderer = unsafe { GlesRenderer::new(gl)? };
 
         // Initial black frame, then set the CRTC mode.
+        // SAFETY: the context is current on this thread.
         unsafe { renderer.draw(width as i32, height as i32) };
         egl.swap_buffers(egl_display, egl_surface)
-            .context("initial swap")?;
+            .std_context("initial swap")?;
 
-        let front_bo = unsafe { gbm_surface.lock_front_buffer() }.context("lock")?;
-        tracing::info!(
+        // SAFETY: called once, right after the first swap.
+        let front_bo = unsafe { gbm_surface.lock_front_buffer() }.std_context("lock")?;
+        info!(
             bo_w = front_bo.width(), bo_h = front_bo.height(),
             stride = front_bo.stride(), modifier = ?front_bo.modifier(),
             format = ?front_bo.format(), "front BO"
         );
         let front_fb = gbm_device
             .add_planar_framebuffer(&front_bo, drm::control::FbCmd2Flags::MODIFIERS)
-            .context("addfb")?;
-        // Get the CRTC's currently active mode (set by the kernel console).
-        // Using this exact mode avoids EINVAL from vc4's atomic check - the
-        // mode was already validated when the console set it up.
-        let crtc_info = gbm_device.get_crtc(crtc).context("get_crtc")?;
-        let active_mode = crtc_info.mode().context("CRTC has no active mode")?;
-        tracing::info!(?front_fb, ?crtc, ?connector, mode = ?active_mode.size(), "set_crtc");
+            .std_context("addfb")?;
+        // Reuse the mode the kernel console set. vc4's atomic check already
+        // accepted it, and a connector mode can fail there with EINVAL.
+        let crtc_info = gbm_device.get_crtc(crtc).std_context("get_crtc")?;
+        let active_mode = crtc_info.mode().std_context("CRTC has no active mode")?;
+        info!(?front_fb, ?crtc, ?connector, mode = ?active_mode.size(), "set_crtc");
         gbm_device
             .set_crtc(
                 crtc,
@@ -325,7 +341,7 @@ impl DrmDisplay {
                 &[connector],
                 Some(active_mode),
             )
-            .context("set_crtc")?;
+            .std_context("set_crtc")?;
 
         println!("rendering to HDMI ({width}x{height})");
 
@@ -347,22 +363,23 @@ impl DrmDisplay {
         })
     }
 
-    /// Presents the current GLES2 framebuffer to the display.
+    /// Draws the uploaded frame and shows it on the display.
     fn flip(&mut self) -> Result<()> {
+        // SAFETY: the display is used on the thread whose context is current.
         unsafe { self.renderer.draw(self.width as i32, self.height as i32) };
         self.egl
             .swap_buffers(self.egl_display, self.egl_surface)
-            .context("swap")?;
+            .std_context("swap")?;
 
-        let new_bo = unsafe { self.gbm_surface.lock_front_buffer() }.context("lock")?;
+        // SAFETY: called once, right after this flip's swap.
+        let new_bo = unsafe { self.gbm_surface.lock_front_buffer() }.std_context("lock")?;
         let new_fb = self
             .gbm_device
             .add_planar_framebuffer(&new_bo, drm::control::FbCmd2Flags::MODIFIERS)
-            .context("addfb")?;
+            .std_context("addfb")?;
 
-        // set_crtc is synchronous (waits for vblank internally).
-        // page_flip is async and returns EBUSY if a flip is pending,
-        // which requires event-loop integration to handle correctly.
+        // `set_crtc` waits for vblank. `page_flip` returns EBUSY while a flip
+        // is pending and would need an event loop to handle that.
         self.gbm_device
             .set_crtc(
                 self.crtc,
@@ -371,7 +388,7 @@ impl DrmDisplay {
                 &[self.connector],
                 Some(self.mode),
             )
-            .context("flip set_crtc")?;
+            .std_context("flip set_crtc")?;
 
         self.gbm_device.destroy_framebuffer(self.front_fb).ok();
         let old_bo = std::mem::replace(&mut self.front_bo, new_bo);
@@ -381,89 +398,68 @@ impl DrmDisplay {
     }
 }
 
-// --- DRM render loops ---
-
-/// Renders a remote broadcast to HDMI via DRM/KMS + GBM + EGL + GLES2.
+/// Shows `frames` on HDMI over DRM/KMS until they end.
 ///
-/// Spawns a dedicated render thread so the tokio runtime stays free for
-/// packet ingestion and decode. Frames are forwarded via a bounded channel.
-pub(crate) async fn run_drm(video_track: VideoTrack, _session: MoqSession) -> Result<()> {
-    use tokio::sync::mpsc as tokio_mpsc;
+/// The display lives on a thread of its own: its EGL context is current on
+/// one thread only, which a task on the runtime could leave at any `.await`.
+pub(crate) async fn show_on_hdmi(mut frames: VideoFrames) -> Result<()> {
+    let (frame_tx, frame_rx) = tokio_mpsc::channel::<Arc<Frame>>(4);
 
-    // Channel from async world (frame producer) to render thread (consumer).
-    let (frame_tx, frame_rx) = tokio_mpsc::channel::<Frame>(4);
-
-    // Render thread - owns DRM display, receives frames, renders.
     let render_handle = std::thread::Builder::new()
         .name("drm-render".into())
-        .spawn(move || -> Result<()> {
-            let mut disp = DrmDisplay::init()?;
-            let mut frame_rx = frame_rx;
-            let mut frame_count = 0u64;
-            let mut fps_last = Instant::now();
+        .spawn(move || render_loop(frame_rx))
+        .std_context("spawn render thread")?;
 
-            println!("ctrl-c to quit");
-
-            // Blocks until a frame arrives; ends when the channel closes.
-            while let Some(frame) = frame_rx.blocking_recv() {
-                // Drain any newer frames - display the latest.
-                let mut latest = frame;
-                while let Ok(newer) = frame_rx.try_recv() {
-                    latest = newer;
-                }
-
-                frame_count += 1;
-                unsafe { disp.renderer.upload_frame(latest) };
-                disp.flip()?;
-
-                let elapsed = fps_last.elapsed();
-                if elapsed >= Duration::from_secs(1) {
-                    let fps = frame_count as f32 / elapsed.as_secs_f32();
-                    frame_count = 0;
-                    fps_last = Instant::now();
-                    println!("fps: {fps:.0}");
-                }
+    // Ctrl-C ends the loop instead of the process, so the render thread
+    // drops its display and the console goes back to text mode.
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    loop {
+        let frame = tokio::select! {
+            frame = frames.next() => frame,
+            _ = &mut ctrl_c => {
+                info!("interrupted, restoring the console");
+                None
             }
-
-            Ok(())
-        })
-        .context("spawn render thread")?;
-
-    // Async frame pump - runs on tokio, feeds the render thread.
-    while let Some(frame) = video_track.recv().await {
+        };
+        let Some(frame) = frame else {
+            break;
+        };
         if frame_tx.send(frame).await.is_err() {
             break; // render thread exited
         }
     }
 
-    // Dropped before the join rather than at the end of the function. The
-    // render thread ends when `blocking_recv` reports the channel closed, and
-    // the channel is not closed while this sender is alive, so a track that
-    // ends on its own left the two waiting on each other for good.
+    // The render thread exits only when the channel closes, so drop the
+    // sender before the join or both wait forever.
     drop(frame_tx);
 
-    // On the blocking pool: `join` parks the thread it runs on until the
-    // renderer returns, and parking an async worker stalls every other task
-    // that runtime is driving, including the ones this join is waiting for.
+    // `join` blocks its thread, so keep it off the async workers.
     tokio::task::spawn_blocking(move || render_handle.join())
         .await
-        .context("failed to join the render thread")?
-        .map_err(|_| anyhow::anyhow!("render thread panicked"))??;
+        .std_context("failed to join the render thread")?
+        .map_err(|_| anyerr!("render thread panicked"))??;
     Ok(())
 }
 
-/// Renders a generated frame stream (e.g. [`moq_media::test_source`]) to HDMI
-/// - no network needed.
-pub(crate) async fn run_fb_demo(mut frames: BoxStream<Frame>) -> Result<()> {
+/// Opens the display and shows the newest frame of `frame_rx` until it closes.
+fn render_loop(mut frame_rx: tokio_mpsc::Receiver<Arc<Frame>>) -> Result<()> {
     let mut disp = DrmDisplay::init()?;
     let mut frame_count = 0u64;
     let mut fps_last = Instant::now();
 
-    println!("fb-demo running, ctrl-c to quit");
+    println!("ctrl-c to quit");
 
-    while let Some(frame) = frames.next().await {
+    while let Some(frame) = frame_rx.blocking_recv() {
+        // Show only the newest frame.
+        let mut latest = frame;
+        while let Ok(newer) = frame_rx.try_recv() {
+            latest = newer;
+        }
+
         frame_count += 1;
-        unsafe { disp.renderer.upload_frame(frame) };
+        // SAFETY: `DrmDisplay::init` made its context current on this thread.
+        unsafe { disp.renderer.upload_frame(&latest) };
         disp.flip()?;
 
         let elapsed = fps_last.elapsed();
@@ -474,44 +470,20 @@ pub(crate) async fn run_fb_demo(mut frames: BoxStream<Frame>) -> Result<()> {
             println!("fps: {fps:.0}");
         }
     }
-
     Ok(())
 }
 
-// --- Windowed (glutin + winit) ---
-
-/// Renders video in a window using glutin + winit + GLES2.
+/// Renders video in a glutin and winit window.
 #[cfg(feature = "windowed")]
-pub(crate) fn run_windowed(
-    video_track: VideoTrack,
-    session: MoqSession,
-    fullscreen: bool,
-) -> Result<()> {
-    use std::num::NonZeroU32;
-
-    use glutin::{
-        config::ConfigTemplateBuilder,
-        context::{ContextAttributesBuilder, NotCurrentGlContext, Version},
-        display::{GetGlDisplay, GlDisplay},
-        surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface},
-    };
-    use glutin_winit::DisplayBuilder;
-    use raw_window_handle::HasWindowHandle;
-    use winit::{
-        application::ApplicationHandler,
-        event::{ElementState, KeyEvent, WindowEvent},
-        event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-        keyboard::{Key, NamedKey},
-        window::{Fullscreen, Window, WindowId},
-    };
-
+pub(crate) fn run_windowed(player: Player, fullscreen: bool) -> Result<()> {
+    /// The winit application state.
     struct App {
         renderer: Option<GlesRenderer>,
         surface: Option<glutin::surface::Surface<WindowSurface>>,
         context: Option<glutin::context::PossiblyCurrentContext>,
         window: Option<Window>,
-        video_track: VideoTrack,
-        session: MoqSession,
+        frames: VideoFrames,
+        player: Player,
         fullscreen: bool,
         frame_count: u64,
         fps_last: Instant,
@@ -546,6 +518,8 @@ pub(crate) fn run_windowed(
                 .with_context_api(glutin::context::ContextApi::Gles(Some(Version::new(2, 0))))
                 .build(Some(raw));
 
+            // SAFETY: the config and the attributes come from this display, and
+            // the raw window handle belongs to a window that outlives the context.
             let not_current = unsafe {
                 gl_display
                     .create_context(&gl_config, &context_attrs)
@@ -554,12 +528,12 @@ pub(crate) fn run_windowed(
 
             let size = window.inner_size();
             let (w, h) = (
-                // `max(1)` is what makes these non-zero, so the surface still
-                // resizes to something legal when the window reports 0x0.
+                // A window can report 0x0, and a surface needs a non-zero size.
                 NonZeroU32::new(size.width.max(1)).expect("max(1) is non-zero"),
                 NonZeroU32::new(size.height.max(1)).expect("max(1) is non-zero"),
             );
             let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(raw, w, h);
+            // SAFETY: as above. The window outlives the surface.
             let surface = unsafe {
                 gl_display
                     .create_window_surface(&gl_config, &surface_attrs)
@@ -568,14 +542,18 @@ pub(crate) fn run_windowed(
 
             let context = not_current.make_current(&surface).expect("make current");
 
+            // SAFETY: the context was made current on this thread above, so its
+            // function pointers are valid.
             let gl = unsafe {
                 glow::Context::from_loader_function_cstr(|s| gl_display.get_proc_address(s))
             };
-            tracing::info!(
+            // SAFETY: the context is current on this thread.
+            info!(
                 renderer = unsafe { gl.get_parameter_string(glow::RENDERER) },
                 "GLES2 windowed context ready"
             );
 
+            // SAFETY: the context is current on this thread.
             let gles = unsafe { GlesRenderer::new(gl).expect("GlesRenderer::new") };
 
             self.renderer = Some(gles);
@@ -619,27 +597,23 @@ pub(crate) fn run_windowed(
                     let Some(surface) = &self.surface else { return };
                     let Some(context) = &self.context else { return };
 
-                    try_upload_frame(renderer, &self.video_track, &mut self.frame_count);
+                    try_upload_frame(renderer, &mut self.frames, &mut self.frame_count);
 
-                    // The renderer, surface and context above are only ever set
-                    // alongside the window, so reaching here without one is a
-                    // bug in this setup rather than a state to handle.
+                    // The window is set together with the renderer, surface
+                    // and context.
                     let window = self
                         .window
                         .as_ref()
                         .expect("a window, since the GL context exists");
                     let size = window.inner_size();
+                    // SAFETY: the event loop runs on the thread whose context is
+                    // current.
                     unsafe {
                         renderer.draw(size.width as i32, size.height as i32);
                     }
                     surface.swap_buffers(context).ok();
 
-                    print_stats(
-                        &self.session,
-                        &self.video_track,
-                        &mut self.frame_count,
-                        &mut self.fps_last,
-                    );
+                    print_stats(&self.player, &mut self.frame_count, &mut self.fps_last);
 
                     event_loop
                         .set_control_flow(ControlFlow::WaitUntil(Instant::now() + POLL_INTERVAL));
@@ -651,20 +625,20 @@ pub(crate) fn run_windowed(
         }
     }
 
-    let event_loop = EventLoop::new().context("create event loop")?;
+    let event_loop = EventLoop::new().std_context("create event loop")?;
 
     let mut app = App {
         renderer: None,
         surface: None,
         context: None,
         window: None,
-        video_track,
-        session,
+        frames: player.video_frames(),
+        player,
         fullscreen,
         frame_count: 0,
         fps_last: Instant::now(),
     };
 
-    event_loop.run_app(&mut app).context("event loop")?;
+    event_loop.run_app(&mut app).std_context("event loop")?;
     Ok(())
 }

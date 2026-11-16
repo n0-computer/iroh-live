@@ -2,17 +2,11 @@
 # targets plus the Android demo APK, then re-points the `rolling-release` tag at
 # the new commit and replaces the assets attached to it.
 #
-# Feature sets are chosen per platform rather than with `--all-features`. The
-# CLI's feature table is a union across operating systems, so a build has to ask
-# for the backends its own target can reach and leave the rest alone. The Linux
-# jobs turn on every hardware path (NVENC/NVDEC, VAAPI, the V4L2 memory-to-memory
-# codecs, rpicam, PipeWire screen capture) on top of the default
-# `playback,render,sound-server`; ALSA, PulseAudio, and PipeWire audio all arrive
-# through `sound-server` and cpal picks between them at runtime. macOS and
-# Windows get VideoToolbox, ScreenCaptureKit, Media Foundation, and WASAPI from
-# `target_os` gating in moq-video and moq-audio, so no feature selects them, and
-# every remaining backend feature pulls Linux-only dependencies. That leaves
-# `aec` as the only addition there.
+# Every build uses the CLI's default features, which are all of them: the
+# Linux-only backends (NVENC/NVDEC, VAAPI, the V4L2 memory-to-memory codecs,
+# rpicam, PipeWire capture and audio) compile to nothing elsewhere, and macOS
+# and Windows get VideoToolbox, ScreenCaptureKit, Media Foundation, and WASAPI
+# from `target_os` gating in moq-video and moq-audio.
 name: Release
 
 on:
@@ -49,21 +43,18 @@ jobs:
           - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            features: nvidia,vaapi,v4l2,rpicam,pipewire,aec
             bin: irl
             asset: irl-linux-x86_64
           # Apple silicon only. An Intel Mac is not a target we support, and a
           # second build of it costs a runner on every release for nobody.
           - name: macos-aarch64
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
-            features: aec
             bin: irl
             asset: irl-macos-aarch64
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            features: aec
             bin: irl.exe
             asset: irl-windows-x86_64.exe
 
@@ -71,11 +62,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
           key: release-${{ matrix.name }}
@@ -105,14 +96,14 @@ jobs:
           echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
 
       - name: Build irl
-        run: cargo build --locked --profile release-dist -p iroh-live-cli --target ${{ matrix.target }} --features ${{ matrix.features }}
+        run: cargo build --locked --profile release-dist -p iroh-live-cli --target ${{ matrix.target }}
 
       - name: Stage the binary
         shell: bash
         run: cp "target/${{ matrix.target }}/release-dist/${{ matrix.bin }}" "${{ matrix.asset }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
@@ -128,7 +119,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
           targets: aarch64-unknown-linux-gnu
@@ -139,11 +130,11 @@ jobs:
           version: 0.14.0
 
       - name: Install cargo-zigbuild and cargo-make
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-zigbuild,cargo-make
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
           key: release-linux-aarch64
@@ -164,12 +155,12 @@ jobs:
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
         run: cargo make cross-sysroot-aarch64
 
-      # Same feature set as the x86_64 Linux build. The Bookworm sysroot carries
-      # the PipeWire, VAAPI, V4L2, and ALSA headers those backends compile
-      # against, and everything that talks to a GPU is loaded at runtime, so a
+      # The default features, as in the x86_64 Linux build. The Bookworm
+      # sysroot carries the PipeWire, VAAPI, V4L2, and ALSA headers those
+      # backends compile against, and everything that talks to a GPU is loaded at runtime, so a
       # Pi with no NVIDIA driver falls through to the next encoder.
       - name: Build irl (release-dist)
-        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist --features nvidia,vaapi,v4l2,rpicam,pipewire,aec
+        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist
       - name: Lockfile must not have moved
         # cargo make / zigbuild take no --locked; assert the lockfile instead.
         run: git diff --exit-code Cargo.lock
@@ -178,7 +169,7 @@ jobs:
         run: cp target/aarch64-unknown-linux-gnu/release-dist/irl irl-linux-aarch64
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: irl-linux-aarch64
           path: irl-linux-aarch64
@@ -198,18 +189,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '17'
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
           targets: aarch64-linux-android
-      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-ndk,cargo-make
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
           key: release-android
@@ -263,7 +254,7 @@ jobs:
         run: cp demos/android/app/build/outputs/apk/release/app-release.apk iroh-live-demo-arm64-v8a.apk
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: iroh-live-demo-arm64-v8a.apk
           path: iroh-live-demo-arm64-v8a.apk
@@ -287,7 +278,7 @@ jobs:
       # through the API, so this job needs no working tree and no git
       # credentials on disk.
       - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
 

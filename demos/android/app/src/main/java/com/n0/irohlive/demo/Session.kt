@@ -133,7 +133,7 @@ class SessionController(
     var renditions by mutableStateOf<List<String>>(emptyList())
         private set
 
-    /** The ticket the watch screen starts from, seeded by an `iroh-live:` intent. */
+    /** The ticket the watch screen starts from, seeded by an `ilv1:` intent. */
     var ticketDraft by mutableStateOf("")
 
     /** The name a published broadcast is reachable under. */

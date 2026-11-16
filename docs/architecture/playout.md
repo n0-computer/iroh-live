@@ -1,109 +1,120 @@
 # Playout and A/V sync
 
-Audio and video decode independently, on separate tasks, from separate tracks.
-Something has to keep them together at playout time, and no moq crate has one.
-`moq_media::sync::Sync` is that clock, ported from the moq/js player
-(`js/watch/src/sync.ts` at commit `53fe78d8`) with the same data model and the
-same arithmetic in `i64` milliseconds.
+Audio and video decode separately, on their own tasks, from their own tracks.
+Each `Player` owns a `PlayoutClock` (`moq-ext-player/src/player/clock.rs`)
+that keeps them aligned at playout time. It wraps upstream's
+`moq_mux::sync`, the clock the moq players share.
 
 ## The algorithm
 
-The clock keeps one number, the *reference*: the earliest
-`wall_now - frame_pts` it has ever seen. It only ever moves earlier. Every frame
-that arrives faster than any previous one tightens it, and nothing loosens it.
+Each media path folds its arrivals into the clock as a track. The clock's
+reference is the earliest arrival either track has seen, measured against its
+timestamp, so it sits on the wall clock and follows the live edge. Playback
+trails that reference by the clock's delay, at least the latency's `min`
+(100 ms by default), as [Latency](#latency) describes.
+Until the first frame anchors the clock, every frame is due at once.
 
-A frame with timestamp `T` is due at wall time `reference + T + latency`, where
-`latency` is `max(audio, video) + jitter`. `jitter` is the network allowance,
-comes from `PlaybackPolicy::jitter` and defaults to 100 ms, `audio` is how much
-sound is queued at the speaker, and `video` is a decode latency a caller may
-set.
-
-`Sync::received(pts)` updates the reference, and `Sync::wait_async(pts)` sleeps
-until the frame is due, returning `false` if the clock closed underneath it.
-`Sync::delay(pts)` exposes the same arithmetic as a `Delay` value for a caller
-driving its own timer.
+Neither path owns the clock. A path that falls behind, such as audio stalled
+by congestion, only arrives late: it never holds the pictures back or moves
+their schedule. Audio converges on the clock by stretching toward the time its
+sound is due instead.
 
 ## Who calls what
 
-Video calls both halves. `subscribe::video::deliver` records the arrival with
-`received`, awaits `wait_async`, and only then hands the frame to the renderer.
+The video task records each decoded frame with `received(timestamp)`, holds it
+until `wait(timestamp)` returns, and then puts it in the `VideoFrames`
+slot the renderer reads. The hold is a future the supervisor keeps across loop
+iterations, so a rendition switch requested while a picture is held is acted
+on at once. The wait is recomputed whenever the anchor moves, and returns
+`false` once the clock closed. `restart()` starts the video timeline over when
+the broadcast moves to a new route, since a publisher behind the new route may
+have restarted its timestamps.
 
-Audio never calls either. It writes decoded frames straight to its
-`moq_audio::playback::Sink` and lets the sink's own buffer absorb jitter. What it
-does contribute is `Sync::set_audio_buffered(Some(sink.buffered()))` on every
-frame. How much sound is still queued ahead of the speaker is the one latency
-either side can actually measure, and video holds frames back by it. Without that
-coupling a video frame renders as soon as it decodes while its audio is still
-behind 50 ms of queued sound.
+Audio writes decoded frames straight to its output sink, and the sink's buffer
+absorbs jitter. Each decoded frame is recorded through an `AudioClock`
+guard, taken from `PlayoutClock::register_audio` when the track opens. After
+every write the guard says when the end of the written sound is due, and the
+speaker stretches toward that time, skipping ahead rather than speeding up when
+the reference jumps earlier, and dropping what trails by more than two seconds.
+Dropping the guard releases the audio track, so video alone holds the clock.
 
-Beyond that one number the paths never signal each other. They converge because
-they share a reference and a latency target, which is the property that made the
-JS design worth porting after three earlier attempts at cross-path gating did
-worse than no synchronization at all.
+Each player has its own clock. Two players of one broadcast, say a thumbnail
+and a full-screen view, do not hold back each other's frames. Dropping the
+player closes its clock and wakes everything waiting on it.
 
-`Sync` is per-`RemoteBroadcast`, reachable through `RemoteBroadcast::sync()` for
-retuning the jitter figure at runtime, and set from `PlaybackPolicy::jitter`
-both when the broadcast is subscribed and on every later
-`set_playback_policy`. Dropping the last handle, or calling `shutdown()` on the
-broadcast, closes it and wakes everything waiting.
+## Latency
 
-## Playback policy
+`PlayerConfig::latency` is moq-net's subscription `Delay { min, max }`. An
+unset `min` counts as zero, and an unset `max` waits as long as the publisher
+keeps media.
 
-`PlaybackPolicy` carries the knobs a caller turns.
+The clock's delay follows upstream's rule, the one `moq play` applies
+(`rs/moq-cli/src/play` at the pinned rev). Each track asks the clock for a
+target, and the clock runs at the largest one. A track's target is its
+catalog `delay` plus a jitter allowance, which hang's catalog says a player
+must hold:
 
-`sync: SyncMode` chooses between `Synced` and `Unmanaged`. `Synced` is the
-default and runs the clock as described. `Unmanaged` skips it entirely: frames go
-to the renderer as they decode, with no pacing at all. That suits a test or a
-single-track playback where the renderer sets the cadence, and it is not what you
-want for live playback with audio.
+- Video asks for the ladder's largest `delay + max(min, jitter)`, from the
+  catalog, so a rendition switch never moves the schedule.
+- Played audio asks for its catalog `delay` plus the target its decoder
+  measures from packet arrivals (`moq_audio::decode::Consumer::delay`), which
+  already covers the catalog `jitter` and one frame. The decoder floors that
+  measurement at the `min` it opened with. A measurement at that floor does
+  not hold a lower `min` set since.
+- Audio that is only decoded, `AudioMode::Decode`, asks for nothing, since
+  no speaker paces it.
 
-`jitter: Duration` is the network allowance in the arithmetic above, and is the
-largest delay a subscriber adds on its own. It is also the one field of this
-policy that takes effect immediately rather than on the next decoder built,
-because the clock it configures belongs to the broadcast and outlives any one
-track. `irl watch --latency` is the CLI over it. `iroh-live/tests/latency.rs` measures
-what the rest of the pipeline costs, with publisher and subscriber on one clock:
-84ms with no playout hold, 203ms under the default policy.
+No target goes below `min` or above one 30 fps frame (33 ms) below `max`, and
+an unpaced latency (`min` of zero) holds nothing. The delay therefore rises
+on a jittery link and returns to `min` on a clean one. A change of the delay
+moves the schedule once, by the difference. `irl watch --latency` offers
+`realtime`, `balanced` and `smooth`, at 60, 100 and 400 ms.
+`iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
+and subscriber in one process, once with `IMMEDIATE_LATENCY` and once with the
+default, and prints the figures.
 
-`max_latency: Duration` becomes `latency_max` on `moq_video::decode::Config` and
-`moq_audio::decode::Config`, which is where upstream decides how much buffered
-media to tolerate before skipping forward to the live edge. The default is
-150 ms. Raise it when continuity through congestion matters more than returning
-to the live edge quickly; lower it when a stall should be skipped over rather
-than played out.
+The whole `Delay` goes on `moq_video::decode::Options` and
+`moq_audio::decode::Options`, so relays and the publisher see the range too.
+Upstream skips media older than `max` to return to the live edge. The default
+is 150 ms. Raise it when continuity through congestion matters more than
+staying live, and lower it to skip stalls instead of playing them out. `play`
+and `set_latency` refuse a `min` above `max`, since a skip threshold below the
+hold would drop the frames the hold waits for.
 
-`decoder: decode::Kind` becomes `kind` on `moq_video::decode::Config`, which is
-where upstream chooses a backend. `Auto` tries the platform's hardware decoders
-in turn and falls back to software. A named backend is the only one tried, so a
-machine without it fails to open rather than falling back, which is what makes
-the choice useful for telling a driver problem from a stream problem.
-`gpu_frames` is the last of them: it asks the decoder to leave each picture on
-the GPU, which is worth doing for a renderer and not for a consumer that reads
-the pixels.
+A `min` of zero turns pacing off, and frames go to the renderer as they decode.
+`IMMEDIATE_LATENCY` is that, with a `max` of 150 ms so the player still skips
+to the live edge. It suits a test or a consumer with its own cadence, not live
+playback with audio.
 
-```rust
-PlaybackPolicy::default()                     // Synced, 100 ms jitter, 150 ms, Auto
-    .with_jitter(Duration::from_millis(400))
-    .with_max_latency(Duration::from_millis(600))
-    .with_decoder(decode::Kind::Software)
+```rust,ignore
+use std::time::Duration;
+use iroh_live::media::{Delay, PlayerConfig, video::decode};
+
+let config = PlayerConfig::default()
+    .with_latency(Delay {
+        min: Some(Duration::from_millis(400)),
+        max: Some(Duration::from_millis(600)),
+    })
+    .with_decoder(decode::Kind::Software);
 ```
 
-`RemoteBroadcast::set_playback_policy` applies `jitter` at once and affects
-tracks opened afterwards for everything else. A
-decoder reads the policy when it is built and never looks at it again, so a
-track already decoding keeps what it started with. `VideoTrack::reopen_decoder`
-is how a UI applies a change to a running track: the supervisor opens the
-current rendition again, and the replacement takes over on its first frame the
-same way a rendition switch does, so the picture stays up across it.
+`decoder` becomes the `kind` on `moq_video::decode::Options`. `Auto` tries the
+platform's hardware decoders and falls back to software. A named backend is the
+only one tried, so a machine without it fails to open instead of falling back.
+That helps tell a driver problem from a stream problem.
 
-## Reading the timing metrics
+A changed latency or decoder applies to a running player without a gap:
+`set_latency` and `set_decoder` build a replacement video decoder behind the
+picture, which takes over once it has caught up. A changed latency also moves
+the playout clock to the new delay, so the schedule moves once. An audio
+track keeps its subscription range until it next reopens, but its target
+follows the new latency from its next frame.
 
-`moq_media::stats::TimingStats` defines the timing panel the egui overlay draws.
-`audio_buf_ms` is the sink's fill level, `video_lag_ms` and `audio_lag_ms` are
-wall-clock drift from each path's PTS cadence, and `av_delta_ms` is
-`video_lag - audio_lag`, positive when video trails audio.
+## Timing metrics
 
-Nothing in this repository writes those four today. `LagTracker` exists and is
-unused, and the audio and video decode paths record only `render.fps`. The
-overlay draws whatever it finds, so the timing panel reads zero until something
-fills it in. See [developer tools](devtools.md).
+`Player::stats()` returns a `PlaybackStats` snapshot. `latency` is the clock's
+delay, the largest target of its tracks, and `audio.buffered` is the sink's
+fill level alone. `video.decode_time` is one transport read and decode
+together, smoothed. `video.fps` counts frames over a window instead of
+deriving a rate from the gap between two frames. See [developer
+tools](devtools.md) for the overlay that draws them.

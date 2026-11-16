@@ -1,0 +1,32 @@
+[package]
+name = "moq-ext-egui"
+version = "0.1.0"
+edition = "2024"
+description = "egui video views and a debug overlay for moq-ext-player"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytesize = "2.7"
+derive_more = { version = "2.1.1", features = ["debug"] }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+# No direct `wgpu` dependency: all `wgpu` types come from
+# `moq_video::render::wgpu`, so they match the renderer's version.
+moq-ext-player = { workspace = true, features = ["render"] }
+moq-ext-publisher = { workspace = true }
+moq-net = { workspace = true }
+moq-video = { workspace = true, features = ["render"] }
+# Runs the task that wakes the window when a frame arrives.
+n0-future = "0.3.2"
+pollster = "1.0"
+tracing = "0.1.44"
+
+[dev-dependencies]
+moq-ext-sources = { workspace = true }
+tokio = { version = "1.54.1", features = ["macros", "rt"] }

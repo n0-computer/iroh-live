@@ -22,8 +22,8 @@ script = [
     '''
     WORKSPACE_ROOT="$(cd "${CARGO_MAKE_WORKING_DIRECTORY}/../.." && pwd)"
     "${WORKSPACE_ROOT}/cross/zigbuild.sh" -p pi-zero-demo --release
-    BINARY="target/aarch64-unknown-linux-gnu/release/pi-zero-demo"
-    aarch64-linux-gnu-strip "$BINARY" 2>/dev/null || echo "note: strip not available, deploying unstripped"
+    # zigbuild.sh writes to the workspace target dir and strips the binary.
+    BINARY="${CARGO_TARGET_DIR:-${WORKSPACE_ROOT}/target}/aarch64-unknown-linux-gnu/release/pi-zero-demo"
     scp "$BINARY" "pi@${PI_HOST}:~/pi-zero-demo"
     echo "deployed: pi@${PI_HOST}:~/pi-zero-demo"
     '''
