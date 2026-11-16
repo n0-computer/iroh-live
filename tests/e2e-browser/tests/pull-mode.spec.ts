@@ -1,10 +1,7 @@
 import { test, expect } from "@playwright/test";
-import { spawn, ChildProcess } from "child_process";
 import { PNG } from "pngjs";
-import { findBinary } from "../fixtures/bin";
+import { expectVideoContent, startTicketPublisher } from "../fixtures/publisher";
 import { startRelay, stopRelay, RelayInfo } from "../fixtures/relay";
-
-const irlBin = findBinary("irl");
 
 let relay: RelayInfo;
 
@@ -32,20 +29,7 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
   page.on("pageerror", (err) => console.log(`BROWSER ERROR: ${err}`));
 
   // Start publisher with test source — no --relay flag, standalone P2P only.
-  // Force software H.264 to avoid hardware codec incompatibility with
-  // the browser's JS decoder.
-  const publisher = spawn(irlBin, [
-    "publish",
-    "--name", "pull-test",
-    "--no-qr",
-    "--video", "test",
-    "--audio", "none",
-    "--codec", "h264",
-    "--renditions", "360p",
-  ]);
-
-  // Wait for publisher to print its ticket.
-  const ticket = await waitForTicket(publisher, 30_000);
+  const { publisher, ticket } = await startTicketPublisher("pull-test");
   console.log(`Publisher ticket: ${ticket}`);
 
   // Navigate browser to relay watch page with the ticket as the name.
@@ -59,29 +43,7 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
   await expect(canvas).toBeVisible({ timeout: 15_000 });
 
   // Wait for video content to render (non-black pixels).
-  //
-  // Sampled over a grid rather than at the centre pixel. The test pattern's
-  // middle band is black except when the sweep bar crosses it, once every two
-  // seconds and only a few pixels wide, so a centre probe was really waiting
-  // for the bar to pass under one point and timed out when it did not.
-  await expect(async () => {
-    const hasContent = await canvas.evaluate((el: HTMLCanvasElement) => {
-      if (el.width === 0 || el.height === 0) return false;
-      const ctx = el.getContext("2d");
-      if (!ctx) return false;
-      const steps = 8;
-      for (let row = 1; row < steps; row++) {
-        for (let column = 1; column < steps; column++) {
-          const x = Math.floor((el.width * column) / steps);
-          const y = Math.floor((el.height * row) / steps);
-          const pixel = ctx.getImageData(x, y, 1, 1).data;
-          if (pixel[0] + pixel[1] + pixel[2] > 0) return true;
-        }
-      }
-      return false;
-    });
-    expect(hasContent).toBe(true);
-  }).toPass({ timeout: 30_000, intervals: [500] });
+  await expectVideoContent(canvas);
 
   // Verify live video by detecting the blinking yellow marker. The marker is
   // lit for 100ms once a second, so 60 samples 100ms apart span six flashes
@@ -114,60 +76,6 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
 
   publisher.kill();
 });
-
-/**
- * Waits for the publisher to print "publishing at <ticket>" and extracts the ticket.
- */
-function waitForTicket(
-  proc: ChildProcess,
-  timeoutMs: number
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let output = "";
-    const prefix = "publishing at ";
-
-    const timeout = setTimeout(() => {
-      reject(
-        new Error(
-          `Timed out waiting for ticket after ${timeoutMs}ms. Output:\n${output}`
-        )
-      );
-    }, timeoutMs);
-
-    const check = (data: Buffer) => {
-      const text = data.toString();
-      output += text;
-      const idx = output.indexOf(prefix);
-      if (idx >= 0) {
-        // Extract the ticket (everything after "publishing at " until newline).
-        const start = idx + prefix.length;
-        const end = output.indexOf("\n", start);
-        const ticket = end >= 0 ? output.slice(start, end).trim() : output.slice(start).trim();
-        if (ticket.length > 0) {
-          clearTimeout(timeout);
-          resolve(ticket);
-        }
-      }
-    };
-
-    proc.stdout?.on("data", check);
-    proc.stderr?.on("data", check);
-
-    proc.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
-
-    proc.on("exit", (code) => {
-      clearTimeout(timeout);
-      reject(
-        new Error(
-          `Process exited with code ${code} before ticket appeared. Output:\n${output}`
-        )
-      );
-    });
-  });
-}
 
 /**
  * Looks for the test pattern's flashing marker, which is yellow and is the only
