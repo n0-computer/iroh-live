@@ -42,14 +42,12 @@ pub(crate) fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
 }
 
 /// Opens the devices, publishes them, and prints the ticket.
-async fn setup_capture(
-    args: &PublishArgs,
-) -> Result<(SharedNode, LocalBroadcast, source::Opened, String)> {
+async fn setup_capture(args: &PublishArgs) -> Result<(SharedNode, LocalBroadcast, String)> {
     let node = bind_node(args.transport.inbound()).await?;
-    let (node, (broadcast, sources, ticket)) = transport::with_node(node, async |node| {
+    let (node, (broadcast, ticket)) = transport::with_node(node, async |node| {
         let broadcast: LocalBroadcast =
             LiveLayout::default().publish(node, &args.transport.name)?;
-        let sources = source::configure(&broadcast, &args.capture, None).await?;
+        source::configure(&broadcast, &args.capture, None).await?;
         let ticket = transport::advertise(node, &args.transport)?;
         // `--test-source` overrides both flags, so log what was opened.
         info!(
@@ -58,23 +56,23 @@ async fn setup_capture(
             audio = %args.capture.audio_source(),
             "publishing"
         );
-        Ok((broadcast, sources, ticket))
+        Ok((broadcast, ticket))
     })
     .await?;
-    Ok((node, broadcast, sources, ticket))
+    Ok((node, broadcast, ticket))
 }
 
 /// Publishes capture devices, optionally alongside a preview window.
 fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
-    let (node, broadcast, sources, ticket) = rt.block_on(setup_capture(args))?;
+    let (node, broadcast, ticket) = rt.block_on(setup_capture(args))?;
 
     if !args.preview {
-        return wait_for_ctrl_c(rt, node, broadcast, sources);
+        return wait_for_ctrl_c(rt, node, broadcast);
     }
 
     // eframe takes the main thread. The guard keeps the runtime entered.
     let _guard = rt.enter();
-    preview::run(node, broadcast, sources, ticket, args)
+    preview::run(node, broadcast, ticket, args)
 }
 
 /// Publishes a media file, republishing its tracks without decoding them.
@@ -132,13 +130,11 @@ fn wait_for_ctrl_c(
     rt: &tokio::runtime::Runtime,
     node: SharedNode,
     broadcast: LocalBroadcast,
-    sources: source::Opened,
 ) -> Result {
     println!("press Ctrl+C to stop");
     rt.block_on(async move {
         crate::shutdown::ctrl_c().await?;
         Teardown::new(node).with_broadcast(broadcast).run().await;
-        drop(sources);
         Ok(())
     })
 }
@@ -160,7 +156,7 @@ mod preview {
     use crate::{
         args::{CaptureArgs, PublishArgs},
         shutdown::Teardown,
-        source::{self, Opened},
+        source,
         source_spec::{TestPattern, VideoSourceSpec},
         transport::SharedNode,
         ui::Pending,
@@ -170,7 +166,6 @@ mod preview {
     pub(super) fn run(
         node: SharedNode,
         broadcast: LocalBroadcast,
-        sources: Opened,
         ticket: String,
         args: &PublishArgs,
     ) -> Result {
@@ -184,7 +179,7 @@ mod preview {
                 let view = VideoView::new(
                     &cc.egui_ctx,
                     "preview",
-                    sources.video.as_ref().map(VideoSource::frames),
+                    broadcast.video_source().as_ref().map(VideoSource::frames),
                     cc.wgpu_render_state.as_ref(),
                 );
                 PreviewApp {
@@ -192,7 +187,7 @@ mod preview {
                     broadcast,
                     ticket,
                     view,
-                    picker: SourcePicker::new(capture, sources),
+                    picker: SourcePicker::new(capture),
                     overlay: DebugOverlay::new(&[StatCategory::Capture, StatCategory::Net]),
                 }
             },
@@ -305,21 +300,18 @@ mod preview {
         /// `video` is the `--video` text, shown while no entry matches it.
         capture: CaptureArgs,
         error: Option<String>,
-        /// The sources publishing now, held to keep them running.
-        sources: Opened,
         /// A source switch in flight.
         opening: Option<Pending<Result<Option<VideoSource>>>>,
     }
 
     impl SourcePicker {
         /// Creates a picker that starts on the source `capture` names.
-        fn new(capture: CaptureArgs, sources: Opened) -> Self {
+        fn new(capture: CaptureArgs) -> Self {
             let selected = PickedSource::from_spec(&capture.video_source());
             Self {
                 selected,
                 capture,
                 error: None,
-                sources,
                 opening: None,
             }
         }
@@ -363,11 +355,7 @@ mod preview {
             let result = result.unwrap_or_else(|| Err(anyerr!("the source switch was abandoned")));
             self.opening = None;
             match result {
-                Ok(video) => {
-                    let frames = video.as_ref().map(VideoSource::frames);
-                    self.sources.video = video;
-                    Some(frames)
-                }
+                Ok(video) => Some(video.as_ref().map(VideoSource::frames)),
                 Err(err) => {
                     let err = format!("{err:#}");
                     warn!(error = %err, "source switch failed");
