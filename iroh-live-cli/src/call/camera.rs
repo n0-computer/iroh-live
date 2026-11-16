@@ -215,7 +215,7 @@ impl CallApp {
                 }
             }
         };
-        self.restoring = Some(Pending::spawn(ctx, restore, drop));
+        self.restoring = Some(Pending::spawn(ctx, restore));
     }
 
     /// Collects the result of reopening the publisher's camera.

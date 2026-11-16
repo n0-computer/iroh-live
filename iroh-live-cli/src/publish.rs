@@ -399,7 +399,7 @@ mod preview {
                     _ => source::configure_video(&broadcast, &capture).await,
                 }
             };
-            self.opening = Some(Pending::spawn(ctx, switch, drop));
+            self.opening = Some(Pending::spawn(ctx, switch));
         }
     }
 }
