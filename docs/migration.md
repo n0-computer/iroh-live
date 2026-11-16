@@ -114,6 +114,7 @@ Names from development versions between the two releases:
 | `AudioSource::file(path, bool)` | `AudioSource::file(path, FileEnd)` |
 | `RelayConfig::token`, `TokenFn`, `TokenSource` | `RelayConfig::tokens`, `RelayConfig::with_token`, and `RelayLink::tokens().set(..)` on a live link |
 | `Player::video_timing(Duration)` | `Player::video_timing(Timestamp)`, with the frame's `timestamp` as it is |
+| `Subscription::value_track` returning a `json::snapshot::Consumer` | A `ValueReader` with the same `latest()` and `next()`, which follows a restarted publisher |
 
 ## Removed
 

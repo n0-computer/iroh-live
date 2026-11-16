@@ -79,7 +79,9 @@ it is announced, so no reader finds it without its first tracks. The fill runs
 before the node takes its lock, so it may fail or call back into the node
 without harm. `LiveLayout::publish` builds a `LocalBroadcast` in it this way.
 `Node::publish_value` uses it to publish one latest-value JSON track, and
-`Subscription::value_track` reads such a track. A publication stays until
+`Subscription::value_track` reads such a track with a `ValueReader`, which
+reopens the track on each broadcast the subscription follows and ends only
+when the subscription closes. A publication stays until
 `unpublish`, until its broadcast closes, or until the node shuts down. Dropping
 its handles does not withdraw it, so a publication that belongs to a task goes
 through `Publication::unpublish_on_drop`, whose guard unpublishes it when the
