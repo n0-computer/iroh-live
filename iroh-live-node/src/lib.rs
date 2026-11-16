@@ -43,9 +43,12 @@
 //!   the policy that lets each peer publish only under its own id.
 //!
 //! Every link runs a connection monitor, and [`Subscription::serving_link`]
-//! returns its latest [`NetworkSample`]. [`Session::moq`] gives the moq-net
-//! session itself, with its raw statistics, and [`Session::connection`] the
-//! iroh connection, with its paths.
+//! returns its latest [`NetworkSample`], with the rates bytes arrive and leave
+//! at. [`Subscription::session`] returns the direct session that serves a
+//! subscription now, and [`Session::sample`] the same reading for a session
+//! the application holds. [`Session::moq`] gives the moq-net session itself,
+//! with its raw statistics, and [`Session::connection`] the iroh connection,
+//! with its paths.
 //!
 //! Every link serves only this node's own publications, never a route it
 //! learned from another link. A peer sees the exact paths of the publications

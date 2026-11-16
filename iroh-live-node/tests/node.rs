@@ -9,8 +9,8 @@ use std::{
 };
 
 use common::{
-    Peer, TIMEOUT, announced, ends, has_session_with, publish, publish_from, read_counter, reading,
-    retracted, session_with, stays_pending, step,
+    Peer, TIMEOUT, announced, ends, eventually, has_session_with, publish, publish_from,
+    read_counter, reading, retracted, session_with, stays_pending, step,
 };
 use iroh::endpoint::PathId;
 use iroh_live_node::{
@@ -43,6 +43,11 @@ async fn a_path_resolves_by_dialing_its_publisher() {
     assert_eq!(session.peer(), alice.id());
     let link = subscription.serving_link().expect("a serving link");
     assert_eq!(link.kind, LinkKind::Direct);
+    // The session reads the same link the subscription reports.
+    eventually("the session measures its link", || {
+        session.sample().rtt.is_some()
+    })
+    .await;
 
     alice.shutdown().await;
     bob.shutdown().await;

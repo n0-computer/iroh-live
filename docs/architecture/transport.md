@@ -144,12 +144,14 @@ from the application's side.
 Each session runs a connection monitor (`link.rs`) that reads moq-net's session
 statistics every 200 ms into the adaptive crate's `NetworkSample`, and
 `Session::moq()` exposes the moq-net session it reads. The sample holds the
-round trip, the minimum round trip over 15 s, the loss rate and throughput over
-2 s, the peer's delivery estimate, whether the path is relayed and a path
+round trip, the minimum round trip over 15 s, the loss rate, throughput and send
+rate over 2 s, the peer's delivery estimate, whether the path is relayed and a path
 generation. Every figure is an `Option` and reads `None` until measured. A
 switch to another QUIC path bumps `path_generation` and starts the history
 over. `Subscription::serving_link()` returns the `ServingLink` (`id`, `kind`,
-`sample`) of whichever link serves the subscription. `iroh-live/src/network.rs`
+`sample`) of whichever link serves the subscription, `Subscription::session()`
+the direct session that serves it, and `Session::sample()` the reading of a
+session the application holds. `iroh-live/src/network.rs`
 hands the sample to the player and makes its path generation count changes of
 the serving link too. The monitor logs every sample at TRACE as `link sample`.
 The node keeps no list of paths of its own: `Session::connection()` is the iroh
