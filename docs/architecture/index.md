@@ -31,23 +31,25 @@ The rest is upstream. See [the media stack](media-stack.md) for what we use.
 
 ## iroh-live
 
-`iroh-live` is the facade. It holds `LiveLayout`, `Calls`, `EndpointConfig`
-and the re-exports, and it is the only crate that joins the media crates to
-the node. [Nodes and endpoints](../concepts/nodes.md) and
+`iroh-live` is the facade. It holds `Calls` and the re-exports, and it is the
+only crate that joins the media crates to the node. `LiveLayout` and
+`EndpointConfig` live in `iroh-live-node`, so a service without media, such as
+`iroh-live-relay`, uses them without the facade. [Nodes and endpoints](../concepts/nodes.md) and
 [Paths and layouts](../concepts/paths.md) describe how an application uses
 it.
 
-`iroh_live::media::remote_broadcast(&subscription)` reads the media of a
-subscription without waiting for the catalog, for a subscription from a
-ticket, a room or `Node::subscribe`. The broadcast follows the path through
+`subscription.remote_broadcast()`, from the extension trait
+`iroh_live::media::SubscriptionExt`, reads the media of a subscription without
+waiting for the catalog, for a subscription from a ticket, a room or
+`Node::subscribe`. The broadcast follows the path through
 the route table and carries the serving link's measurements, so
 `remote.play(config)` starts a player that adapts with nothing further to
 wire.
 
 The facade's error is `iroh_live::Error`: `Node` wraps an
 `iroh_live_node::Error`, `Media` a `moq_ext_player::Error`, `Rooms` an
-`iroh_live_rooms::Error` and `Calls` an `iroh_live::calls::Error`. `SecretKey`
-and `Bind` come from `EndpointConfig`. Audiences, admission, relays and routes
+`iroh_live_rooms::Error` and `Calls` an `iroh_live::calls::Error`. The node's
+`SecretKey` and `Bind` come from `EndpointConfig`. Audiences, admission, relays and routes
 belong to [`iroh-live-node`](transport.md).
 
 A call is one broadcast per side at `<root>/<id>/call`, published with

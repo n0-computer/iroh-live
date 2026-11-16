@@ -25,12 +25,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use crate::{
-    Audience, BroadcastTicket, ConnectOptions, Direction, Error, Grant, Layout, LinkId,
-    Publication, RelayConfig, RelayLink, Session, Subscription,
+    Audience, BroadcastTicket, ConnectOptions, Direction, Error, Grant, LinkId, Publication,
+    RelayConfig, RelayLink, Session, Subscription,
     actor::{Actor, ActorMessage},
     admission,
     handshake::{Hop, SessionParts},
     json,
+    layout::Layout,
     policy::{self, Authorization, DynPolicy, Policy},
     publish, reauth, relay, route,
     state::State,
@@ -168,10 +169,10 @@ impl NodeConfig {
 ///
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let endpoint = Endpoint::bind(presets::Minimal).await?;
-/// let moq = Node::new(endpoint.clone(), NodeConfig::default());
-/// let _router = moq.mount(Router::builder(endpoint)).spawn();
+/// let node = Node::new(endpoint.clone(), NodeConfig::default());
+/// let _router = node.mount(Router::builder(endpoint)).spawn();
 ///
-/// let publication = moq.publish("demo/camera", Audience::Granted)?;
+/// let publication = node.publish("demo/camera", Audience::Granted)?;
 /// // write tracks into the broadcast in the route table:
 /// let _track = publication.broadcast().create_track("video", None)?;
 /// # Ok(())

@@ -65,7 +65,7 @@ broadcast.set_video(camera, VideoEncoding::single(VideoRendition::new("video")))
 println!("{}", layout.ticket(node.id(), "hello")?);
 
 let subscription = node.subscribe_ticket(&ticket).await?;
-let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+let player = subscription.remote_broadcast().play(PlayerConfig::default())?;
 let mut frames = player.video_frames();
 ```
 
@@ -96,6 +96,12 @@ Names from development versions between the two releases:
 | Before | Now |
 |---|---|
 | `EndpointOptions` | `EndpointConfig` |
+| `media::remote_broadcast(&subscription)` | `subscription.remote_broadcast()`, from `media::SubscriptionExt` |
+| `iroh_live::Error::SecretKey`, `iroh_live::Error::Bind` | `EndpointError::SecretKey`, `EndpointError::Bind`, inside `iroh_live::Error::Endpoint` |
+| `iroh_live::layout::LiveLayout` and the `layout` module | `iroh_live_node::layout`, still re-exported as `iroh_live::layout` |
+| `iroh_live::{EndpointConfig, Mdns, load_or_create_secret_key}` | The same names in `iroh_live_node`, still re-exported from `iroh_live` |
+| `iroh_live_node::Layout` | `iroh_live_node::layout::Layout` |
+| `media::*` from every media crate | `media` lists its re-exports. Reach the rest through `moq_ext_player`, `moq_ext_publisher` and `moq_ext_sources` |
 | `Audience::Everyone` | `Audience::Granted` |
 | `RoomPeer` | `RoomMember` |
 | `Player::video` | `Player::video_frames` |
@@ -123,6 +129,20 @@ Names from development versions between the two releases:
 | `PlayerConfig::record_arrivals`, `with_recorded_arrivals` | Nothing. The decoder reports each picture's arrival, so `FrameTiming::arrived` is always filled |
 
 ## Changed behavior
+
+- **Errors.** `EndpointConfig::from_env` and `bind` return an
+  `EndpointError`, which converts into `iroh_live::Error::Endpoint`. The
+  facade's error carries its metadata in every variant, so a match names it:
+
+  ```rust,ignore
+  match err {
+      iroh_live::Error::Endpoint(EndpointError::Bind { .. }, _) => { /* port in use */ }
+      other => return Err(other),
+  }
+  ```
+
+  The relay no longer depends on `iroh-live`, only on `iroh-live-node` and
+  `iroh-live-rooms`.
 
 - **Access.** `NodeConfig::default()` lets every peer read and publish nothing.
   `LiveLayout::config()` lets each peer publish under its own id. A policy

@@ -28,16 +28,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
     let demo: Pattern = "demo/**".parse()?;
-    let moq = Node::new(
+    let node = Node::new(
         endpoint.clone(),
         NodeConfig::default().with_policy(policy::Open(Grant::publish_under(demo))),
     );
     // Mount your own protocols on the same router.
-    let router = moq
+    let router = node
         .mount(iroh::protocol::Router::builder(endpoint.clone()))
         .spawn();
 
-    let subscription = moq
+    let subscription = node
         .subscribe("demo/hello", Reach::Direct(publisher))
         .await?;
     println!("subscribed to {}", subscription.path());
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    moq.shutdown().await;
+    node.shutdown().await;
     router.shutdown().await?;
     endpoint.close().await;
     Ok(())

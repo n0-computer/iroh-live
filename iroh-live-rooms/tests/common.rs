@@ -4,7 +4,8 @@
 
 pub(crate) use iroh_live_node::test_util::TIMEOUT;
 use iroh_live_node::{
-    Grant, Layout, NodeConfig,
+    Grant, NodeConfig,
+    layout::Layout,
     policy::{self, PeerRequest},
     test_util::{TestNode, step},
 };

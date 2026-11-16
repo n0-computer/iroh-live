@@ -12,9 +12,7 @@ use iroh::protocol::Router;
 use iroh_live::{
     Node,
     layout::LiveLayout,
-    media::{
-        LocalBroadcast, PlayerConfig, VideoFormat, VideoFrames, VideoSource, remote_broadcast,
-    },
+    media::{LocalBroadcast, PlayerConfig, SubscriptionExt, VideoFormat, VideoFrames, VideoSource},
 };
 use iroh_live_node::test_util::endpoint;
 use moq_ext_player::test_util::{
@@ -60,7 +58,8 @@ impl Peers {
             .subscribe_ticket(&ticket)
             .await
             .expect("failed to subscribe");
-        let player = remote_broadcast(&subscription)
+        let player = subscription
+            .remote_broadcast()
             .play(PlayerConfig::default())
             .expect("failed to play");
         let frames = player.video_frames();

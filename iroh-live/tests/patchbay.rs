@@ -21,7 +21,7 @@ use iroh_live::{
     layout::LiveLayout,
     media::{
         Adaptation, LocalBroadcast, Player, PlayerConfig, Rate, RemoteBroadcast, RenditionMode,
-        VideoEncoding, VideoFrames, VideoRendition, VideoSource, remote_broadcast,
+        SubscriptionExt, VideoEncoding, VideoFrames, VideoRendition, VideoSource,
         video::{Frame, FrameRate, Size},
     },
     node::NetworkSample,
@@ -154,7 +154,7 @@ impl Fixture {
             .subscribe(ticket.path(), Reach::Direct(ticket.peer()))
             .await
             .expect("failed to subscribe");
-        let remote = remote_broadcast(&subscription);
+        let remote = subscription.remote_broadcast();
 
         Self {
             lab,

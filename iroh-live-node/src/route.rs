@@ -42,7 +42,8 @@ const REASK_PAUSE: Duration = Duration::from_millis(100);
 /// moq moves the broadcast between routes of one instance, such as a direct
 /// link and a relay, without ending it. When another instance takes the path
 /// over, [`broadcast`](Self::broadcast) switches to what serves it now. Cheap
-/// to clone.
+/// to clone. For media, `iroh_live::media::SubscriptionExt::remote_broadcast` reads it
+/// as a `RemoteBroadcast` that adapts to the serving link.
 ///
 /// # Examples
 ///
@@ -172,7 +173,9 @@ impl Subscription {
 
     /// Returns the broadcast that serves the path now.
     ///
-    /// A later call may return a newer broadcast than an earlier one.
+    /// A later call may return a newer broadcast than an earlier one. For
+    /// media, `iroh_live::media::SubscriptionExt::remote_broadcast` reads it
+    /// as a `RemoteBroadcast` that adapts to the serving link.
     #[must_use]
     pub fn broadcast(&self) -> broadcast::Consumer {
         self.inner.current.lock().expect("poisoned").clone()

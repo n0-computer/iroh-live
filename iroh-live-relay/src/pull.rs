@@ -36,8 +36,10 @@ use std::{
 };
 
 use iroh::EndpointId;
-use iroh_live::{BroadcastTicket, layout::LiveLayout, rooms::RoomsLayout};
-use iroh_live_node::{Grant, Node, NodeConfig, PathClaim, Subscription, policy};
+use iroh_live_node::{
+    BroadcastTicket, Grant, Node, NodeConfig, PathClaim, Subscription, layout::LiveLayout, policy,
+};
+use iroh_live_rooms::RoomsLayout;
 use moq_relay::cluster::Cluster;
 use n0_error::e;
 use n0_watcher::Watcher;
@@ -247,7 +249,7 @@ pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
 /// #     cluster: moq_relay::cluster::Cluster,
 /// #     requested: &str,
 /// # ) -> Result<(), iroh_live_relay::Error> {
-/// use iroh_live::BroadcastTicket;
+/// use iroh_live_node::BroadcastTicket;
 /// use iroh_live_relay::pull::{Client, Pulls, mounted};
 ///
 /// let pulls = Pulls::new(endpoint, cluster.clone());
@@ -817,7 +819,7 @@ impl Drop for PublisherClaim {
 
 #[cfg(test)]
 mod tests {
-    use iroh_live::layout::Layout;
+    use iroh_live_node::layout::Layout;
     use moq_net::Path;
 
     use super::*;
@@ -859,7 +861,7 @@ mod tests {
         let other = iroh::SecretKey::from_bytes(&[4; 32]).public();
         assert_eq!(owner(&path(&format!("live/{peer}/cam"))), Some(peer));
         assert_eq!(owner(&path(&format!("live/{peer}/cam/hd"))), Some(peer));
-        let topic = iroh_live::rooms::RoomTicket::generate().topic_id();
+        let topic = iroh_live_rooms::RoomTicket::generate().topic_id();
         assert_eq!(
             owner(&path(&format!("rooms/{topic}/{peer}/cam"))),
             Some(peer)

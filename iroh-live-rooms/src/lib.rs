@@ -29,7 +29,8 @@
 //!
 //! The node's [policy](iroh_live_node::NodeConfig::with_policy) has to let
 //! each peer publish under its [`RoomsLayout`] scope, or [`Room::subscribe`]
-//! fails. `iroh_live::layout::policy((LiveLayout::default(), RoomsLayout))`
+//! fails.
+//! [`policy((LiveLayout::default(), RoomsLayout))`](iroh_live_node::layout::policy)
 //! does that.
 //!
 //! ```no_run

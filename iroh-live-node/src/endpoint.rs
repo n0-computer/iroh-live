@@ -3,11 +3,21 @@
 use std::{io::Write, path::Path};
 
 use iroh::{Endpoint, SecretKey, endpoint::Builder};
-use iroh_live_node::MoqPreset;
-use n0_error::e;
+use n0_error::{e, stack_error};
 use tracing::{debug, info, warn};
 
-use crate::Error;
+use crate::MoqPreset;
+
+/// An error from [`EndpointConfig::from_env`] or [`EndpointConfig::bind`].
+#[stack_error(derive, add_meta)]
+pub enum EndpointError {
+    /// `IROH_SECRET` does not hold a secret key.
+    #[error("IROH_SECRET does not hold a secret key")]
+    SecretKey { source: iroh::KeyParsingError },
+    /// The endpoint's sockets could not be bound.
+    #[error("failed to bind the endpoint")]
+    Bind { source: iroh::endpoint::BindError },
+}
 
 /// How an endpoint uses mDNS on the local network.
 ///
@@ -55,13 +65,13 @@ impl EndpointConfig {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::SecretKey`] if `IROH_SECRET` is set to something
-    /// that is not a secret key.
-    pub fn from_env() -> Result<Self, Error> {
+    /// Fails with [`EndpointError::SecretKey`] if `IROH_SECRET` is set to
+    /// something that is not a secret key.
+    pub fn from_env() -> Result<Self, EndpointError> {
         let secret_key = std::env::var_os("IROH_SECRET")
             .map(|key| key.to_string_lossy().parse())
             .transpose()
-            .map_err(|source| e!(Error::SecretKey { source }))?;
+            .map_err(|source| e!(EndpointError::SecretKey { source }))?;
         Ok(Self {
             secret_key,
             ..Self::default()
@@ -83,7 +93,7 @@ impl EndpointConfig {
     /// ```no_run
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// use iroh::{RelayMode, endpoint::Builder};
-    /// use iroh_live::EndpointConfig;
+    /// use iroh_live_node::EndpointConfig;
     ///
     /// let endpoint = EndpointConfig::from_env()?
     ///     .apply(Builder::empty())
@@ -131,14 +141,15 @@ impl EndpointConfig {
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::Bind`] if the endpoint's sockets cannot be bound.
-    pub async fn bind(self) -> Result<Endpoint, Error> {
+    /// Fails with [`EndpointError::Bind`] if the endpoint's sockets cannot be
+    /// bound.
+    pub async fn bind(self) -> Result<Endpoint, EndpointError> {
         let endpoint = self
             .apply(Builder::empty())
             .await
             .bind()
             .await
-            .map_err(|source| e!(Error::Bind { source }))?;
+            .map_err(|source| e!(EndpointError::Bind { source }))?;
         info!(id = %endpoint.id(), "endpoint bound");
         Ok(endpoint)
     }

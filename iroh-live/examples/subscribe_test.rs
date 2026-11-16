@@ -10,7 +10,7 @@ use iroh::EndpointId;
 use iroh_live::{
     EndpointConfig, Mdns, Node,
     layout::LiveLayout,
-    media::{PlayerConfig, remote_broadcast},
+    media::{PlayerConfig, SubscriptionExt},
     node::{Reach, RelayConfig},
 };
 use n0_error::bail_any;
@@ -33,7 +33,9 @@ async fn main() -> n0_error::Result {
     // The link redials, and the subscribe waits until the relay routes the name.
     let _link = node.attach_relay(RelayConfig::iroh(cli.relay))?;
     let subscription = node.subscribe(&cli.name, Reach::Relays).await?;
-    let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+    let player = subscription
+        .remote_broadcast()
+        .play(PlayerConfig::default())?;
     let mut frames = player.video_frames();
 
     info!("subscribed, waiting for video");

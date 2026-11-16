@@ -72,10 +72,10 @@ pub enum Error {
         source: Arc<std::io::Error>,
     },
     /// The relay's iroh endpoint could not bind.
-    #[error("failed to bind the relay's iroh endpoint")]
+    #[error("the relay's iroh endpoint")]
     Bind {
         #[error(source, std_err)]
-        source: Arc<iroh_live::Error>,
+        source: Arc<iroh_live_node::EndpointError>,
     },
     /// The JWT keys could not be read.
     #[error("cannot read the JWT keys from {}", path.display())]

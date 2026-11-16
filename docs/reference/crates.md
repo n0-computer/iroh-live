@@ -7,8 +7,8 @@ Most applications depend on `iroh-live` alone. It re-exports the node as
 
 | Crate | What it is | Depends on iroh |
 |---|---|---|
-| [`iroh-live`](../../iroh-live) | The facade: `Node`, `LiveLayout`, `Calls`, `EndpointConfig`, `BroadcastTicket`, and the re-exports | yes |
-| [`iroh-live-node`](../../iroh-live-node) | The node: route table, publications and audiences, sessions, relay links, policies, link statistics, `MoqPreset` | yes |
+| [`iroh-live`](../../iroh-live) | The facade: `Calls`, `SubscriptionExt`, and the re-exports of the crates below | yes |
+| [`iroh-live-node`](../../iroh-live-node) | The node: route table, publications and audiences, sessions, relay links, policies, link statistics, `BroadcastTicket`, `LiveLayout`, `EndpointConfig`, `MoqPreset` | yes |
 | [`moq-transport-iroh`](../../moq-transport-iroh) | MoQ sessions over iroh connections: dial, accept, ALPN negotiation | yes |
 | [`iroh-live-rooms`](../../iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media | yes |
 | [`moq-ext-access`](../../moq-ext-access) | Grants, policies, token verifiers, layouts and audiences | no |

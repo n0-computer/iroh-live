@@ -22,12 +22,13 @@ moq-net = { workspace = true }
 # The policy types, and the JWT verifier for iroh clients' tokens.
 moq-ext-access = { workspace = true, features = ["jwt"] }
 iroh = { workspace = true }
+# The node that pulls tickets, the endpoint setup, and the `live/` layout with
+# the grant that keeps a peer to its own paths.
 iroh-live-node = { workspace = true }
 # Plain MoQ over iroh for the relay's own sessions: dial, accept, ALPNs.
 moq-transport-iroh = { workspace = true }
-# The `live/` layout: tickets, and the grant that keeps a peer to its own
-# paths. `rooms` for the room layout's part of that grant. No `media`.
-iroh-live = { workspace = true, features = ["rooms"] }
+# The room layout's part of the grant that keeps a peer to its own paths.
+iroh-live-rooms = { workspace = true }
 # `anyhow` for the errors of moq-relay, which returns anyhow errors.
 n0-error = { version = "1.0.3", features = ["anyhow"] }
 n0-future = "0.3.2"
@@ -55,8 +56,6 @@ iroh-live-node = { workspace = true, features = ["test-util"] }
 iroh = { workspace = true }
 # The tests publish and play real media through the relay.
 iroh-live = { workspace = true, features = ["media", "rooms"] }
-# Rooms whose members attach to a relay, for forging a member through one.
-iroh-live-rooms = { workspace = true }
 n0-watcher = "1.0.1"
 data-encoding = "2.11.1"
 serial_test = "4"

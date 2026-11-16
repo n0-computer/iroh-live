@@ -35,8 +35,10 @@ println!("{}", layout.ticket(node.id(), "hello")?);
 On the other side, subscribe and play:
 
 ```rust,ignore
+use iroh_live::media::SubscriptionExt;
+
 let subscription = node.subscribe_ticket(&ticket).await?;
-let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+let player = subscription.remote_broadcast().play(PlayerConfig::default())?;
 let mut frames = player.video_frames();
 ```
 

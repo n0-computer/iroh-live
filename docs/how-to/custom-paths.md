@@ -24,7 +24,7 @@ use iroh_live::{
     Audience, EndpointConfig, Node, Reach,
     layout::{self, Layout, LiveLayout},
     media::{
-        LocalBroadcast, PlayerConfig, VideoEncoding, VideoRendition, VideoSource, remote_broadcast,
+        LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition, VideoSource,
         video,
     },
     moq_net::{Pattern, Patterns},
@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             let path = format!("stage/{other}/main");
             let subscription = node.subscribe(&path, Reach::Direct(other)).await?;
-            let player = remote_broadcast(&subscription).play(PlayerConfig::default())?;
+            let player = subscription.remote_broadcast().play(PlayerConfig::default())?;
             let mut frames = player.video_frames();
             while let Some(frame) = frames.next().await {
                 println!("frame {}", frame.size());

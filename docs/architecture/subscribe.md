@@ -32,9 +32,10 @@ renditions best first: enabled, then by `preference`, picture size and bitrate.
 `video_rendition(&catalog, name)` looks one up, with an error that lists the
 renditions the catalog has.
 
-`iroh_live::media::remote_broadcast(&subscription)` builds the
-`RemoteBroadcast` with `from_resolved` and attaches the serving link's measurements, whether the
-subscription came from `Node::subscribe_ticket`, a room or `Node::subscribe`. See
+`subscription.remote_broadcast()`, from `iroh_live::media::SubscriptionExt`,
+builds the `RemoteBroadcast` with `from_resolved` and attaches the serving
+link's measurements, whether the subscription came from
+`Node::subscribe_ticket`, a room or `Node::subscribe`. See
 [adaptive bitrate](adaptive.md).
 
 ## Video decoding

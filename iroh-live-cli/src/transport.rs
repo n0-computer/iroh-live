@@ -6,7 +6,7 @@ use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     BroadcastTicket, EndpointConfig, Mdns, Node, Subscription,
     layout::LiveLayout,
-    media::{RemoteBroadcast, remote_broadcast},
+    media::{RemoteBroadcast, SubscriptionExt},
     node::{RelayConfig, RelayLink},
 };
 use n0_error::Result;
@@ -146,7 +146,7 @@ impl Subscribed {
     ///
     /// [`crate::playback::catalog`] waits for the catalog.
     pub(crate) fn open(subscription: Subscription) -> Self {
-        let broadcast = remote_broadcast(&subscription);
+        let broadcast = subscription.remote_broadcast();
         Self {
             subscription,
             broadcast,

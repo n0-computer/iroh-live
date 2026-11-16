@@ -13,7 +13,8 @@ use common::{
 };
 use iroh::EndpointId;
 use iroh_live_node::{
-    Audience, Direction, Error, Grant, Layout, NodeConfig, Reach, Session,
+    Audience, Direction, Error, Grant, NodeConfig, Reach, Session,
+    layout::Layout,
     policy::{self, PeerRequest, Rejection},
 };
 use moq_net::{Path, Pattern, Patterns};
