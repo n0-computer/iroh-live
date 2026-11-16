@@ -184,7 +184,8 @@ moves to another link, the subscription follows it.
 - `Node::sessions()` watches the open sessions, and `Session::connection()`
   is the iroh connection, whose `paths()` lists the network paths to the
   peer.
-- `Session::moq()` is the moq-net session itself.
+- `Session::sample()` returns the session's latest `NetworkSample`, and
+  `Session::moq()` is the moq-net session itself.
 - `Node::accepted()` streams the sessions the node accepts.
 - A `policy::Queue` lets the application admit each peer itself, see
   [Control access](control-access.md#ask-the-user).

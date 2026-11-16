@@ -40,6 +40,10 @@ previews can read it.
   window within 30 seconds. A camera open first waits up to three seconds
   for the cameras dropped before it to close their devices, so a switch back
   to the same camera does not fail as busy (see below).
+- `camera(id)` and `screen()` are `capture` with a camera or the main display
+  at its default mode. `screen_source()` returns the source `screen()` opens:
+  the desktop portal on Wayland with the `pipewire` feature, the main display
+  elsewhere.
 - `test_pattern(size, rate)` draws a sweeping bar, a frame counter, a clock,
   and a marker that flashes in step with `AudioSource::test_pattern`'s beep.
 - `push(format)` returns a `FrameSender` and the source it feeds, for frames
@@ -70,6 +74,8 @@ to the input. The switch has three operations:
 - `replace(source)` swaps at once.
 - `open(future)` opens the next source in the background, and drops one still
   opening.
+- `open_spec(spec, options)` opens a source specifier from `spec` that way,
+  and clears the switch for `none`.
 - `clear()` stops feeding.
 
 The previous source is dropped first, so the same camera opens again.

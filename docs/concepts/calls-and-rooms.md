@@ -13,8 +13,9 @@ rings the caller back, which shows this side to it, and subscribes to the
 caller's side. Hanging up takes the peer out of the audience again, which
 ends its read.
 
-`iroh_live::calls::Calls` implements this. `irl call` and the Android demo use
-the same convention, so they can call each other. A policy that admits only
+`iroh_live::calls::Calls` implements this. Its `ticket()` names this side,
+for a peer to call, and `next_ring()` waits for a peer that rings. `irl call`
+and the Android demo use the same convention, so they can call each other. A policy that admits only
 contacts also keeps strangers from ringing.
 
 ## Rooms

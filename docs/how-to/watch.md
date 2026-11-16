@@ -53,9 +53,10 @@ renderer to a wgpu device and queue, and `render(&frame)` returns a
 [moq-video](https://doc.moq.dev/lib/rs/crate/moq-video) documents backend
 selection, color handling and zero-copy import.
 
-- The renderer fixes the wgpu version. `iroh_live::media::video::render::wgpu`
-  re-exports the wgpu it links. A texture from another wgpu major version is a
-  different type.
+- The renderer fixes the wgpu version. `iroh_live::media::wgpu` re-exports
+  the wgpu it links, so name wgpu types through it instead of depending on
+  wgpu yourself. A texture from another wgpu major version is a different
+  type.
 - On Linux, request `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` when you
   create the device. Without it, frames that arrive as DMA-BUFs, such as
   hardware-decoded video and PipeWire screen capture, are copied through the
@@ -96,7 +97,10 @@ GPU with limits below wgpu's defaults. A view logs once at INFO when its
 device leaves out a DMA-BUF import the adapter offers.
 
 `FrameView` draws frames that you hand it with `render_frame`, and
-`overlay::DebugOverlay` draws the stats bar that `irl watch` shows.
+`overlay::DebugOverlay` draws the stats bar that `irl watch` shows. An egui
+update cannot await, so `Pending::spawn` runs a future such as a dial on the
+runtime, and the window asks `poll()` on each frame until the result is
+there.
 
 ### Other toolkits
 
@@ -110,7 +114,12 @@ the CPU. No library crate has a GLES renderer. The Pi demo has one in
 - `Player::status()` returns a watcher of the rendition on screen, the
   decoder, and the reason the last switch failed.
 - `Player::stats()` returns frame rate, decode time, latency and the link's
-  round trip and loss, cheap enough for every redraw.
+  round trip and loss, cheap enough for every redraw. Its `audio.rms` is the
+  level of the last 100 ms of audio, also in `AudioMode::Decode`, for a level
+  meter or a speaking indicator.
+- `Player::video_timing(frame.timestamp)` returns a picture's `FrameTiming`:
+  when its data arrived, when it left the decoder and when it was presented.
+  `decode_time()` and `queued()` are the spans between them.
 - `RemoteBroadcast::closed()` resolves when the broadcast ends.
 
 ## Where to go next

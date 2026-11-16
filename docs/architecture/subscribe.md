@@ -106,6 +106,8 @@ one the handle read.
 
 Each presented picture's `FrameTiming` (`arrived`, `decoded`, `presented`)
 goes into a log of the last 512, which `Player::video_timing(timestamp)` searches.
+`FrameTiming::decode_time()` is the span from `arrived` to `decoded`, and
+`queued()` the span the playout clock held the picture.
 `Player::take_latest_video()` pairs the two for a consumer that samples at
 its own rate: the newest picture since its last call, with its timing.
 `arrived` comes from the decoder, which reports when the access unit behind
@@ -125,8 +127,9 @@ audio at all.
 The audio task plays the first audio rendition. It writes frames straight to
 its sink and reports how much audio is queued ahead of the speaker to the
 playout clock on every frame. `Player::set_volume` sets the level.
-`PlaybackStats::audio` carries the buffered duration and the latest peak for a
-meter. The task reopens when the broadcast moves to a new route. A track that
+`PlaybackStats::audio` carries the buffered duration, the latest peak, and the
+RMS level of the last 100 ms of decoded audio, which the task measures with or
+without a speaker. The task reopens when the broadcast moves to a new route. A track that
 ended or never opened is tried again when the catalog changes, and every two
 seconds.
 

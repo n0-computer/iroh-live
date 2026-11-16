@@ -61,7 +61,9 @@ explains the clock.
 software. `Hardware` and `Software` restrict the choice, and
 `Named("vaapi")` opens one backend only, with no fallback. `irl watch
 --decoder` takes `auto`, `hardware`, `software` or a backend name.
-`Player::set_decoder` changes a running player.
+`Player::set_decoder` changes a running player. `media::Backend` parses the
+same names, for a flag or a config file of your own, and converts into a
+`decode::Kind`.
 
 ## Adaptation
 

@@ -108,6 +108,34 @@ does not have to track them itself. To switch cameras behind one
 source, `VideoSource::switchable` returns a `VideoSwitch` that swaps what
 feeds it.
 
+### Sources by name
+
+`media::spec` parses the source specifiers that `irl publish --video` and
+`--audio` take, such as `cam:2`, `screen` or `test:gradient`, so a flag or a
+config file of your own names sources the same way. The
+[CLI reference](../reference/cli.md#sources) lists them.
+`VideoSourceSpec::open` opens one, with `VideoOpenOptions` for the size and
+frame rate to ask for, and `VideoSwitch::open_spec` opens one behind a
+switch, for a source picker:
+
+```rust,no_run
+use iroh_live::media::{
+    VideoSwitch,
+    spec::{VideoOpenOptions, VideoSourceSpec},
+    video,
+};
+
+fn pick(switch: &VideoSwitch, choice: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let spec: VideoSourceSpec = choice.parse()?;
+    let options = VideoOpenOptions::default()
+        .with_size(video::Size::new(1280, 720))
+        .with_framerate(video::FrameRate::new(30, 1).expect("a valid rate"));
+    // Opens in the background; `switch.status()` reports how it went.
+    switch.open_spec(spec, options);
+    Ok(())
+}
+```
+
 ### Other sources
 
 - `VideoSource::push(format)` and `AudioSource::push(format)` take frames

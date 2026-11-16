@@ -16,8 +16,9 @@ iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["ful
 tokio = { version = "1", features = ["full"] }
 ```
 
-`full` turns on the media stack with capture, rendering and recording. The
-[features reference](../reference/features.md) lists the others.
+`full` turns on the media stack with capture, playback, rendering and
+recording. The [features reference](../reference/features.md) lists the
+others.
 
 ## Publish
 

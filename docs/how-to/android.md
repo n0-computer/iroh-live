@@ -45,8 +45,8 @@ The JNI bridge gives the Kotlin app two call entry points:
 - `dial` offers this side to the ticket's peer, and returns once the peer
   answers.
 - `answer` opens this side and returns at once, so the QR code can go on
-  screen. A task then waits for the first peer in `Calls::ringing` and
-  answers it, and the screen polls `callConnected` to learn when a caller
+  screen. A task then waits for the first peer that rings with
+  `Calls::next_ring` and answers it, and the screen polls `callConnected` to learn when a caller
   arrived.
 
 ## Prerequisites

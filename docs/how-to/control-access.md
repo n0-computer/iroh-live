@@ -14,10 +14,7 @@ limit.
 On a network you trust, let every peer publish and read anything:
 
 ```rust,no_run
-use iroh_live::{
-    NodeConfig,
-    node::{Grant, policy},
-};
+use iroh_live::{Grant, NodeConfig, node::policy};
 
 fn open_lan() -> NodeConfig {
     NodeConfig::default().with_policy(policy::Open(Grant::everything()))
@@ -80,9 +77,9 @@ again when it passes:
 use std::time::{Duration, SystemTime};
 
 use iroh::EndpointId;
-use iroh_live::node::{
+use iroh_live::{
     Grant,
-    policy::{Authorization, Decision, PeerRequest, Policy, Rejection},
+    node::policy::{Authorization, Decision, PeerRequest, Policy, Rejection},
 };
 
 #[derive(Debug)]
@@ -120,11 +117,8 @@ use std::time::Duration;
 
 use iroh::EndpointId;
 use iroh_live::{
-    NodeConfig,
-    node::{
-        Grant,
-        policy::{Queue, Rejection},
-    },
+    Grant, NodeConfig,
+    node::policy::{Queue, Rejection},
 };
 
 async fn ask_the_user(_peer: &EndpointId) -> bool {
@@ -160,9 +154,9 @@ small grant:
 ```rust,no_run
 use std::time::Duration;
 
-use iroh_live::node::{
+use iroh_live::{
     Grant,
-    policy::{Decision, PeerRequest, Policy, Queue},
+    node::policy::{Decision, PeerRequest, Policy, Queue},
 };
 
 #[derive(Debug)]

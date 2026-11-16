@@ -38,7 +38,8 @@ for `irl watch`.
 ### Sources
 
 A source specifier names a kind of source and, optionally, a device of that
-kind. The platform picks the capture backend.
+kind. The platform picks the capture backend. `iroh_live::media::spec` parses
+and opens the same specifiers in a program.
 
 | `--video` | Meaning |
 |---|---|
