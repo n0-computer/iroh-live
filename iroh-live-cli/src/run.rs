@@ -6,11 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use iroh::SecretKey;
 use iroh_live::{
     BroadcastTicket, EndpointConfig, Node,
     layout::LiveLayout,
-    load_or_create_secret_key,
     media::{self, LocalBroadcast, Player, PlayerConfig, RenditionMode},
 };
 use n0_error::{Result, anyerr};
@@ -21,6 +19,7 @@ use tracing::{info, warn};
 
 use crate::{
     args::{CaptureArgs, RunArgs},
+    keys,
     playback::Speaker,
     record::{RecordOptions, Recording},
     source,
@@ -144,7 +143,7 @@ async fn run_session(config: RunConfig) -> Result {
         Inbound::Accept
     };
     let endpoint_config = match &config.secret_key_name {
-        Some(name) => EndpointConfig::default().with_secret_key(stored_secret_key(name)?),
+        Some(name) => EndpointConfig::default().with_secret_key(keys::stored_secret_key(name)?),
         None => EndpointConfig::from_env()?,
     };
     let node = transport::bind_node_with(endpoint_config, inbound).await?;
@@ -325,36 +324,6 @@ fn play_audio(
         .ok()
 }
 
-/// Checks that `name` is a single, non-empty file name.
-///
-/// `dir.join(name)` escapes `dir` for an absolute name or `..`. This catches
-/// config typos. It is not a security check.
-fn check_key_name(name: &str) -> Result<()> {
-    if !name.is_empty() && Path::new(name).file_name() == Some(name.as_ref()) {
-        return Ok(());
-    }
-    Err(anyerr!(
-        "secret_key_name = {name:?} is not a file name; it names one file in \
-         this platform's config directory, so it cannot be a path or empty",
-    ))
-}
-
-/// Loads the named secret key, generating and storing one on first use.
-fn stored_secret_key(name: &str) -> Result<SecretKey> {
-    check_key_name(name)?;
-    let dir = dirs::config_dir()
-        .ok_or_else(|| anyerr!("cannot find this platform's config directory"))?
-        .join("iroh-live")
-        .join("secret_keys");
-    std::fs::create_dir_all(&dir)
-        .map_err(|err| anyerr!("failed to create {}: {err}", dir.display()))?;
-    let path = dir.join(format!("{name}.key"));
-    let key = load_or_create_secret_key(&path)
-        .map_err(|err| anyerr!("failed to load {}: {err}", path.display()))?;
-    info!(name, path = %path.display(), "session secret key ready");
-    Ok(key)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,19 +428,5 @@ mod tests {
             err.to_string().contains("failed to read"),
             "unexpected: {err}"
         );
-    }
-
-    /// A key name that would escape the key directory is refused.
-    #[test]
-    fn a_key_name_is_one_file_name() {
-        check_key_name("laptop").expect("an ordinary name");
-        check_key_name("laptop.2").expect("a dot inside a name is still a name");
-
-        for name in ["", "/tmp/evil", "../../evil", "a/b", ".", ".."] {
-            assert!(
-                check_key_name(name).is_err(),
-                "{name:?} is not a file name in the key directory",
-            );
-        }
     }
 }

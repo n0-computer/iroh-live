@@ -7,10 +7,12 @@ mod backend;
 mod call;
 mod devices;
 mod import;
+mod keys;
 mod playback;
 #[cfg(all(target_os = "linux", feature = "pipewire"))]
 mod portal_grant;
 mod publish;
+mod rcan;
 mod record;
 mod rendition;
 mod room;
@@ -38,8 +40,13 @@ enum Command {
     Call(Box<args::CallArgs>),
     /// List cameras, displays, and audio devices.
     Devices,
+    /// Print the public key of a stored key, creating the key on first use.
+    Key(args::KeyArgs),
     /// Publish a capture device or a media file.
     Publish(Box<args::PublishArgs>),
+    /// Sign or show rcan capability chains, the tokens a relay's principals issue.
+    #[command(subcommand)]
+    Rcan(args::RcanCommand),
     /// Record a remote broadcast to a file, without a window.
     Record(Box<args::RecordArgs>),
     /// Join a room: publish, and watch everyone else.
@@ -65,7 +72,9 @@ fn main() -> n0_error::Result {
     let result = match cli.command {
         Command::Call(args) => call::run(*args, &rt),
         Command::Devices => devices::run(&rt),
+        Command::Key(args) => keys::run(&args),
         Command::Publish(args) => publish::run(*args, &rt),
+        Command::Rcan(command) => rcan::run(&command),
         Command::Record(args) => record::run(*args, &rt),
         Command::Room(args) => room::run(*args, &rt),
         Command::Run(args) => run::run(args, &rt),
@@ -133,6 +142,39 @@ mod tests {
             err.to_string().contains("--endpoint-id"),
             "unexpected: {err}"
         );
+    }
+
+    #[test]
+    fn a_relay_token_file_needs_a_relay() {
+        Cli::try_parse_from(["irl", "publish", "--relay-token-file", "token.jwt"])
+            .expect_err("a token file without --relay");
+        let relay = iroh::SecretKey::generate().public().to_string();
+        let cli = Cli::try_parse_from([
+            "irl",
+            "publish",
+            "--relay",
+            &relay,
+            "--relay-token-file",
+            "token.jwt",
+            "--key",
+            "camera",
+        ])
+        .expect("a relay, a token file and a key");
+        let Command::Publish(args) = cli.command else {
+            panic!("expected publish");
+        };
+        assert_eq!(args.transport.key.as_deref(), Some("camera"));
+        Cli::try_parse_from([
+            "irl",
+            "publish",
+            "--relay",
+            &relay,
+            "--relay-token-file",
+            "token.jwt",
+            "--relay-token",
+            "inline",
+        ])
+        .expect_err("two token sources");
     }
 
     #[test]
