@@ -150,7 +150,7 @@ pub use iroh_live_node::moq_net;
 pub use iroh_live_node::{
     Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, EndpointError, Mdns,
     MoqPreset, Node, NodeConfig, Publication, Reach, RelayConfig, Session, Subscription,
-    UnpublishOnDrop, ValueWriter, layout, load_or_create_secret_key,
+    UnpublishOnDrop, ValueReader, ValueWriter, layout, load_or_create_secret_key,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
@@ -164,7 +164,8 @@ pub use iroh_live_rooms as rooms;
 /// arrive.
 ///
 /// [`Node::publish_value`] publishes a broadcast with one latest-value track,
-/// and [`Subscription::value_track`] reads it. A track next to media goes
+/// and [`Subscription::value_track`] reads it with a [`ValueReader`] that
+/// follows the subscription to a restarted publisher. A track next to media goes
 /// through `LocalBroadcast::value_track`, and any other through
 /// [`ValueWriter::new`] on a track of your own. The track counts
 /// milliseconds, and the [`ValueWriter`] stamps each update with the time it

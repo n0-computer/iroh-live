@@ -87,6 +87,7 @@
 //! | [`policy::Queue::next`] | yes | loses nothing |
 //! | [`RelayLink::detach`] | yes | the link's task finishes the close |
 //! | [`Publication::withdrawn`], [`Subscription::closed`], [`Session::closed`] | yes | loses nothing |
+//! | [`ValueReader::latest`], [`ValueReader::next`] | yes | loses nothing |
 //! | [`Node::closed`] | yes | loses nothing |
 //! | `next()` on [`Node::accepted`] | yes | loses nothing |
 //! | [`Node::shutdown`] | no | call it again to finish |
@@ -115,6 +116,7 @@ mod state;
 #[doc(hidden)]
 pub mod test_util;
 mod ticket;
+mod value;
 
 pub use moq_ext_access::{Direction, LinkKind};
 pub use moq_ext_adaptive::NetworkSample;
@@ -139,4 +141,5 @@ pub use self::{
     route::Subscription,
     session::Session,
     ticket::BroadcastTicket,
+    value::ValueReader,
 };

@@ -19,13 +19,13 @@ use moq_net::{
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use serde::de::DeserializeOwned;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::{
-    BroadcastTicket, Error, LinkId, Node, PathClaim, Reach, ServingLink, Session,
+    BroadcastTicket, Error, LinkId, Node, PathClaim, Reach, ServingLink, Session, ValueReader,
     handshake::Hop,
-    json,
     node::Shared,
     publish::check_path,
     state::{LinkEntry, State},
@@ -71,7 +71,7 @@ struct SubscriptionInner {
     path: Path,
     origin: origin::Consumer,
     /// The broadcast [`Subscription::broadcast`] returns, which the follow task updates.
-    current: Arc<Mutex<broadcast::Consumer>>,
+    current: watch::Sender<broadcast::Consumer>,
     /// Cancelled once nothing serves the path.
     ended: CancellationToken,
     /// Follows the path for as long as the subscription lives.
@@ -129,7 +129,7 @@ impl Subscription {
         shared: Weak<Shared>,
     ) -> Self {
         let routes = Routes::new(&origin, &path);
-        let current = Arc::new(Mutex::new(broadcast));
+        let current = watch::Sender::new(broadcast);
         let ended = CancellationToken::new();
         let follow = tokio::spawn(follow(
             path.clone(),
@@ -178,18 +178,23 @@ impl Subscription {
     /// as a `RemoteBroadcast` that adapts to the serving link.
     #[must_use]
     pub fn broadcast(&self) -> broadcast::Consumer {
-        self.inner.current.lock().expect("poisoned").clone()
+        self.inner.current.borrow().clone()
     }
 
     /// Returns a reader of the latest-value JSON track `name` of the broadcast.
     ///
     /// The publisher writes it with [`Node::publish_value`] or a
     /// [`ValueWriter`](crate::ValueWriter) of its own. Each value carries the
-    /// time it was published in [`Timed::at`](json::Timed::at). The reader skips to the newest
-    /// value with [`latest`](json::snapshot::Consumer::latest), and a late
-    /// reader gets the current value at once. For a reader with other limits,
-    /// pass [`broadcast`](Self::broadcast)`().track(name)` to
-    /// [`json::snapshot::Consumer::new`] with a config of its own.
+    /// time it was published in [`Timed::at`]. The reader skips to the newest
+    /// value with [`latest`](ValueReader::latest), and a late reader gets the
+    /// current value at once. The reader follows the subscription: when the
+    /// publisher restarts, it reads the track of the new broadcast, and it
+    /// ends only once the subscription closes. For a reader of one broadcast
+    /// with other limits, pass [`broadcast`](Self::broadcast)`().track(name)`
+    /// to [`json::snapshot::Consumer::new`] with a config of its own.
+    ///
+    /// [`Timed::at`]: crate::json::Timed::at
+    /// [`json::snapshot::Consumer::new`]: crate::json::snapshot::Consumer::new
     ///
     /// # Errors
     ///
@@ -209,16 +214,11 @@ impl Subscription {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn value_track<T: DeserializeOwned>(
-        &self,
-        name: &str,
-    ) -> Result<json::snapshot::Consumer<T>, Error> {
-        let track = self
-            .broadcast()
-            .track(name)
+    pub fn value_track<T: DeserializeOwned>(&self, name: &str) -> Result<ValueReader<T>, Error> {
+        let reader = ValueReader::new(self.clone(), self.inner.current.subscribe(), name)
             .map_err(|source| e!(Error::Moq { source }))?;
         debug!(path = %self.inner.path, track = name, "reading value track");
-        Ok(json::snapshot::Consumer::new(track, Default::default()))
+        Ok(reader)
     }
 
     /// Returns the session serving the broadcast now, if a direct session does.
@@ -291,13 +291,13 @@ async fn follow(
     path: Path,
     origin: origin::Consumer,
     instance: Option<Instance>,
-    current: Arc<Mutex<broadcast::Consumer>>,
+    current: watch::Sender<broadcast::Consumer>,
     ended: CancellationToken,
 ) {
     let _ended = ended.drop_guard();
     let mut following = origin.follow(&path, instance.clone()).ok();
     loop {
-        let serving = current.lock().expect("poisoned").clone();
+        let serving = current.borrow().clone();
         let taken = async {
             match following.as_mut() {
                 Some(following) => following.available().await,
@@ -308,7 +308,7 @@ async fn follow(
             taken = taken => match taken {
                 Ok(Some(next)) if !next.is_closed() => {
                     debug!(%path, "another instance serves the path");
-                    *current.lock().expect("poisoned") = next;
+                    current.send_replace(next);
                     continue;
                 }
                 // The path went offline, or a takeover ended before it was
@@ -324,7 +324,7 @@ async fn follow(
         match origin.request(&path, instance.clone()).await {
             Ok(next) if !next.is_closed() => {
                 debug!(%path, "broadcast ended, a route still serves it");
-                *current.lock().expect("poisoned") = next;
+                current.send_replace(next);
             }
             _ => return,
         }
@@ -494,7 +494,7 @@ mod tests {
 
     /// A follow task over a local route table, and the broadcast it keeps current.
     struct Followed {
-        current: Arc<Mutex<broadcast::Consumer>>,
+        current: watch::Sender<broadcast::Consumer>,
         ended: CancellationToken,
         _task: AbortOnDropHandle<()>,
     }
@@ -509,7 +509,7 @@ mod tests {
                     .await
                     .expect("resolved in time")
                     .expect("a route serves the path");
-            let current = Arc::new(Mutex::new(broadcast));
+            let current = watch::Sender::new(broadcast);
             let ended = CancellationToken::new();
             let task = tokio::spawn(follow(
                 path,
@@ -527,12 +527,7 @@ mod tests {
 
         /// Returns the instance of the broadcast the follow task keeps current.
         fn instance(&self) -> Option<Instance> {
-            self.current
-                .lock()
-                .expect("poisoned")
-                .info()
-                .instance
-                .clone()
+            self.current.borrow().info().instance.clone()
         }
 
         /// Waits until the current broadcast is one of `instance`.
