@@ -150,7 +150,7 @@ pub use iroh_live_node::moq_net;
 pub use iroh_live_node::{
     Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, EndpointError, Mdns,
     MoqPreset, Node, NodeConfig, Publication, Reach, RelayConfig, Session, Subscription,
-    UnpublishOnDrop, layout, load_or_create_secret_key,
+    UnpublishOnDrop, ValueWriter, layout, load_or_create_secret_key,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
@@ -166,23 +166,18 @@ pub use iroh_live_rooms as rooms;
 /// [`Node::publish_value`] publishes a broadcast with one latest-value track,
 /// and [`Subscription::value_track`] reads it. A track next to media goes
 /// through `LocalBroadcast::value_track`, and any other through
-/// [`snapshot::Producer::new`](json::snapshot::Producer::new) on a track of
-/// your own. Each update carries the time it was made, since the track counts
-/// milliseconds. This publishes a latency in milliseconds and reads it back:
+/// [`ValueWriter::new`] on a track of your own. The track counts
+/// milliseconds, and the [`ValueWriter`] stamps each update with the time it
+/// is made. This publishes a latency in milliseconds and reads it back:
 ///
 /// ```no_run
-/// use iroh_live::{
-///     Audience, Node, Reach,
-///     json::Timed,
-///     layout::LiveLayout,
-///     moq_net::{Timestamp, time::Instant},
-/// };
+/// use iroh_live::{Audience, Node, Reach, layout::LiveLayout};
 ///
 /// # async fn run(node: Node, other: Node) -> Result<(), Box<dyn std::error::Error>> {
 /// let path = LiveLayout::default().path(node.id(), "control")?;
-/// let (_publication, mut latency) =
+/// let (_publication, latency) =
 ///     node.publish_value::<u64>(path.clone(), Audience::Granted, "latency")?;
-/// latency.update(Timed::new(&150, Timestamp::from(Instant::now())))?;
+/// latency.update(&150)?;
 ///
 /// // On another node.
 /// let subscription = other.subscribe(&path, Reach::Direct(node.id())).await?;

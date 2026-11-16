@@ -15,6 +15,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
+use moq_ext_json::ValueWriter;
 use moq_net::{Path, broadcast, origin, track};
 use n0_error::{AnyError, e};
 use n0_future::{Stream, StreamExt, stream, task::AbortOnDropHandle};
@@ -441,16 +442,16 @@ impl Node {
     /// Publishes a broadcast at `path` whose one track `name` holds a latest-value JSON track.
     ///
     /// For state such as a setting, a status or a result: each
-    /// [`update`](json::snapshot::Producer::update) replaces the value, and
-    /// a reader that subscribes late gets the current one at once. The track
-    /// counts milliseconds, so an update carries the time it was made, such
-    /// as `Timestamp::from(moq_net::time::Instant::now())`. A value that
-    /// starts a new group must be stamped later than the group before, so a
-    /// writer that updates more than once a millisecond counts its own
-    /// stamps up. The track exists before the broadcast is announced, so no reader misses it.
-    /// Readers open it with [`Subscription::value_track`]. To put the track
-    /// next to others, create it in [`publish_with`](Self::publish_with)'s
-    /// fill and pass it to [`json::snapshot::Producer::new`].
+    /// [`update`](ValueWriter::update) replaces the value, and a reader that
+    /// subscribes late gets the current one at once. The track counts
+    /// milliseconds, and the [`ValueWriter`] stamps each update with the time
+    /// it is made; [`update_at`](ValueWriter::update_at) takes a time of the
+    /// caller's choice instead. The last clone of the writer to drop finishes
+    /// the track. The track exists before the broadcast is announced, so no
+    /// reader misses it. Readers open it with [`Subscription::value_track`].
+    /// To put the track next to others, create it in
+    /// [`publish_with`](Self::publish_with)'s fill and pass it to
+    /// [`ValueWriter::new`].
     ///
     /// # Errors
     ///
@@ -464,15 +465,11 @@ impl Node {
     ///
     /// ```no_run
     /// # fn run(node: iroh_live_node::Node) -> Result<(), Box<dyn std::error::Error>> {
-    /// use iroh_live_node::{
-    ///     Audience,
-    ///     json::Timed,
-    ///     moq_net::{Timestamp, time::Instant},
-    /// };
+    /// use iroh_live_node::Audience;
     ///
-    /// let (_publication, mut latency) =
+    /// let (_publication, latency) =
     ///     node.publish_value::<u64>("live/control", Audience::Granted, "latency")?;
-    /// latency.update(Timed::new(&150, Timestamp::from(Instant::now())))?;
+    /// latency.update(&150)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -481,14 +478,11 @@ impl Node {
         path: impl TryInto<Path, Error: Into<moq_net::Error>>,
         audience: Audience,
         name: &str,
-    ) -> Result<(Publication, json::snapshot::Producer<T>), Error> {
+    ) -> Result<(Publication, ValueWriter<T>), Error> {
         self.publish_with(path, audience, |broadcast| {
             let info = track::Info::default().with_timescale(moq_net::Timescale::MILLI);
             let track = broadcast.create_track(name, info)?;
-            Ok::<_, moq_net::Error>(json::snapshot::Producer::new(
-                track,
-                json::snapshot::Config::default(),
-            ))
+            Ok::<_, moq_net::Error>(ValueWriter::new(track, json::snapshot::Config::default()))
         })
     }
 

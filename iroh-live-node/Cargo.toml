@@ -23,6 +23,8 @@ moq-net = { workspace = true }
 # Latest-value JSON tracks, for `Node::publish_value` and `Subscription::value_track`.
 moq-json = { workspace = true }
 moq-ext-access = { workspace = true }
+# The writer `Node::publish_value` returns, which stamps each update.
+moq-ext-json = { workspace = true }
 # `NetworkSample`, the reading a link monitor publishes for adaptation.
 moq-ext-adaptive = { workspace = true }
 moq-transport-iroh = { workspace = true }

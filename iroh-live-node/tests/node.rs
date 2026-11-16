@@ -350,29 +350,19 @@ async fn offers_show_in_the_route_table() {
     carol.shutdown().await;
 }
 
-/// Stamps `value` at millisecond `at`.
-///
-/// A value that opens a group must come later than the group before it, so
-/// the writes count up rather than read a clock that may not have moved.
-fn timed<T>(value: &T, at: u64) -> iroh_live_node::json::Timed<&T> {
-    let at = moq_net::Timestamp::from_millis(at).expect("in range");
-    iroh_live_node::json::Timed::new(value, at)
-}
-
 /// A value published with `publish_value` reaches a late reader of `value_track`, then each update.
 #[tokio::test]
 #[traced_test]
 async fn a_value_track_gives_a_late_reader_the_newest_value() {
     let alice = Peer::spawn().await;
     let bob = Peer::spawn().await;
-    let (_publication, mut writer) = alice
+    let (_publication, writer) = alice
         .node
         .publish_value::<String>(alice.path("status"), Audience::Granted, "status")
         .expect("publish");
-    for (at, status) in ["starting", "ready"].into_iter().enumerate() {
-        writer
-            .update(timed(&status.to_owned(), at as u64))
-            .expect("write");
+    // The writer stamps each update, so two in one millisecond both land.
+    for status in ["starting", "ready"] {
+        writer.update(&status.to_owned()).expect("write");
     }
 
     let subscription = step(
@@ -393,7 +383,7 @@ async fn a_value_track_gives_a_late_reader_the_newest_value() {
             .value
     };
     assert_eq!(read().await, "ready", "the newest value, not an older one");
-    writer.update(timed(&"busy".to_owned(), 2)).expect("write");
+    writer.update(&"busy".to_owned()).expect("write");
     assert_eq!(read().await, "busy");
 
     // The publisher answers for a remote track, so a missing one fails on read.
