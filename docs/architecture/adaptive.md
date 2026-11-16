@@ -87,14 +87,17 @@ Each tick computes which renditions are allowed, and the best allowed one is
 the target. Two bounds apply.
 
 **The delivery estimate caps the bitrate.** The selector takes the maximum of
-the estimate over the last second, since the estimate moves with every
-acknowledgement and one low reading does not mean a smaller link. A rendition
-fits while that maximum covers 1.25 times its advertised bitrate. Encoders send
-about 82% of their target (openh264 and VA-API on the patchbay picture), and an
-iroh publisher's estimate reads a capped link at 0.8 to 1.6 times the cap. So a
-rung fits while the maximum covers about 1.5 times what it actually sends. A
-rendition without an advertised bitrate, or a publisher that sends no estimate,
-always fits.
+the estimate over the last second. The estimate moves with every
+acknowledgement, and one low reading does not mean a smaller link. A rendition
+fits while that maximum covers 1.25 times its advertised bitrate.
+
+Encoders send about 82% of their target, measured with openh264 and VA-API on
+the test pattern in the patchbay tests, which run the pipeline over simulated
+networks (see [Instrumentation and tests](devtools.md)). An iroh publisher's
+estimate reads a capped link at 0.8 to 1.6 times the cap. So a rendition fits
+while the maximum covers about 1.5 times what it actually sends. A rendition
+without an advertised bitrate, or a publisher that sends no estimate, always
+fits.
 
 **Sustained loss lowers a ceiling.** Loss of 10% or more for 500 ms moves the
 ceiling one rung below the rendition playing, and loss that lasts walks down
@@ -113,14 +116,15 @@ Timers provide the asymmetry:
 - No step up is taken within 4 s of a step down.
 
 The growing hold keeps a marginal link from oscillating. On a lower rung the
-estimate is read while the link carries only that rung, so it says the upper
+estimate is read while the link carries only that rung. So it says the upper
 one fits even when the link just showed it does not. With the backoff, the rung
 the link cannot carry is tried after 16 s, then after 64 s, then every two
 minutes. Such a step up is in effect the probe, so there is no separate one.
-`adaptation_follows_a_real_link` in the patchbay suite checks that the ladder
-climbs back on a clear link. `a_risen_baseline_round_trip_does_not_downgrade`
-checks that a longer path, such as a relay fallback, is not taken as a smaller
-one.
+
+Two tests in the patchbay suite cover this.
+`adaptation_follows_a_real_link` checks that the ladder climbs back on a clear
+link. `a_risen_baseline_round_trip_does_not_downgrade` checks that a longer
+path, such as a relay fallback, is not taken as a smaller one.
 
 An automatic step down from the rendition on screen does not overlap the two
 tracks. The link cannot carry the rendition on screen, and while both share it
@@ -140,24 +144,12 @@ the loss ceiling and every timer.
 ## Configuration
 
 The thresholds and timers are `PlayerConfig::adaptation`, an `Adaptation`
-value. Tests shorten the timers there.
+value. [Player settings](../reference/player.md#adaptation) lists its fields
+and defaults. Tests shorten the timers there.
 
-| Field | Default | Meaning |
-|---|---|---|
-| `fit_ratio` | 1.25 | Multiple of a rung's advertised bitrate the estimate has to cover |
-| `estimate_window` | 1 s | Span of the sliding maximum over the estimate |
-| `loss_step_down` | 0.10 | Loss that lowers the ceiling one rung, once held |
-| `loss_emergency` | 0.20 | Loss that drops the ceiling to the lowest rung at once |
-| `downgrade_hold` | 500 ms | How long a lower target, or step-down loss, has to hold |
-| `upgrade_hold` | 4 s | How long a higher target has to hold, and how long loss has to stay clear before the ceiling rises |
-| `post_downgrade_cooldown` | 4 s | Quiet period after a step down |
-| `trial` | 20 s | How long a step up has to play before it clears its rung's step downs |
-| `upgrade_hold_max` | 120 s | The longest hold before a step up |
-| `tick` | 200 ms | How often the network is read |
-
-`heavy_loss_moves_the_player_down_the_ladder` in `iroh-live/tests/e2e.rs` drives a player
-with its own closure as the network signals, and feeds it 25% loss, an
-emergency that switches without a hold.
+`heavy_loss_moves_the_player_down_the_ladder` in `iroh-live/tests/e2e.rs`
+drives a player with its own closure as the network signals, and feeds it 25%
+loss, an emergency that switches without a hold.
 
 ## Logs
 
@@ -172,11 +164,11 @@ that holds because it has nothing to judge against.
 ## Choosing by hand
 
 `Player::set_rendition` takes a `RenditionMode`. `Auto` is the selector
-described here. `Pinned(name)` holds one rendition. If it cannot be
-played, because it is not in the catalog or its decoder failed, the player
-plays as `Auto` would, says why in `PlayerStatus::switch_error`, and returns to
-the pinned rendition when it becomes available. `Off` unsubscribes video while
-audio keeps playing, for a tile scrolled off screen.
+described here. `Pinned(name)` holds one rendition. A pinned rendition may be
+missing from the catalog, or its decoder may have failed. The player then
+plays as `Auto` would and says why in `PlayerStatus::switch_error`. It returns
+to the pinned rendition when it becomes available. `Off` unsubscribes video
+while audio keeps playing, for a tile scrolled off screen.
 
 The selector keeps running while the catalog has a single rendition, since a
 publisher can add renditions mid-broadcast.

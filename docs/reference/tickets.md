@@ -1,7 +1,7 @@
 # Ticket formats
 
-[Paths, layouts and tickets](../concepts/paths.md#broadcast-tickets) explains what a ticket is for. This page
-gives the string forms.
+[Paths, layouts and tickets](../concepts/paths.md#broadcast-tickets) explains
+what a ticket is for. This page gives the string forms.
 
 ## `BroadcastTicket`
 

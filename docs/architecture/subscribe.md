@@ -20,10 +20,13 @@ update.
 route table, starting from a consumer the caller already resolved in that
 table. When a change of route ends the broadcast, it is requested again through
 the next route, and players see a new generation of the broadcast instead of an
-end. The broadcast closes once no route has served the path for three seconds
+end. The node asks its route table again 100 ms after a route goes (see
+[The node and its transport](transport.md#one-route-table-fed-by-every-link)).
+The broadcast closes once no route has served the path for three seconds
 (`REROUTE_PATIENCE`). So `closed()` resolves about three seconds after a
 publisher ends its broadcast, or after the open if the publisher was already
 gone.
+
 `RemoteBroadcast::from_consumer(broadcast.consume())` reads a
 `LocalBroadcast` in-process, without a transport.
 
@@ -36,7 +39,7 @@ renditions the catalog has.
 builds the `RemoteBroadcast` with `from_resolved` and attaches the serving
 link's measurements, whether the subscription came from
 `Node::subscribe_ticket`, a room or `Node::subscribe`. See
-[adaptive bitrate](adaptive.md).
+[Adaptive rendition switching](adaptive.md).
 
 ## Video decoding
 
@@ -81,7 +84,7 @@ drive them without a decoder or a network.
   incumbent keeps playing.
 
 An automatic step down does not overlap the two decoders. See
-[adaptive bitrate](adaptive.md#the-decision).
+[Adaptive rendition switching](adaptive.md#the-decision).
 
 `Player::set_rendition(mode)` changes the `RenditionMode` and returns at once.
 To wait until a rendition is on screen, wait on `Player::status()` for its
@@ -132,21 +135,21 @@ seconds.
 `PlayerConfig` starts from `Default`, with a `with_*` builder per field:
 
 ```rust,ignore
-let config = PlayerConfig::default().with_audio(AudioMode::Play(output));
+let config = PlayerConfig::default().with_audio(AudioMode::Play(engine));
 ```
 
 It carries the `rendition` mode, the `latency`, the `audio` mode, the
-`decoder` backend, and the `adaptation` thresholds and timers. `latency` is moq-net's subscription `Delay { min, max }`.
-The playout clock holds each picture for at least `min`, and longer when the
-catalog's `delay` or the measured audio jitter asks for it. Upstream drops
-groups older than `max`. `DEFAULT_LATENCY` holds for at least 100 ms and skips
-past 150 ms.
+`decoder` backend, and the `adaptation` thresholds and timers. `latency` is
+moq-net's subscription `Delay { min, max }`. The playout clock holds each
+picture for at least `min`, and longer when the catalog's `delay` or the
+measured audio jitter asks for it. Upstream drops groups older than `max`.
+`DEFAULT_LATENCY` holds for at least 100 ms and skips past 150 ms.
 
 `Player::set_latency` and `Player::set_decoder` change a running player. Each
 opens a new video decoder behind the picture, which takes over once it has
 caught up, as in a switch. A backend that fails to open leaves the incumbent
 playing and says why in `PlayerStatus::switch_error`.
-[Playout and sync](playout.md) covers the latency in full.
+[Playout and A/V sync](playout.md) covers the latency in full.
 
 ## Shutdown
 

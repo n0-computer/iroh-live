@@ -1,8 +1,9 @@
 # Control access
 
-Each section below is one recipe for a node's policy. [Access control](../concepts/access.md) explains the model. Check first
-whether the defaults do what you need: a node built with `LiveLayout::config()`
-lets every peer read, and publish only under its own id.
+Check the defaults first: a node built with `LiveLayout::config()` lets every
+peer read, and publish only under its own id. Each section below is a recipe
+for a different policy. [Access control](../concepts/access.md) explains the
+model.
 
 The types are in `iroh_live::node::policy`. The
 [access reference](../reference/access.md) lists every policy, event and
@@ -150,8 +151,10 @@ async fn answer(queue: Queue) {
 }
 ```
 
-A full queue rejects at once with `TooManyRequests`. Some nodes admit every peer with a small grant, and ask only for more. Such
-a policy waits for the queue with a timeout of its own, and falls back to the
+A full queue rejects at once with `TooManyRequests`.
+
+Some nodes admit every peer with a small grant, and ask only for more. Such a
+policy waits for the queue with a timeout of its own, and falls back to the
 small grant:
 
 ```rust,no_run

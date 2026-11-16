@@ -32,10 +32,11 @@ have restarted its timestamps.
 
 Audio writes decoded frames straight to its output sink, and the sink's buffer
 absorbs jitter. Each decoded frame is recorded through an `AudioClock`
-guard, taken from `PlayoutClock::register_audio` when the track opens. After
-every write the guard says when the end of the written sound is due, and the
-speaker stretches toward that time, skipping ahead rather than speeding up when
-the reference jumps earlier, and dropping what trails by more than two seconds.
+guard, taken from `PlayoutClock::register_audio` when the track opens.
+After every write the guard says when the end of the written sound is due,
+and the speaker stretches toward that time. When the reference jumps
+earlier, the speaker skips ahead rather than speeding up. It drops what
+trails by more than two seconds.
 Dropping the guard releases the audio track, so video alone holds the clock.
 
 Each player has its own clock. Two players of one broadcast, say a thumbnail
@@ -51,8 +52,8 @@ keeps media.
 The clock's delay follows upstream's rule, the one `moq play` applies
 (`rs/moq-cli/src/play` at the pinned rev). Each track asks the clock for a
 target, and the clock runs at the largest one. A track's target is its
-catalog `delay` plus a jitter allowance, which hang's catalog says a player
-must hold:
+catalog `delay` plus a jitter allowance. hang's catalog spec requires a player
+to hold at least that allowance:
 
 - Video asks for the ladder's largest `delay + max(min, jitter)`, from the
   catalog, so a rendition switch never moves the schedule.
@@ -68,7 +69,8 @@ No target goes below `min` or above one 30 fps frame (33 ms) below `max`, and
 an unpaced latency (`min` of zero) holds nothing. The delay therefore rises
 on a jittery link and returns to `min` on a clean one. A change of the delay
 moves the schedule once, by the difference. `irl watch --latency` offers
-`realtime`, `balanced` and `smooth`, at 60, 100 and 400 ms.
+three presets, which [Player settings](../reference/player.md#latency) lists.
+
 `iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
 and subscriber in one process, once with `IMMEDIATE_LATENCY` and once with the
 default, and prints the figures.
@@ -116,5 +118,5 @@ follows the new latency from its next frame.
 delay, the largest target of its tracks, and `audio.buffered` is the sink's
 fill level alone. `video.decode_time` is one transport read and decode
 together, smoothed. `video.fps` counts frames over a window instead of
-deriving a rate from the gap between two frames. See [developer
-tools](devtools.md) for the overlay that draws them.
+deriving a rate from the gap between two frames. See [Instrumentation and
+tests](devtools.md) for the overlay that draws them.
