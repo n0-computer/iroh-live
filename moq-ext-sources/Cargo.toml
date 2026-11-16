@@ -45,8 +45,10 @@ capture = ["moq-video/capture", "moq-audio/capture"]
 # Audio devices through PipeWire or PulseAudio instead of ALSA. Does nothing
 # off Linux and the BSDs.
 sound-server = ["moq-audio/pipewire", "moq-audio/pulseaudio"]
-# Echo cancellation for the microphone.
-aec = ["capture"]
+# Echo cancellation for the microphone. moq-audio only has the canceller
+# handle on its capture config when playback is on too, since the canceller
+# comes from a playback engine.
+aec = ["capture", "moq-audio/playback"]
 # Linux screen capture through xdg-desktop-portal, and PipeWire's camera as the
 # default camera. Links libpipewire-0.3.
 pipewire = ["capture", "moq-video/pipewire"]

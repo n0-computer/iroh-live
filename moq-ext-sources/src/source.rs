@@ -875,10 +875,11 @@ mod tests {
     /// Reads one frame of the PCM `source` generates, and checks that it stops once dropped.
     #[cfg(feature = "pattern")]
     async fn generates_pcm(source: AudioSource, layout: audio::Layout) {
-        let AudioKind::Pcm { format, fanout } = source.kind() else {
-            panic!("a generated source is PCM");
+        let (format, fanout) = match source.kind() {
+            AudioKind::Pcm { format, fanout } => (*format, fanout.clone()),
+            #[cfg(feature = "capture")]
+            AudioKind::Microphone(_) => panic!("a generated source is PCM"),
         };
-        let (format, fanout) = (*format, fanout.clone());
         assert_eq!(format.sample_rate, 48_000);
         assert_eq!(format.layout, layout);
         let mut frames = fanout.upgrade().expect("the generator runs").subscribe();
