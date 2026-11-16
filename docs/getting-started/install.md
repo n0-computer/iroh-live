@@ -88,8 +88,9 @@ moq-mux = { git = "https://github.com/moq-dev/moq", rev = "4a6f52248" }
 
 `iroh-live` has no default features. `full` turns on the media stack with
 device capture, speaker playback, GPU rendering, the sound server and
-recording. Without `media`, the crate is the node, tickets and layouts, which
-is what a relay needs. The [features reference](../reference/features.md) lists every
+recording. It does not include audio files (`file`): add it when you need it.
+Without `media`, the crate is the node, tickets and layouts, which is what a
+relay needs. The [features reference](../reference/features.md) lists every
 feature of every crate.
 
 The same system libraries as for `irl` are needed for `capture`, `pipewire`

@@ -27,7 +27,8 @@ fragmented MP4 or raw H.264. A regular MP4, or a file played with `:loop`, needs
 
 This program publishes the camera, or the screen with `screen` as its first
 argument. A second argument names a WAV or MP3 file to play instead of the
-microphone. It needs the `capture` and `file` features.
+microphone. It needs the `capture` and `file` features, and `file` is not
+part of `full`: `features = ["full", "file"]`.
 
 ```rust,no_run
 use iroh::protocol::Router;
