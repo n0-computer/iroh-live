@@ -19,8 +19,8 @@
 //! iroh's keep-alives move its counters too.
 //!
 //! Every pull dials an iroh endpoint the session chose, so admission into
-//! pulls is bounded. [`Access`] says which sessions may pull at all: by
-//! default only one whose token grants reading the ticket's path. [`Limits`]
+//! pulls is bounded. [`Pulls::with_open_pulls`] says which sessions may pull
+//! at all: by default only one whose token grants reading the ticket's path. [`Limits`]
 //! caps the pulls the relay holds at once, the pulls one [`Client`] holds, and
 //! how fast one client starts new dials. A session names one broadcast in its
 //! path, so it holds at most one pull.
@@ -64,31 +64,6 @@ const RESOLVE_BACKOFF_MAX: Duration = Duration::from_secs(8);
 
 /// How many times in a row resolving again may fail before the pull retires.
 const MAX_RESOLVES: u32 = 5;
-
-/// Which sessions may pull the ticket they name.
-///
-/// [`admit`](crate::admit) and [`IrohSessions`](crate::IrohSessions) check it
-/// before they start a pull. [`Pulls::pull`] and [`Pulls::start`] do not.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Access {
-    /// Only a session whose token grants reading the ticket's path.
-    ///
-    /// The relay verifies the token as it does for the session itself, but at
-    /// the path of the ticket's broadcast and without the public patterns. A
-    /// JWT and an rcan chain count alike. Without `--auth-key` or
-    /// `--rcan-principal` no token verifies, so nobody pulls.
-    #[default]
-    Authorized,
-    /// Any session the relay admits to read the ticket's path.
-    ///
-    /// On an open relay that is every session, so anyone who reaches the
-    /// relay can make it dial any iroh endpoint, within the [`Limits`]. On a
-    /// private relay it is the token holders who read the path, and the
-    /// sessions without a token whose public patterns reach it. Use it for
-    /// local and development relays, or for a private relay whose public
-    /// area holds no `live/` or `rooms/` paths.
-    Open,
-}
 
 /// Bounds on the pulls a relay holds and starts.
 ///
@@ -268,8 +243,8 @@ pub fn mounted(cluster: &Cluster, requested: &str) -> Option<Cluster> {
 #[derive(Clone, derive_more::Debug)]
 pub struct Pulls {
     shared: Shared,
-    /// Which sessions may pull, checked by the admissions.
-    access: Access,
+    /// Whether any session that reads the ticket's path may pull, checked by the admissions.
+    open_pulls: bool,
     /// The task of each pull: its dial, and then its hold.
     #[debug(skip)]
     tasks: Arc<Mutex<JoinSet<()>>>,
@@ -409,22 +384,41 @@ impl Pulls {
                 limits: Limits::default(),
                 clients: Arc::new(Mutex::new(HashMap::new())),
             },
-            access: Access::default(),
+            open_pulls: false,
             tasks: Arc::new(Mutex::new(JoinSet::new())),
         }
     }
 
-    /// Sets which sessions may pull, which defaults to [`Access::Authorized`].
+    /// Sets whether any session the relay admits to read a ticket's path may pull it, as `--open-pulls` does.
+    ///
+    /// Off by default: then only a session whose token grants reading the
+    /// ticket's path pulls. The relay verifies the token as it does for the
+    /// session itself, but at the path of the ticket's broadcast and without
+    /// the public patterns. A JWT and an rcan chain count alike. Without
+    /// `--auth-key` or `--rcan-principal` no token verifies, so nobody pulls.
+    ///
+    /// On an open relay, open pulls let every session pull, so anyone who
+    /// reaches the relay can make it dial any iroh endpoint, within the
+    /// [`Limits`]. On a private relay they let the token holders who read
+    /// the path pull, and the sessions without a token whose public patterns
+    /// reach it. Use them for local and development relays, or for a private
+    /// relay whose public area holds no `live/` or `rooms/` paths.
+    ///
+    /// [`admit`](crate::admit) and [`IrohSessions`](crate::IrohSessions)
+    /// check it before they start a pull. [`pull`](Self::pull) and
+    /// [`start`](Self::start) do not.
     #[must_use]
-    pub fn with_access(mut self, access: Access) -> Self {
-        self.access = access;
+    pub fn with_open_pulls(mut self, open: bool) -> Self {
+        self.open_pulls = open;
         self
     }
 
-    /// Returns which sessions may pull.
+    /// Reports whether any session that reads a ticket's path may pull it.
+    ///
+    /// See [`with_open_pulls`](Self::with_open_pulls).
     #[must_use]
-    pub fn access(&self) -> Access {
-        self.access
+    pub fn open_pulls(&self) -> bool {
+        self.open_pulls
     }
 
     /// Sets the bounds on pulls, which default to [`Limits::default`].

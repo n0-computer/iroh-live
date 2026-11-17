@@ -339,13 +339,8 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let mut relay = moq_relay::Relay::load(relay_config)
         .await
         .map_err(relay_error)?;
-    let access = if config.open_pulls {
-        pull::Access::Open
-    } else {
-        pull::Access::Authorized
-    };
     let pulls = pull::Pulls::new(iroh_endpoint.clone(), relay.cluster().clone())
-        .with_access(access)
+        .with_open_pulls(config.open_pulls)
         .with_limits(config.pull_limits);
     // Without an auth server, `admit` decides every browser session.
     let _admit_task =
@@ -437,7 +432,7 @@ fn relay_error(err: anyhow::Error) -> Error {
 /// A session whose path names a ticket reads the ticket's broadcast at that
 /// name, and is decided at the broadcast's path, so its token must reach that
 /// path. With `pulls` set it holds a pull of the broadcast while it runs, if
-/// the pulls' [`Access`](pull::Access) lets it pull and their
+/// the pulls let it, as [`Pulls::with_open_pulls`](pull::Pulls::with_open_pulls) says, and their
 /// [`Limits`](pull::Limits) have room. A session that may not pull is refused.
 ///
 /// [`run`] calls it with the policy from [`Config::policies`]. It is public
@@ -512,12 +507,12 @@ pub async fn admit(mut admissions: Admissions, pulls: Option<pull::Pulls>, polic
     }
 }
 
-/// Checks that a browser session may pull `ticket`, under the pulls' [`Access`](pull::Access).
+/// Checks that a browser session may pull `ticket`.
 ///
-/// Under [`Access::Open`](pull::Access::Open) the session must be admitted to
-/// read the ticket's path, which `reads_ticket` says. Under
-/// [`Access::Authorized`](pull::Access::Authorized) the session's token,
-/// verified without the public patterns, must grant reading the path.
+/// With [open pulls](pull::Pulls::with_open_pulls) the session must be
+/// admitted to read the ticket's path, which `reads_ticket` says. Without
+/// them the session's token, verified without the public patterns, must
+/// grant reading the path.
 async fn may_pull(
     pulls: &pull::Pulls,
     policy: &BrowserPolicy,
@@ -530,7 +525,7 @@ async fn may_pull(
             path: ticket.path().clone()
         })
     };
-    if pulls.access() == pull::Access::Open {
+    if pulls.open_pulls() {
         return if reads_ticket { Ok(()) } else { Err(denied()) };
     }
     let tokens = policy.tokens.as_ref().ok_or_else(denied)?;

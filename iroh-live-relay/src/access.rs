@@ -56,7 +56,7 @@ pub struct Policies {
     pub browsers: Option<BrowserPolicy>,
     /// Decides iroh client sessions.
     pub iroh: Arc<dyn DynPolicy<EndpointId>>,
-    /// Decides which iroh clients may pull under [`Access::Authorized`](crate::pull::Access::Authorized).
+    /// Decides which iroh clients may pull without [open pulls](crate::pull::Pulls::with_open_pulls).
     pub pull_tokens: Option<Arc<dyn DynPolicy<EndpointId>>>,
     /// The key file iroh clients' JWTs are verified with, watched for changes.
     pub key_file: Option<KeyFile>,

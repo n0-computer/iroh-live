@@ -201,6 +201,11 @@ For embedders and node code:
 - `iroh_live_relay::Config` is `#[non_exhaustive]` and implements `Default`.
   Build it with `Config::default()` and set fields. A config that sets
   `iroh_policy` without auth settings needs `Config::access`.
+- `pull::Access` is gone. `Pulls::with_open_pulls(true)` replaces
+  `with_access(Access::Open)`, and the default stays the old
+  `Access::Authorized`. `Pulls::open_pulls` replaces `Pulls::access`. The
+  only `Access` in the crate is the relay's mode, `Access::Open` or
+  `Access::Private`.
 - `IrohSessions::new` refuses every session until it gets a policy.
   `admit` takes a `BrowserPolicy`, from `Config::policies()`.
 - `RelayStatus` is `#[non_exhaustive]` and has `Refused(Refusal)`. A match

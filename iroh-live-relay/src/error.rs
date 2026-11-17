@@ -42,7 +42,7 @@ pub enum Error {
     Timeout { path: Path, timeout: Duration },
     /// The session may not pull: it may not read the ticket's path, or has no token that does.
     ///
-    /// See [`Access`](crate::pull::Access).
+    /// See [`Pulls::with_open_pulls`](crate::pull::Pulls::with_open_pulls).
     #[error("pulling a ticket through this relay needs the right to read {path}")]
     PullDenied { path: Path },
     /// The relay already holds as many pulls as its limits allow.

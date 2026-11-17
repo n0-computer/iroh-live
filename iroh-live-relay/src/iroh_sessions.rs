@@ -29,7 +29,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use crate::pull::{Access, Client, PullGuard, Pulls};
+use crate::pull::{Client, PullGuard, Pulls};
 
 /// How long a closing session gets to tell its peer when the relay shuts down.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
@@ -54,7 +54,7 @@ pub struct IrohSessions {
     pulls: Option<Pulls>,
     /// Decides who may hold a session, and what it may publish and read.
     policy: Arc<dyn DynPolicy<EndpointId>>,
-    /// Decides who may pull under [`Access::Authorized`], asked at the ticket's path.
+    /// Decides who may pull without open pulls, asked at the ticket's path.
     pull_policy: Option<Arc<dyn DynPolicy<EndpointId>>>,
     /// The longest a session admitted with a token lasts.
     max_session: Option<Duration>,
@@ -74,8 +74,7 @@ impl IrohSessions {
     /// relay does, or with [`with_policy`](Self::with_policy).
     ///
     /// With `pulls` set, a session that names a ticket in its path pulls the
-    /// ticket's broadcast, as a browser's does, if the pulls'
-    /// [`Access`](crate::pull::Access) lets it: see
+    /// ticket's broadcast, as a browser's does, if the pulls let it: see
     /// [`with_pull_policy`](Self::with_pull_policy). A session that may not
     /// pull, or would exceed the pulls' [`Limits`](crate::pull::Limits), is
     /// refused.
@@ -106,12 +105,12 @@ impl IrohSessions {
         self
     }
 
-    /// Returns this handler with `policy` deciding who may pull under [`Access::Authorized`].
+    /// Returns this handler with `policy` deciding who may pull without open pulls.
     ///
     /// The relay asks it about the session's peer and token at the path of the
     /// ticket's broadcast, and the session may pull if the authorization lets
-    /// it read that path. Without one, no session pulls under
-    /// [`Access::Authorized`]. It should require a token, as a
+    /// it read that path. Without one, no session pulls unless the pulls are
+    /// open. It should require a token, as a
     /// [`Verify`](moq_ext_access::policy::Verify) without a fallback does,
     /// since an open policy would let every session pull.
     #[must_use]
@@ -380,10 +379,10 @@ impl IrohSessions {
 
     /// Starts the pull of `ticket`, which the session named as `name`.
     ///
-    /// Under [`Access::Authorized`] the pull policy decides, at the ticket's
-    /// path with the session's `token`, and must grant reading that path.
-    /// Under [`Access::Open`] the session must read the ticket's path, which
-    /// `reads_ticket` says.
+    /// Without [open pulls](Pulls::with_open_pulls) the pull policy decides,
+    /// at the ticket's path with the session's `token`, and must grant
+    /// reading that path. With them the session must read the ticket's path,
+    /// which `reads_ticket` says.
     async fn start_pull(
         &self,
         peer: EndpointId,
@@ -400,21 +399,21 @@ impl IrohSessions {
                 path: ticket.path().clone()
             })
         };
-        match pulls.access() {
-            Access::Open if !reads_ticket => return Err(denied()),
-            Access::Open => {}
-            Access::Authorized => {
-                let policy = self.pull_policy.as_deref().ok_or_else(denied)?;
-                let request = PeerRequest::new(
-                    peer,
-                    ticket_request(ticket, token.as_deref()),
-                    Event::Connect,
-                );
-                let decision =
-                    moq_ext_access::policy::decide_within(policy, &request, DECIDE_TIMEOUT).await;
-                if !decision.is_ok_and(|auth| auth.grant.allows_subscribe(ticket.path().as_str())) {
-                    return Err(denied());
-                }
+        if pulls.open_pulls() {
+            if !reads_ticket {
+                return Err(denied());
+            }
+        } else {
+            let policy = self.pull_policy.as_deref().ok_or_else(denied)?;
+            let request = PeerRequest::new(
+                peer,
+                ticket_request(ticket, token.as_deref()),
+                Event::Connect,
+            );
+            let decision =
+                moq_ext_access::policy::decide_within(policy, &request, DECIDE_TIMEOUT).await;
+            if !decision.is_ok_and(|auth| auth.grant.allows_subscribe(ticket.path().as_str())) {
+                return Err(denied());
             }
         }
         let pull = pulls.start(Client::Peer(peer), name, ticket)?;

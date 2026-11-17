@@ -16,10 +16,7 @@ use iroh_live_node::{
     Audience, Error, LinkKind, Reach, Refusal, RelayConfig, RelayStatus,
     test_util::{TIMEOUT, TestNode, announcement, endpoint, lookup, retracted, step},
 };
-use iroh_live_relay::{
-    Config,
-    pull::{Access, Client},
-};
+use iroh_live_relay::{Config, pull::Client};
 use moq_auth::{Algorithm, Claims, Key, KeySet};
 use moq_ext_access::policy::{Chain, Expires, MoqCapability};
 use moq_net::origin;
@@ -110,14 +107,7 @@ impl TestRelay {
     /// A session that names a ticket in its path pulls the ticket's broadcast,
     /// token or not, as `--open-pulls` does.
     async fn start_pulling() -> Self {
-        Self::start_with(
-            true,
-            Some(Access::Open),
-            None,
-            None,
-            iroh::SecretKey::generate(),
-        )
-        .await
+        Self::start_with(true, Some(true), None, None, iroh::SecretKey::generate()).await
     }
 
     /// Starts a relay as [`start_keyed`](Self::start_keyed) does, which pulls for a token holder.
@@ -126,7 +116,7 @@ impl TestRelay {
     async fn start_keyed_pulling(keys: KeySet) -> Self {
         Self::start_with(
             true,
-            Some(Access::Authorized),
+            Some(false),
             None,
             Some(keys),
             iroh::SecretKey::generate(),
@@ -158,12 +148,12 @@ impl TestRelay {
     /// does, from a [`Config`] that verifies JWTs with `keys` if set, and is
     /// open otherwise. Without it, the relay lets anyone publish anywhere.
     /// With `pulls`, the shipped admission pulls the tickets sessions name,
-    /// for the sessions it lets. With `port`, QUIC and the web listener bind
+    /// for the sessions it lets, with open pulls if it is `true`. With `port`, QUIC and the web listener bind
     /// that port, else QUIC binds any. The relay's iroh endpoint id is the
     /// one of `secret_key`.
     async fn start_with(
         shipped: bool,
-        pulls: Option<Access>,
+        pulls: Option<bool>,
         port: Option<u16>,
         keys: Option<KeySet>,
         secret_key: iroh::SecretKey,
@@ -178,7 +168,7 @@ impl TestRelay {
     }
 
     /// Starts a relay that decides sessions as `iroh_live_relay::run` does with `config`.
-    async fn start_config(config: Config, pulls: Option<Access>) -> Self {
+    async fn start_config(config: Config, pulls: Option<bool>) -> Self {
         Self::start_from(Some(config), pulls, None, None, iroh::SecretKey::generate()).await
     }
 
@@ -200,7 +190,7 @@ impl TestRelay {
     /// Starts a relay as [`start_config`](Self::start_config) does, which verifies JWTs with `keys`.
     ///
     /// `config` gets `--auth-key` for a file of `keys`, which the relay holds.
-    async fn start_config_keyed(keys: &KeySet, mut config: Config, pulls: Option<Access>) -> Self {
+    async fn start_config_keyed(keys: &KeySet, mut config: Config, pulls: Option<bool>) -> Self {
         let file = KeysFile::new(keys);
         config.auth_key = Some(file.0.clone());
         Self::start_from(
@@ -218,7 +208,7 @@ impl TestRelay {
     /// `keys_file` is held for the relay's lifetime, for a test to rotate.
     async fn start_from(
         config: Option<Config>,
-        pulls: Option<Access>,
+        pulls: Option<bool>,
         port: Option<u16>,
         keys_file: Option<KeysFile>,
         secret_key: iroh::SecretKey,
@@ -261,10 +251,10 @@ impl TestRelay {
         let (iroh_router, admit_task) = if let Some(config) = config {
             // The composition `iroh_live_relay::run` uses.
             let policies = config.policies().expect("a valid access config");
-            let pulls = pulls.map(|access| {
+            let pulls = pulls.map(|open| {
                 iroh_live_relay::pull::Pulls::new(iroh.clone(), cluster.clone())
                     .with_linger(PULL_LINGER)
-                    .with_access(access)
+                    .with_open_pulls(open)
             });
             let admissions = relay.admissions().expect("no auth source configured");
             let admit_task = AbortOnDropHandle::new(tokio::spawn(iroh_live_relay::admit(
@@ -2320,14 +2310,8 @@ async fn an_iroh_client_pulls_under_a_key_only_with_a_token() {
 #[tokio::test]
 async fn an_iroh_client_pulls_nothing_from_a_relay_without_a_key() {
     let _ = tracing_subscriber::fmt::try_init();
-    let relay = TestRelay::start_with(
-        true,
-        Some(Access::Authorized),
-        None,
-        None,
-        iroh::SecretKey::generate(),
-    )
-    .await;
+    let relay =
+        TestRelay::start_with(true, Some(false), None, None, iroh::SecretKey::generate()).await;
     let (publisher, broadcast, ticket) = start_publisher("guarded").await;
     let name = ticket.to_string();
 
@@ -2845,9 +2829,7 @@ async fn an_iroh_client_pulls_with_a_token_for_the_ticket_path_only() {
     let _ = tracing_subscriber::fmt::try_init();
     let keys = signing_keys();
     let team = iroh::SecretKey::generate();
-    let relay =
-        TestRelay::start_config_keyed(&keys, principal_config(&team), Some(Access::Authorized))
-            .await;
+    let relay = TestRelay::start_config_keyed(&keys, principal_config(&team), Some(false)).await;
     let (publisher, broadcast, ticket) = start_publisher("guarded").await;
     let name = ticket.to_string();
     let path = ticket.path().to_string();
@@ -2899,8 +2881,7 @@ async fn an_iroh_client_pulls_with_a_token_for_the_ticket_path_only() {
 async fn a_ticket_session_gets_no_rights_from_the_ticket_path_but_reading_it() {
     let _ = tracing_subscriber::fmt::try_init();
     let keys = signing_keys();
-    let relay =
-        TestRelay::start_config_keyed(&keys, Config::default(), Some(Access::Authorized)).await;
+    let relay = TestRelay::start_config_keyed(&keys, Config::default(), Some(false)).await;
     let (publisher, broadcast, ticket) = start_publisher("guarded").await;
     let name = ticket.to_string();
     let path = ticket.path().to_string();
@@ -2950,7 +2931,7 @@ async fn open_pulls_on_a_private_relay_need_admission() {
     let mut config = principal_config(&team);
     config.auth_public_subscribe = vec!["demo/**".parse().expect("a pattern")];
     config.open_pulls = true;
-    let relay = TestRelay::start_config(config, Some(Access::Open)).await;
+    let relay = TestRelay::start_config(config, Some(true)).await;
     let (_endpoint, anonymous) = relay_node().await;
     let _link = attach_at_ticket(&anonymous, &relay, &name, None);
     let _browser = browser_at(&relay, &name, None).await;
@@ -2964,7 +2945,7 @@ async fn open_pulls_on_a_private_relay_need_admission() {
     let mut config = principal_config(&team);
     config.auth_public_subscribe = vec![moq_net::Pattern::all()];
     config.open_pulls = true;
-    let relay = TestRelay::start_config(config, Some(Access::Open)).await;
+    let relay = TestRelay::start_config(config, Some(true)).await;
     let _browser = browser_at(&relay, &name, None).await;
     assert!(
         wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
