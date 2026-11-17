@@ -186,6 +186,13 @@ fn a_principal_with_a_wildcard_root_is_refused() {
     assert!(refused(&config).contains("literal path"));
 }
 
+#[test]
+fn a_zero_max_session_is_refused() {
+    let keys = KeysFile::new();
+    let config = parse(&["--auth-key", keys.arg(), "--max-session", "0s"]);
+    assert!(refused(&config).contains("--max-session"));
+}
+
 /// Decides an iroh client with no token under `policies`.
 fn anonymous_iroh(policies: &Policies) -> Option<iroh_live_node::Grant> {
     let peer = iroh::SecretKey::generate().public();

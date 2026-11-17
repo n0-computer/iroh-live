@@ -2060,7 +2060,7 @@ async fn an_iroh_clients_session_closes_when_its_token_expires() {
     let _ = tracing_subscriber::fmt::try_init();
     let keys = signing_keys();
     let relay = TestRelay::start_keyed(keys.clone()).await;
-    let token = expiring_token(&keys, Duration::from_secs(2));
+    let token = expiring_token(&keys, Duration::from_secs(5));
 
     let (_endpoint, holder) = relay_node().await;
     let cam = holder
@@ -2094,7 +2094,7 @@ async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
     let _cam = counter(cam.broadcast(), 0);
     let mut updates = relay.cluster.origin.consume().announced();
     // The first token expires, so the relay closes the session.
-    let first = expiring_token(&keys, Duration::from_secs(2));
+    let first = expiring_token(&keys, Duration::from_secs(5));
     let link = attach_with_token(&holder, &relay, Some(first));
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
     let fresh = token_for(&keys, "tokens").parse().expect("not empty");
@@ -2118,7 +2118,7 @@ async fn an_https_relay_link_presents_a_fresh_token() {
         .publish("tokens/cam", Audience::Granted)
         .expect("publish");
     let _cam = counter(cam.broadcast(), 0);
-    let first = expiring_token(&keys, Duration::from_secs(2));
+    let first = expiring_token(&keys, Duration::from_secs(5));
     let link = connected(
         &holder,
         RelayConfig::new(relay.http_url()).with_token(first.parse().expect("not empty")),
@@ -2128,7 +2128,7 @@ async fn an_https_relay_link_presents_a_fresh_token() {
     let fresh = token_for(&keys, "tokens").parse().expect("not empty");
     link.tokens().set(vec![fresh]);
     // Past the first token's expiry, the relay still routes the broadcast.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
     assert_eq!(link.status().get(), RelayStatus::Connected);
 
@@ -2702,7 +2702,7 @@ async fn an_expired_chain_closes_the_session() {
     let (_endpoint, device) = relay_node().await;
     let _cam = publish_at(&device, "tokens/cam");
     let capability = MoqCapability::new("tokens").with_publish(moq_net::Pattern::all());
-    let chain = delegated_chain(&team, device.id(), capability, Duration::from_secs(2));
+    let chain = delegated_chain(&team, device.id(), capability, Duration::from_secs(5));
     let mut updates = relay.cluster.origin.consume().announced();
     let link = attach_with_token(&device, &relay, Some(chain));
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;

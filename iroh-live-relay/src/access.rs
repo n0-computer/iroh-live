@@ -70,7 +70,7 @@ pub struct Policies {
 
 /// How [`admit`](crate::admit) decides a browser session.
 #[doc(hidden)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BrowserPolicy {
     /// moq-auth's reference policy, or `None` to give every session [`browser_grant`](crate::browser_grant).
     pub(crate) reference: Option<serve::Policy>,
@@ -86,7 +86,12 @@ impl BrowserPolicy {
     /// Returns the policy of an open relay: every session gets [`browser_grant`](crate::browser_grant).
     #[must_use]
     pub fn open() -> Self {
-        Self::default()
+        Self {
+            reference: None,
+            tokens: None,
+            max_session: None,
+            allow_unexpiring: false,
+        }
     }
 }
 
@@ -183,12 +188,8 @@ impl Config {
         let access = self.access_mode()?;
         self.validate(access)?;
         let key_file = self.auth_key.clone().map(KeyFile::load).transpose()?;
-        let key_source = self
-            .auth_key
-            .as_deref()
-            .map(crate::load_keys)
-            .transpose()?
-            .map(|(_, source)| source);
+        // From the same read as the iroh verifier, so both start with one version of the file.
+        let key_source = key_file.as_ref().map(KeyFile::source);
         let tokens = self.tokens_with(key_file.clone())?;
         let anonymous = self.anonymous();
 
@@ -322,6 +323,12 @@ impl Config {
         }
         for principal in &self.rcan_principals {
             principal.checked_root()?;
+        }
+        if self.max_session.is_zero() {
+            // Every token session would get a GOAWAY on admission and redial at once.
+            return Err(config_error(
+                "--max-session must be longer than zero; it bounds how long a token session lasts",
+            ));
         }
         if !self.verifies_tokens() {
             for (flag, set) in [

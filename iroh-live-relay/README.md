@@ -15,8 +15,9 @@ cargo run -p iroh-live-relay -- --open-pulls
 ```
 
 Then open `http://localhost:4443/?name=<TICKET>`, over `http`, not `https`.
-`--open-pulls` lets any session make the relay pull a ticket, which suits a
-relay on your own machine only.
+`--open-pulls` lets any session the relay admits to read a ticket's path make
+the relay pull that ticket. On this open relay that is every session, which
+suits a relay on your own machine only.
 
 Without auth flags the relay is open: anyone may connect and read every
 broadcast on it, and it says so at startup. Any `--auth-*` or `--rcan-*` flag

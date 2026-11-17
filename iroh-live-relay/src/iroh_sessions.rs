@@ -174,11 +174,12 @@ impl IrohSessions {
             authorization,
             bounded,
             recheck,
+            key_changes,
             pull,
         } = self.admit(connection).await?;
         // Held while the session runs.
         let _pull = pull.map(|(pull, name)| crate::hold_pull(pull, name));
-        self.run(session, driver, &authorization, bounded, &recheck)
+        self.run(session, driver, &authorization, bounded, &recheck, key_changes)
             .await;
         Ok(())
     }
@@ -206,6 +207,12 @@ impl IrohSessions {
             .filter(|_| self.pulls.is_some())
             .and_then(|name| name.parse::<BroadcastTicket>().ok());
         let dialed = PeerRequest::new(peer, session.clone(), Event::Connect);
+        // Marked seen before the decision, so a key change during it is not
+        // missed, and one before it does not decide the session again at once.
+        let mut key_changes = self.key_changes.clone();
+        if let Some(changes) = key_changes.as_mut() {
+            changes.mark_unchanged();
+        }
         let admitted = match &ticket {
             None => self.decide(&dialed).await.map(|authorization| {
                 let recheck = (authorization.grant.clone(), dialed.clone());
@@ -325,6 +332,7 @@ impl IrohSessions {
             authorization,
             bounded,
             recheck,
+            key_changes,
             pull,
         })
     }
@@ -433,12 +441,13 @@ impl IrohSessions {
         authorization: &Authorization,
         bounded: bool,
         recheck: &[Decided],
+        key_changes: Option<watch::Receiver<u64>>,
     ) {
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
         let expiry = expiry(authorization);
         tokio::pin!(expiry);
-        let mut key_changes = self.key_changes.clone().filter(|_| !recheck.is_empty());
+        let mut key_changes = key_changes.filter(|_| !recheck.is_empty());
         let ending = loop {
             let changed = async {
                 match key_changes.as_mut() {
@@ -597,6 +606,8 @@ struct Admitted {
     bounded: bool,
     /// The decisions to make again when the key file changes, empty without a token.
     recheck: Vec<Decided>,
+    /// Sees the key changes since the session was decided.
+    key_changes: Option<watch::Receiver<u64>>,
     /// The pull of the ticket the session named, with that name.
     pull: Option<(PullGuard, String)>,
 }

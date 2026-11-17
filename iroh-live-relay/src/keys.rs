@@ -7,6 +7,7 @@ use std::{
 };
 
 use iroh::EndpointId;
+use moq_auth::serve;
 use moq_ext_access::policy::{Decision, JwtVerifier, PeerRequest, Rejection, TokenVerifier};
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -30,6 +31,8 @@ use crate::Error;
 #[derive(Debug, Clone)]
 pub struct KeyFile {
     path: PathBuf,
+    /// Whether the file held a JWK set or a single JWK when first read, for moq-auth's policy.
+    source: serve::Keys,
     /// The keys as last read, with the stamp of the file they were read from.
     cached: Arc<Mutex<Option<Cached>>>,
     /// Counts the changes to the file that the verifier noticed.
@@ -56,7 +59,7 @@ impl KeyFile {
     pub fn load(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let path = path.into();
         let stamp = stamp(&path);
-        let (keys, _) = crate::load_keys(&path)?;
+        let (keys, source) = crate::load_keys(&path)?;
         let cached = stamp.map(|stamp| Cached {
             stamp,
             verifier: JwtVerifier::new(keys),
@@ -64,9 +67,15 @@ impl KeyFile {
         });
         Ok(Self {
             path,
+            source,
             cached: Arc::new(Mutex::new(cached)),
             changes: Arc::new(watch::Sender::new(0)),
         })
+    }
+
+    /// Returns the file as moq-auth's reference policy reads it, for browsers.
+    pub(crate) fn source(&self) -> serve::Keys {
+        self.source.clone()
     }
 
     /// Returns a receiver that sees a new value whenever the verifier notices a change to the file.
