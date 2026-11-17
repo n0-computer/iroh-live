@@ -42,8 +42,8 @@ pub enum Access {
 /// The paths whose broadcasts name an iroh publisher, which anonymous sessions must not publish at.
 const OWNED_PATHS: [&str; 2] = ["live/*/**", "rooms/*/*/**"];
 
-/// The paths a relay pulls tickets at.
-const PULLED_PATHS: [&str; 2] = ["live/*/*", "rooms/*/*/*"];
+/// The paths a relay pulls tickets at: a publisher's own paths with a name, which may span segments.
+const PULLED_PATHS: [&str; 2] = ["live/*/*/**", "rooms/*/*/*/**"];
 
 /// The policies a relay decides its sessions with, built by [`Config::policies`].
 #[doc(hidden)]

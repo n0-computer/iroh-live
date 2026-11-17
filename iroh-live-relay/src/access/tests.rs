@@ -291,6 +291,23 @@ fn open_pulls_warn_when_anonymous_sessions_read_pullable_paths() {
         "{:?}",
         reads_live.warnings
     );
+    // A ticket's name may span segments, so a pattern below `live/*/*` still reaches pulls.
+    let deep = parse(&[
+        "--rcan-principal",
+        &key,
+        "--auth-public-subscribe",
+        "live/*/cams/hd/**",
+        "--open-pulls",
+    ])
+    .policies()
+    .expect("private");
+    assert!(
+        deep.warnings
+            .iter()
+            .any(|warning| warning.contains("--open-pulls")),
+        "{:?}",
+        deep.warnings
+    );
     let demo_only = parse(&[
         "--rcan-principal",
         &key,
