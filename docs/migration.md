@@ -207,3 +207,8 @@ For embedders and node code:
   over it needs a wildcard arm.
 - A relay handshake refused with `Expired` is no longer retried as a failed
   dial.
+- `encode_chain` is gone from `policy`. Build a chain with `Chain::issue` and
+  `Chain::delegate`, and encode it with `Chain::to_token`. Parse a token with
+  `str::parse::<Chain>`, which fails with a `ChainError`. `policy::Expires`
+  re-exports rcan's expiry, so the `rcan` crate is no longer a dependency of
+  your code.

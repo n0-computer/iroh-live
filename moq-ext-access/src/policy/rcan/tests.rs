@@ -366,11 +366,11 @@ fn a_chain_refuses_a_wider_delegation_and_a_foreign_signer() {
             hours(1),
         )
         .expect_err("wider");
-    assert!(wider.reason().contains("wider"), "{wider}");
+    assert!(matches!(wider, ChainError::Wider), "{wider}");
     let foreign = issued
         .delegate(&mallory, phone.verifying_key(), None, hours(1))
         .expect_err("not the holder");
-    assert!(foreign.reason().contains("does not hold"), "{foreign}");
+    assert!(matches!(foreign, ChainError::NotHolder), "{foreign}");
 }
 
 #[test]
@@ -389,9 +389,13 @@ fn a_chain_refuses_a_link_past_the_limit() {
     }
     assert_eq!(chain.links().len(), MAX_LINKS);
     let holder = &keys[MAX_LINKS];
-    chain
+    let err = chain
         .delegate(holder, keys[0].verifying_key(), None, hours(1))
         .expect_err("past the limit");
+    assert!(
+        matches!(err, ChainError::TooManyLinks { links } if links == MAX_LINKS + 1),
+        "{err}"
+    );
 }
 
 #[test]
@@ -407,10 +411,14 @@ fn a_chain_round_trips_through_its_token() {
     assert_eq!(parsed, chain);
     assert_eq!(parsed.to_string(), chain.to_token());
     assert!(parsed.to_token().starts_with(CHAIN_PREFIX));
+    assert!(Chain::is_chain(&parsed.to_token()));
+    assert!(!Chain::is_chain("a.signed.jwt"));
     assert_eq!(
         parsed.expires(),
         Some(SystemTime::UNIX_EPOCH + Duration::from_secs(3_000_000_001))
     );
     let empty = encode_chain(&[]).parse::<Chain>().expect_err("empty");
-    assert!(empty.reason().contains("empty"), "{empty}");
+    assert!(matches!(empty, ChainError::Empty), "{empty}");
+    let jwt = "a.signed.jwt".parse::<Chain>().expect_err("no chain");
+    assert!(matches!(jwt, ChainError::NotAChain), "{jwt}");
 }

@@ -63,7 +63,6 @@ iroh-live-node = { path = ".", features = ["test-util"] }
 # The rcan verifier, for the delegated-publisher tests.
 moq-ext-access = { workspace = true, features = ["rcan"] }
 n0-tracing-test = "0.3.0"
-rcan = "0.4.1"
 tokio = { version = "1.54.1", features = ["full"] }
 
 [[example]]

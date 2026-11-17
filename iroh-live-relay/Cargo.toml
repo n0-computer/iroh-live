@@ -53,8 +53,6 @@ url = "2"
 humantime = "2.3"
 
 [dev-dependencies]
-# Signs capability chains in the tests.
-rcan = "0.4.1"
 # The shared test endpoint, node and wait helpers.
 iroh-live-node = { workspace = true, features = ["test-util"] }
 iroh = { workspace = true }

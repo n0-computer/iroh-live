@@ -21,12 +21,11 @@ use iroh_live_relay::{
     pull::{Access, Client},
 };
 use moq_auth::{Algorithm, Claims, Key, KeySet};
-use moq_ext_access::policy::{Chain, MoqCapability};
+use moq_ext_access::policy::{Chain, Expires, MoqCapability};
 use moq_net::origin;
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use rcan::Expires;
 use tracing::{debug, info};
 
 /// A relay: noq server, iroh endpoint and cluster.

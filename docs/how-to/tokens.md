@@ -41,16 +41,16 @@ let verifier = RcanVerifier::new(alice_account.public().as_verifying_key(), "spa
 let policy = Verify::new(verifier).with_fallback(Open(Grant::subscribe_only()));
 ```
 
-`Chain` builds and reads chains. `Chain::issue` makes the first link,
-`Chain::delegate` adds one from the key the last link names, and refuses a
-capability wider than the one it delegates. `Chain::expires` says when to
-sign the next device link:
+`Chain` builds and reads chains. `Chain::issue` makes the first link.
+`Chain::delegate` adds one from the key the last link names, and fails with a
+`ChainError` for a capability wider than the one it delegates. `Chain::expires`
+says when to sign the next device link. `Expires` is rcan's link expiry,
+re-exported, so you do not need the `rcan` crate:
 
 ```rust,ignore
 use std::time::Duration;
 
-use iroh_live::node::policy::{Chain, MoqCapability};
-use rcan::Expires;
+use iroh_live::node::policy::{Chain, Expires, MoqCapability};
 
 let member = MoqCapability::new("").with_subscribe(iroh_live::moq_net::Pattern::all());
 let to_alice = Chain::issue(
@@ -66,6 +66,8 @@ let to_camera = to_alice.delegate(
     Expires::valid_for(Duration::from_secs(8 * 3600)),
 )?;
 let token: String = to_camera.to_token();
+// A token parses back into a chain, or fails with a `ChainError`.
+let parsed: Chain = token.parse()?;
 ```
 
 The device presents the encoded chain with `ConnectOptions::with_token` when it

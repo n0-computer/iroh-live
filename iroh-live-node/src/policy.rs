@@ -55,8 +55,7 @@ pub use moq_ext_access::policy::{
 };
 #[cfg(feature = "rcan")]
 pub use moq_ext_access::policy::{
-    CHAIN_PREFIX, Chain, MAX_LINK_BYTES, MAX_LINKS, MoqCapability, RcanVerifier, decode_chain,
-    encode_chain,
+    Chain, ChainError, Expires, MAX_LINK_BYTES, MAX_LINKS, MoqCapability, RcanVerifier,
 };
 
 /// A peer's request for a session with this node, as a policy sees it.

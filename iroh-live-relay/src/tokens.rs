@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use iroh::{EndpointId, PublicKey};
 use moq_ext_access::policy::{
-    CHAIN_PREFIX, Chain, Decision, PeerRequest, RcanVerifier, Rejection, TokenVerifier,
+    Chain, Decision, PeerRequest, RcanVerifier, Rejection, TokenVerifier,
 };
 use n0_error::e;
 use tracing::debug;
@@ -236,7 +236,7 @@ impl IrohTokens {
 
 impl TokenVerifier<EndpointId> for IrohTokens {
     fn verify(&self, token: &str, request: &PeerRequest<EndpointId>) -> Decision {
-        let (mut authorization, add_own_paths) = if token.starts_with(CHAIN_PREFIX) {
+        let (mut authorization, add_own_paths) = if Chain::is_chain(token) {
             self.verify_chain(token, request)?
         } else {
             self.verify_jwt(token, request)?
@@ -262,8 +262,7 @@ mod tests {
 
     use iroh::SecretKey;
     use iroh_live_node::SessionRequest;
-    use moq_ext_access::policy::{Event, MoqCapability};
-    use rcan::Expires;
+    use moq_ext_access::policy::{Event, Expires, MoqCapability};
 
     use super::*;
 

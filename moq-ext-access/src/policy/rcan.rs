@@ -9,7 +9,9 @@ use std::{
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use moq_net::{Pattern, Patterns};
-use rcan::{Authorizer, Capability, Expires, Rcan};
+use n0_error::stack_error;
+pub use rcan::Expires;
+use rcan::{Authorizer, Capability, Rcan};
 use serde::{Deserialize, Serialize};
 
 use super::{Authorization, Decision, PeerRequest, Rejection, TokenVerifier};
@@ -25,7 +27,47 @@ pub const MAX_LINK_BYTES: usize = 2 * 1024;
 ///
 /// The `1` names rcan's version-1 token format, which this crate reads. A
 /// token that starts with it is a chain, and any other is not.
-pub const CHAIN_PREFIX: &str = "rcan1:";
+pub(crate) const CHAIN_PREFIX: &str = "rcan1:";
+
+/// An error from building or decoding a [`Chain`].
+#[stack_error(derive)]
+#[non_exhaustive]
+pub enum ChainError {
+    /// The token does not start with the prefix of an rcan chain.
+    #[error("not an rcan capability chain")]
+    NotAChain,
+    /// The token holds no link.
+    #[error("the capability chain is empty")]
+    Empty,
+    /// The token, or one of its links, is larger than the limits allow.
+    #[error("the capability chain is too large")]
+    TooLarge,
+    /// The chain holds more than [`MAX_LINKS`] links, or a delegation would make it.
+    #[error("the capability chain has {links} links, more than {MAX_LINKS} allow")]
+    TooManyLinks {
+        /// The links the chain holds or would hold.
+        links: usize,
+    },
+    /// The signing key is not the one the chain's last link names.
+    #[error("the signing key does not hold the capability chain: its last link names another key")]
+    NotHolder,
+    /// The capability to delegate is wider than the chain's last link.
+    #[error("the capability is wider than the one the chain delegates")]
+    Wider,
+    /// The token is not base32, or a link does not decode or has an invalid signature.
+    #[error("invalid capability chain: {reason}")]
+    Invalid {
+        /// Why the token does not decode.
+        reason: String,
+    },
+}
+
+impl From<ChainError> for Rejection {
+    /// Returns the rejection of a session that presented a chain that does not decode.
+    fn from(err: ChainError) -> Self {
+        Self::new(err.to_string())
+    }
+}
 
 /// What a holder may do at a moq node: publish and subscribe under a root.
 ///
@@ -156,17 +198,20 @@ impl TryFrom<Wire> for MoqCapability {
 ///
 /// ```
 /// use ed25519_dalek::SigningKey;
-/// use moq_ext_access::policy::{MoqCapability, RcanVerifier, encode_chain};
-/// use rcan::{Expires, Rcan};
+/// use moq_ext_access::policy::{Chain, Expires, MoqCapability, RcanVerifier};
 ///
 /// let alice = SigningKey::from_bytes(&[1; 32]);
 /// let device = SigningKey::from_bytes(&[2; 32]);
 /// let capability =
 ///     MoqCapability::new("spaces/alice").with_publish("device/**".parse::<moq_net::Pattern>()?);
-/// let link = Rcan::issuing_builder(&alice, device.verifying_key(), capability)
-///     .sign(Expires::valid_for(std::time::Duration::from_secs(3600)));
+/// let chain = Chain::issue(
+///     &alice,
+///     device.verifying_key(),
+///     capability,
+///     Expires::valid_for(std::time::Duration::from_secs(3600)),
+/// );
 /// // The device presents this as its token:
-/// let token = encode_chain(&[link]);
+/// let token = chain.to_token();
 ///
 /// // The node that shares alice's space verifies it:
 /// let verifier = RcanVerifier::new(alice.verifying_key(), "spaces/alice");
@@ -258,8 +303,7 @@ where
 /// use std::time::Duration;
 ///
 /// use ed25519_dalek::SigningKey;
-/// use moq_ext_access::policy::{Chain, MoqCapability};
-/// use rcan::Expires;
+/// use moq_ext_access::policy::{Chain, Expires, MoqCapability};
 ///
 /// let team = SigningKey::from_bytes(&[1; 32]);
 /// let alice = SigningKey::from_bytes(&[2; 32]);
@@ -303,31 +347,29 @@ impl Chain {
     ///
     /// # Errors
     ///
-    /// Fails if `holder` is not the key the last link names, if `narrower`
-    /// is wider than the last link's capability, or if the chain already has
-    /// [`MAX_LINKS`] links.
+    /// Fails with [`ChainError::NotHolder`] if `holder` is not the key the
+    /// last link names, with [`ChainError::Wider`] if `narrower` is wider
+    /// than the last link's capability, and with
+    /// [`ChainError::TooManyLinks`] if the chain already has [`MAX_LINKS`]
+    /// links.
     pub fn delegate(
         &self,
         holder: &SigningKey,
         to: VerifyingKey,
         narrower: Option<MoqCapability>,
         expires: Expires,
-    ) -> Result<Self, Rejection> {
+    ) -> Result<Self, ChainError> {
         if self.0.len() >= MAX_LINKS {
-            return Err(Rejection::new(format!(
-                "the capability chain already has {MAX_LINKS} links"
-            )));
+            return Err(ChainError::TooManyLinks {
+                links: self.0.len() + 1,
+            });
         }
         if holder.verifying_key() != *self.holder() {
-            return Err(Rejection::new(
-                "the signing key does not hold the capability chain: its last link names another key",
-            ));
+            return Err(ChainError::NotHolder);
         }
         let capability = match narrower {
             Some(narrower) if !self.capability().permits(&narrower) => {
-                return Err(Rejection::new(
-                    "the capability is wider than the one the chain delegates",
-                ));
+                return Err(ChainError::Wider);
             }
             Some(narrower) => narrower,
             None => self.capability().clone(),
@@ -382,10 +424,21 @@ impl Chain {
             .min()
     }
 
-    /// Returns the chain as a token, as [`encode_chain`] encodes it.
+    /// Returns the chain as a token.
+    ///
+    /// The token is `rcan1:` and the lowercase, unpadded base32 of the
+    /// postcard encoding of the links. [`FromStr`] reads it back.
     #[must_use]
     pub fn to_token(&self) -> String {
         encode_chain(&self.0)
+    }
+
+    /// Reports whether `token` has the form of a chain, without decoding it.
+    ///
+    /// A token that starts with `rcan1:` is a chain, and any other is not.
+    #[must_use]
+    pub fn is_chain(token: &str) -> bool {
+        token.starts_with(CHAIN_PREFIX)
     }
 }
 
@@ -405,13 +458,17 @@ impl fmt::Display for Chain {
 }
 
 impl FromStr for Chain {
-    type Err = Rejection;
+    type Err = ChainError;
 
-    /// Decodes a token as [`decode_chain`] does, and refuses an empty chain.
+    /// Decodes a token from [`to_token`](Chain::to_token), within the size limits.
+    ///
+    /// Decoding checks each link's signature, but not that the links form a
+    /// chain: a [`RcanVerifier`] checks that. The token's base32 may be in
+    /// either case.
     fn from_str(token: &str) -> Result<Self, Self::Err> {
         let links = decode_chain(token)?;
         if links.is_empty() {
-            return Err(Rejection::new("the capability chain is empty"));
+            return Err(ChainError::Empty);
         }
         Ok(Self(links))
     }
@@ -442,10 +499,9 @@ fn runs_between(
 /// Encodes a capability chain as a token, first link first.
 ///
 /// The token is `rcan1:` and the lowercase, unpadded base32 of the postcard
-/// encoding of the links. A peer presents it as its session token, and a
-/// [`RcanVerifier`] reads it.
+/// encoding of the links.
 #[must_use]
-pub fn encode_chain(chain: &[Rcan<MoqCapability>]) -> String {
+pub(crate) fn encode_chain(chain: &[Rcan<MoqCapability>]) -> String {
     let bytes = postcard::to_stdvec(chain).expect("encoding into a vec cannot fail");
     let encoded = data_encoding::BASE32_NOPAD
         .encode(&bytes)
@@ -455,42 +511,37 @@ pub fn encode_chain(chain: &[Rcan<MoqCapability>]) -> String {
 
 /// Decodes a token from [`encode_chain`], within the size limits.
 ///
-/// Decoding checks each link's signature, but not that the links form a
-/// chain: a [`RcanVerifier`] checks that. The token's base32 may be in either
-/// case.
-///
 /// # Errors
 ///
 /// Fails if the token lacks [`CHAIN_PREFIX`], is larger than [`MAX_LINKS`]
 /// links of [`MAX_LINK_BYTES`] allow, is not base32, holds more than
 /// [`MAX_LINKS`] links, or holds a link that does not decode or whose
 /// signature is invalid.
-pub fn decode_chain(token: &str) -> Result<Vec<Rcan<MoqCapability>>, Rejection> {
+pub(crate) fn decode_chain(token: &str) -> Result<Vec<Rcan<MoqCapability>>, ChainError> {
     let encoded = token
         .strip_prefix(CHAIN_PREFIX)
-        .ok_or_else(|| Rejection::new("not an rcan capability chain"))?;
+        .ok_or(ChainError::NotAChain)?;
     let limit = data_encoding::BASE32_NOPAD.encode_len(MAX_LINKS * MAX_LINK_BYTES);
     if encoded.len() > limit {
-        return Err(Rejection::new("the capability chain is too large"));
+        return Err(ChainError::TooLarge);
     }
     let bytes = data_encoding::BASE32_NOPAD_NOCASE
         .decode(encoded.as_bytes())
-        .map_err(|err| Rejection::new(format!("the capability chain is not base32: {err}")))?;
-    let chain: Vec<Rcan<MoqCapability>> = postcard::from_bytes(&bytes)
-        .map_err(|err| Rejection::new(format!("invalid capability chain: {err}")))?;
+        .map_err(|err| ChainError::Invalid {
+            reason: format!("not base32: {err}"),
+        })?;
+    let chain: Vec<Rcan<MoqCapability>> =
+        postcard::from_bytes(&bytes).map_err(|err| ChainError::Invalid {
+            reason: err.to_string(),
+        })?;
     if chain.len() > MAX_LINKS {
-        return Err(Rejection::new(format!(
-            "the capability chain has {} links, more than {MAX_LINKS}",
-            chain.len()
-        )));
+        return Err(ChainError::TooManyLinks { links: chain.len() });
     }
     if chain
         .iter()
         .any(|link| link.encode().len() > MAX_LINK_BYTES)
     {
-        return Err(Rejection::new(
-            "a link of the capability chain is too large",
-        ));
+        return Err(ChainError::TooLarge);
     }
     Ok(chain)
 }

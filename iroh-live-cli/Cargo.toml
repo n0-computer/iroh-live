@@ -38,8 +38,6 @@ n0-error = "1.0.3"
 n0-future = "0.3.2"
 n0-watcher = "1.0.1"
 qr2term = "0.3"
-# The expiry of a capability chain's links, which `irl rcan` signs.
-rcan = "0.4.1"
 # QR encoding for the ticket a call window shows its peer, and for the codes the
 # scan tests decode. Only the encoder itself is wanted: the default features
 # render to `image` and to SVG, and what we draw into is an egui texture.

@@ -82,7 +82,7 @@ use include_dir::{Dir, include_dir};
 use iroh::{EndpointId, SecretKey, protocol::Router};
 use iroh_live_node::{BroadcastTicket, EndpointConfig, Mdns, policy::DynPolicy};
 use moq_auth::{KeySet, lease, serve};
-use moq_ext_access::policy::CHAIN_PREFIX;
+use moq_ext_access::policy::Chain;
 use moq_net::Pattern;
 use moq_relay::auth::Admissions;
 use n0_error::{AnyError, e};
@@ -570,10 +570,7 @@ async fn browser_session_grant(
         request.query = None;
     }
     let token = presented_token(&request);
-    if token
-        .as_deref()
-        .is_some_and(|token| token.starts_with(CHAIN_PREFIX))
-    {
+    if token.as_deref().is_some_and(Chain::is_chain) {
         return Err(forbidden(
             "rcan chains are for iroh clients; a browser presents a JWT".to_owned(),
         ));

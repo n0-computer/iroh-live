@@ -14,11 +14,10 @@ use std::{
 use iroh::{EndpointId, PublicKey};
 use iroh_live::node::{
     SessionRequest,
-    policy::{Chain, Event, MoqCapability, PeerRequest, RcanVerifier},
+    policy::{Chain, ChainError, Event, Expires, MoqCapability, PeerRequest, RcanVerifier},
 };
 use moq_net::{Pattern, Patterns};
 use n0_error::{Result, anyerr};
-use rcan::Expires;
 
 use crate::{
     args::{RcanCommand, RcanShowArgs, RcanSignArgs},
@@ -74,7 +73,7 @@ fn sign_with(key: &iroh::SecretKey, args: &RcanSignArgs) -> Result<String> {
                     narrower,
                     expires,
                 )
-                .map_err(|rejection| anyerr!("cannot delegate the chain: {}", rejection.reason()))?
+                .map_err(|err| anyerr!("cannot delegate the chain: {err}"))?
         }
     };
     Ok(chain.to_token())
@@ -157,13 +156,7 @@ fn read_chain(path: &Path) -> Result<Chain> {
     }
     text.trim()
         .parse()
-        .map_err(|rejection: iroh_live::node::policy::Rejection| {
-            anyerr!(
-                "{} holds no capability chain: {}",
-                path.display(),
-                rejection.reason()
-            )
-        })
+        .map_err(|err: ChainError| anyerr!("{} holds no capability chain: {err}", path.display()))
 }
 
 /// Formats `patterns` as a comma-separated list, or "nothing".

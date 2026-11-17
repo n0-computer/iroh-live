@@ -161,6 +161,8 @@ A JWT's claims become the grant, relative to the path the peer requested, and
 its `exp` claim becomes `expires`. An rcan chain has at most eight links of at
 most 2 KiB each, and is encoded as `rcan1:` followed by lowercase base32. Its
 authorization expires one second after the earliest link's `valid_until`.
+`Chain` issues, delegates, encodes and parses chains, with `Expires` for each
+link's expiry and `ChainError` for a chain it cannot build or decode.
 
 A relay link presents `RelayConfig::tokens` on every dial, over `iroh://` and
 `https://` alike. The iroh-live relay decides an iroh session on the first
