@@ -190,7 +190,9 @@ signed with the principal's stored key `--key`. It needs `--subscribe` or
 or `-` for standard input, it delegates the chain, signed with the key its
 last link names. Without `--root`, `--subscribe` or `--publish`, the new link
 carries the chain's capability. With any of them it carries exactly what they
-name, and the command refuses a capability wider than the chain's. `--to`
+name, and the command refuses a capability wider than the chain's. It also
+refuses `--root` without `--subscribe` or `--publish`, since the link would
+grant nothing, and notes on stderr each half of the chain that the link drops. `--to`
 names the key that holds the chain next, and `--ttl` how long the new link is
 valid (default: `1h`).
 

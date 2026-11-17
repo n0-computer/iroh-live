@@ -41,10 +41,11 @@ fn sign(args: &RcanSignArgs) -> Result<String> {
 /// Signs the chain `args` describe with `key` and returns its token.
 fn sign_with(key: &iroh::SecretKey, args: &RcanSignArgs) -> Result<String> {
     let expires = Expires::valid_for(args.ttl);
-    let narrowed = args.root.is_some() || !args.subscribe.is_empty() || !args.publish.is_empty();
+    let no_patterns = args.subscribe.is_empty() && args.publish.is_empty();
+    let narrowed = args.root.is_some() || !no_patterns;
     let chain = match &args.chain {
         None => {
-            if args.subscribe.is_empty() && args.publish.is_empty() {
+            if no_patterns {
                 return Err(anyerr!(
                     "a new chain grants nothing without --subscribe or --publish"
                 ));
@@ -58,7 +59,18 @@ fn sign_with(key: &iroh::SecretKey, args: &RcanSignArgs) -> Result<String> {
             )
         }
         Some(path) => {
+            // A narrowed link carries exactly the patterns it names, so --root
+            // alone would delegate a capability that grants nothing.
+            if no_patterns && args.root.is_some() {
+                return Err(anyerr!(
+                    "--root narrows a chain only together with --subscribe or --publish, \
+                     or the new link grants nothing"
+                ));
+            }
             let chain = read_chain(path)?;
+            if narrowed {
+                warn_dropped(chain.capability(), args);
+            }
             let narrower = narrowed.then(|| {
                 let root = args
                     .root
@@ -77,6 +89,16 @@ fn sign_with(key: &iroh::SecretKey, args: &RcanSignArgs) -> Result<String> {
         }
     };
     Ok(chain.to_token())
+}
+
+/// Notes on stderr each half of `capability` that a narrowed link from `args` drops.
+fn warn_dropped(capability: &MoqCapability, args: &RcanSignArgs) {
+    if !capability.subscribe.is_empty() && args.subscribe.is_empty() {
+        eprintln!("note: the new link grants no --subscribe, so its holder reads nothing");
+    }
+    if !capability.publish.is_empty() && args.publish.is_empty() {
+        eprintln!("note: the new link grants no --publish, so its holder publishes nothing");
+    }
 }
 
 /// Returns the capability under `root` with the patterns `args` name.
@@ -264,5 +286,35 @@ mod tests {
         let mut empty = sign_args(alice.public());
         empty.root = Some("spaces".to_owned());
         sign_with(&team, &empty).expect_err("grants nothing");
+    }
+
+    /// A delegation with `--root` and no patterns is refused, as a new chain without patterns is.
+    #[test]
+    fn sign_refuses_a_delegation_narrowed_to_nothing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let (team, alice, device) = (
+            iroh::SecretKey::generate(),
+            iroh::SecretKey::generate(),
+            iroh::SecretKey::generate(),
+        );
+        let mut issue = sign_args(alice.public());
+        issue.root = Some("spaces".to_owned());
+        issue.subscribe = vec![Pattern::all()];
+        let issued = sign_with(&team, &issue).expect("issued");
+        let issued_path = chain_file(dir.path(), "alice.rcan", &issued);
+
+        let mut rooted = sign_args(device.public());
+        rooted.chain = Some(issued_path.clone());
+        rooted.root = Some("spaces/alice".to_owned());
+        let err = sign_with(&alice, &rooted).expect_err("grants nothing");
+        assert!(err.to_string().contains("--root"), "{err}");
+
+        // With a pattern the same root narrows the chain.
+        rooted.subscribe = vec![Pattern::all()];
+        let delegated: Chain = sign_with(&alice, &rooted)
+            .expect("narrowed")
+            .parse()
+            .expect("a chain");
+        assert_eq!(delegated.capability().root, "spaces/alice");
     }
 }

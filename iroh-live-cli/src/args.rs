@@ -523,6 +523,8 @@ pub(crate) struct RcanSignArgs {
     ///
     /// It must lie within the root of the principal on the relay. A new
     /// chain defaults to the whole relay, a delegation to the chain's root.
+    /// A delegation that sets it must also name --subscribe or --publish,
+    /// since the new link carries only the patterns it names.
     #[arg(long, value_name = "PATH")]
     pub(crate) root: Option<String>,
 
