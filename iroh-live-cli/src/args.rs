@@ -96,7 +96,10 @@ impl TransportArgs {
     }
 
     /// Returns the token to present to the relay, with `var` as the variable's value.
-    pub(crate) fn relay_token_from(&self, var: Option<String>) -> Result<Option<moq_net::auth::Token>> {
+    pub(crate) fn relay_token_from(
+        &self,
+        var: Option<String>,
+    ) -> Result<Option<moq_net::auth::Token>> {
         let token = match (&self.relay_token, &self.relay_token_file) {
             (Some(token), _) => token.expose().to_owned(),
             (None, Some(path)) => std::fs::read_to_string(path)

@@ -179,8 +179,15 @@ impl IrohSessions {
         } = self.admit(connection).await?;
         // Held while the session runs.
         let _pull = pull.map(|(pull, name)| crate::hold_pull(pull, name));
-        self.run(session, driver, &authorization, bounded, &recheck, key_changes)
-            .await;
+        self.run(
+            session,
+            driver,
+            &authorization,
+            bounded,
+            &recheck,
+            key_changes,
+        )
+        .await;
         Ok(())
     }
 

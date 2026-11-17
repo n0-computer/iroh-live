@@ -200,9 +200,23 @@ mod tests {
         std::fs::write(&file, "from-file\n").expect("writes the token");
         let file_arg = file.to_str().expect("a UTF-8 temp path");
 
-        let with_file = ["irl", "publish", "--relay", &relay, "--relay-token-file", file_arg];
+        let with_file = [
+            "irl",
+            "publish",
+            "--relay",
+            &relay,
+            "--relay-token-file",
+            file_arg,
+        ];
         assert_eq!(token(&with_file, "from-var").as_deref(), Some("from-file"));
-        let inline = ["irl", "publish", "--relay", &relay, "--relay-token", "inline"];
+        let inline = [
+            "irl",
+            "publish",
+            "--relay",
+            &relay,
+            "--relay-token",
+            "inline",
+        ];
         assert_eq!(token(&inline, "from-var").as_deref(), Some("inline"));
         let var_only = ["irl", "publish", "--relay", &relay];
         assert_eq!(token(&var_only, "from-var").as_deref(), Some("from-var"));

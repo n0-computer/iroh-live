@@ -255,10 +255,16 @@ mod tests {
     /// A principal root the relay refuses is refused by `show` too.
     #[test]
     fn a_principal_root_the_relay_refuses_is_refused() {
-        assert_eq!(principal_root("k", "/spaces/alice/").unwrap(), "spaces/alice");
+        assert_eq!(
+            principal_root("k", "/spaces/alice/").unwrap(),
+            "spaces/alice"
+        );
         assert_eq!(principal_root("k", "").unwrap(), "");
         let err = principal_root("k@spaces/*", "spaces/*").unwrap_err();
-        assert!(err.to_string().contains("literal path"), "unexpected: {err}");
+        assert!(
+            err.to_string().contains("literal path"),
+            "unexpected: {err}"
+        );
         assert!(principal_root("k", "a\\b").is_err());
     }
 
