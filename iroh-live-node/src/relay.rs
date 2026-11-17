@@ -46,7 +46,10 @@ use crate::{
 const RELAY_COST: u64 = 10;
 
 /// How to attach to a relay.
-#[derive(Debug, Clone)]
+///
+/// Its `Debug` output and the link's logs show [`url`](Self::url) without its
+/// query and fragment, which may hold a token.
+#[derive(derive_more::Debug, Clone)]
 #[non_exhaustive]
 pub struct RelayConfig {
     /// The relay to dial: `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
@@ -54,6 +57,7 @@ pub struct RelayConfig {
     /// The path and query are the ones the session requests, such as a
     /// ticket the relay pulls. A `jwt` in the query is the connection
     /// credential, ahead of [`tokens`](Self::tokens).
+    #[debug("{}", redacted(url))]
     pub url: Url,
     /// The tokens the node presents to the relay, the first as the connection credential.
     ///
@@ -207,6 +211,7 @@ pub struct RelayLink {
 #[derive(derive_more::Debug)]
 struct RelayInner {
     link: LinkId,
+    /// The relay's URL without its query and fragment, for logs.
     url: Url,
     status: Watchable<RelayStatus>,
     #[debug(skip)]
@@ -355,7 +360,7 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
             latest_sample: latest_sample.clone(),
         },
     )?;
-    let url = config.url.clone();
+    let url = redacted(&config.url);
     info!(%url, consume = config.consume, "attaching relay");
     let status = Watchable::new(RelayStatus::Connecting);
     let task = spawn_uplink(
@@ -394,6 +399,14 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
             tasks: Arc::downgrade(&node.tasks),
         }),
     })
+}
+
+/// Returns `url` without its query and fragment, which may hold a token, for logs.
+fn redacted(url: &Url) -> Url {
+    let mut url = url.clone();
+    url.set_query(None);
+    url.set_fragment(None);
+    url
 }
 
 /// Returns the endpoint id an `iroh://` relay URL names, or `None` for another scheme.
@@ -487,7 +500,7 @@ struct LinkParts {
 
 /// Spawns the task that runs a relay link's uplink.
 fn spawn_uplink(uplink: &Uplink, parts: LinkParts) -> tokio::task::JoinHandle<()> {
-    let span = info_span!("relay", url = %parts.config.url, link = %parts.link);
+    let span = info_span!("relay", url = %redacted(&parts.config.url), link = %parts.link);
     match uplink {
         Uplink::Iroh { relay, stop } => {
             tokio::spawn(iroh_uplink(parts, *relay, stop.clone()).instrument(span))
@@ -935,6 +948,19 @@ mod tests {
             let url: Url = other.parse().expect("url");
             assert_eq!(iroh_relay(&url).expect(other), None, "{other}");
         }
+    }
+
+    #[test]
+    fn a_relay_url_is_logged_without_its_token() {
+        let id = SecretKey::generate().public();
+        let url: Url = format!("iroh://{id}/live?jwt=secret.token#jwt=other.secret")
+            .parse()
+            .expect("url");
+        assert_eq!(redacted(&url).as_str(), format!("iroh://{id}/live"));
+        let config = RelayConfig::new(url);
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("secret"), "{debug}");
+        assert!(debug.contains("/live"), "{debug}");
     }
 
     #[test]

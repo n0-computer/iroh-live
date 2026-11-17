@@ -192,7 +192,11 @@ pub(crate) async fn client_handshake(
         match url::Url::parse(&format!("moqt://iroh{target}")) {
             Ok(url) => client = client.with_url(url),
             Err(err) => {
-                warn!(error = %err, %target, "setup target is no valid URL, requesting the root")
+                // Logged without the query, which holds the token.
+                let path = target
+                    .split_once('?')
+                    .map_or(target.as_str(), |(path, _)| path);
+                warn!(error = %err, %path, "setup target is no valid URL, requesting the root")
             }
         }
     }
