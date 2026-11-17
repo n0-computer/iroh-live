@@ -401,9 +401,10 @@ impl Config {
                     (true, false) => format!("{browsers}, and publish at their own paths"),
                 };
                 match (&self.auth_url, &self.iroh_policy) {
-                    (Some(url), _) => {
-                        lines.push(format!("  browsers: decided by the auth server at {url}"))
-                    }
+                    (Some(url), _) => lines.push(format!(
+                        "  browsers: decided by the auth server at {}",
+                        without_credentials(url)
+                    )),
                     (None, Some(_)) => {
                         lines.push(format!("  browsers without a token: {browsers}"));
                     }
@@ -528,6 +529,18 @@ fn describe(permissions: &Permissions) -> String {
         list(&permissions.subscribe),
         list(&permissions.publish)
     )
+}
+
+/// Returns `url` without its user name and password, for the startup line.
+///
+/// moq-relay sends the auth server's secret as the password of `--auth-url`,
+/// and the startup line goes to stdout and the log.
+fn without_credentials(url: &url::Url) -> url::Url {
+    let mut url = url.clone();
+    // Fails only for a URL that cannot hold credentials, which then has none.
+    url.set_password(None).ok();
+    url.set_username("").ok();
+    url
 }
 
 /// Formats `duration` in whole hours, minutes or seconds, as `--max-session` takes it.

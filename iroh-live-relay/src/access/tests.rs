@@ -323,3 +323,13 @@ fn an_auth_url_without_an_iroh_verifier_warns() {
             .any(|warning| warning.contains("--auth-url decides browsers only"))
     );
 }
+
+#[test]
+fn the_startup_line_hides_the_auth_servers_secret() {
+    let policies = parse(&["--auth-url", "https://relay:hunter2@auth.example/"])
+        .policies()
+        .expect("private");
+    let text = policies.summary.join("\n");
+    assert!(text.contains("https://auth.example/"), "{text}");
+    assert!(!text.contains("hunter2"), "{text}");
+}
