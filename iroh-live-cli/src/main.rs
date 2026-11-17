@@ -60,7 +60,12 @@ enum Command {
 
 /// Parses the command line and runs the chosen command.
 fn main() -> n0_error::Result {
-    tracing_subscriber::fmt::init();
+    // Logs go to stderr: stdout carries what scripts read, such as the key
+    // `irl key` prints and the token `irl rcan sign` prints.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
     let cli = Cli::parse();
 
     // Windowed commands set up inside `block_on`, then hand the main thread to
