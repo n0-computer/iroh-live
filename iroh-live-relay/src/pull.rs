@@ -443,7 +443,8 @@ impl Pulls {
     /// The pull is for a session of `client` that asked for `requested`.
     /// Hold the returned [`PullGuard`] while that session runs, and serve it
     /// the cluster [`mounted`] at `requested`. Concurrent pulls of one name
-    /// share a dial. It does not check [`Access`].
+    /// share a dial. It does not check who may pull: the caller does, as
+    /// [`with_open_pulls`](Self::with_open_pulls) describes.
     ///
     /// Cancellation safe: dropping this future only drops the caller's hold.
     /// The dial runs on, and the pull retires as usual.
@@ -471,7 +472,8 @@ impl Pulls {
     /// Returns at once with the hold, before the dial connects: await
     /// [`PullGuard::connected`] for its outcome. The [`Limits`] are checked
     /// here, so a session that exceeds them can be refused before it starts.
-    /// It does not check [`Access`].
+    /// It does not check who may pull: the caller does, as
+    /// [`with_open_pulls`](Self::with_open_pulls) describes.
     ///
     /// # Errors
     ///
