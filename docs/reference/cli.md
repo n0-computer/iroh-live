@@ -101,7 +101,7 @@ Transport:
 | `--name <NAME>` | Broadcast name, as the ticket carries it (default: `hello`) |
 | `--relay <ENDPOINT_ID>` | Also push the broadcast to this relay |
 | `--relay-token-file <PATH>` | Present the token in this file to `--relay`: a JWT or an rcan chain |
-| `--relay-token <TOKEN>` | Present this token to `--relay`. Also read from `IRL_RELAY_TOKEN`. Prefer the file or the variable, since other users can read a command line |
+| `--relay-token <TOKEN>` | Present this token to `--relay`. Prefer the file or the `IRL_RELAY_TOKEN` variable, since other users can read a command line. The variable counts only with `--relay` and without either flag |
 | `--key <NAME>` | Bind with the stored key of this name, created on first use. A node that presents an rcan chain binds with the key the chain names |
 | `--no-serve` | Accept no incoming sessions and print no ticket. Only useful with `--relay` |
 | `--no-qr` | Do not print the QR code |

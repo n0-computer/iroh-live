@@ -182,6 +182,44 @@ mod tests {
         .expect_err("two token sources");
     }
 
+    /// `IRL_RELAY_TOKEN` yields to either flag, and counts only with `--relay`.
+    #[test]
+    fn the_relay_token_variable_yields_to_the_flags() {
+        let token = |args: &[&str], var: &str| {
+            let cli = Cli::try_parse_from(args).expect("clap accepts the flags");
+            let Command::Publish(args) = cli.command else {
+                panic!("expected publish");
+            };
+            args.transport
+                .relay_token_from(Some(var.to_owned()))
+                .expect("a valid token")
+                .map(|token| token.as_str().to_owned())
+        };
+        let relay = iroh::SecretKey::generate().public().to_string();
+        let file = std::env::temp_dir().join(format!("irl-token-{relay}.jwt"));
+        std::fs::write(&file, "from-file\n").expect("writes the token");
+        let file_arg = file.to_str().expect("a UTF-8 temp path");
+
+        let with_file = ["irl", "publish", "--relay", &relay, "--relay-token-file", file_arg];
+        assert_eq!(token(&with_file, "from-var").as_deref(), Some("from-file"));
+        let inline = ["irl", "publish", "--relay", &relay, "--relay-token", "inline"];
+        assert_eq!(token(&inline, "from-var").as_deref(), Some("inline"));
+        let var_only = ["irl", "publish", "--relay", &relay];
+        assert_eq!(token(&var_only, "from-var").as_deref(), Some("from-var"));
+        assert_eq!(token(&["irl", "publish"], "from-var"), None);
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn the_relay_token_is_redacted_in_debug() {
+        let cli = Cli::try_parse_from(["irl", "publish", "--relay-token", "secret-jwt"])
+            .expect("clap accepts the flag");
+        let Command::Publish(args) = cli.command else {
+            panic!("expected publish");
+        };
+        assert!(!format!("{:?}", args.transport).contains("secret-jwt"));
+    }
+
     #[test]
     fn the_endpoint_id_needs_a_name() {
         let (id, _) = endpoint_and_name();

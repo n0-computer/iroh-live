@@ -40,15 +40,10 @@ pub(crate) struct TransportArgs {
     /// Presents this token to --relay: a JWT, or an rcan capability chain.
     ///
     /// Other users of this machine can read a command line, so prefer
-    /// --relay-token-file or the IRL_RELAY_TOKEN environment variable.
-    #[arg(
-        long,
-        value_name = "TOKEN",
-        env = "IRL_RELAY_TOKEN",
-        hide_env_values = true,
-        conflicts_with = "relay_token_file"
-    )]
-    pub(crate) relay_token: Option<String>,
+    /// --relay-token-file or the IRL_RELAY_TOKEN environment variable. The
+    /// variable is read only with --relay and without either flag.
+    #[arg(long, value_name = "TOKEN", conflicts_with = "relay_token_file")]
+    pub(crate) relay_token: Option<SecretString>,
 
     /// Presents the token in this file to --relay: a JWT, or an rcan capability chain.
     #[arg(long, value_name = "PATH", requires = "relay")]
@@ -62,14 +57,54 @@ pub(crate) struct TransportArgs {
     pub(crate) key: Option<String>,
 }
 
+/// The environment variable `irl publish` reads a relay token from.
+pub(crate) const RELAY_TOKEN_VAR: &str = "IRL_RELAY_TOKEN";
+
+/// A string that `Debug` prints redacted, for secrets in arguments.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SecretString(String);
+
+impl SecretString {
+    /// Returns the secret.
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl std::str::FromStr for SecretString {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
 impl TransportArgs {
-    /// Returns the token to present to the relay, from --relay-token, its variable, or its file.
+    /// Returns the token to present to the relay, from --relay-token, its file, or its variable.
+    ///
+    /// The flags win over the variable, so a variable exported for every
+    /// command neither conflicts with --relay-token-file nor counts without
+    /// --relay.
     pub(crate) fn relay_token(&self) -> Result<Option<moq_net::auth::Token>> {
+        self.relay_token_from(std::env::var(RELAY_TOKEN_VAR).ok())
+    }
+
+    /// Returns the token to present to the relay, with `var` as the variable's value.
+    pub(crate) fn relay_token_from(&self, var: Option<String>) -> Result<Option<moq_net::auth::Token>> {
         let token = match (&self.relay_token, &self.relay_token_file) {
-            (Some(token), _) => token.clone(),
+            (Some(token), _) => token.expose().to_owned(),
             (None, Some(path)) => std::fs::read_to_string(path)
                 .map_err(|err| anyerr!("failed to read {}: {err}", path.display()))?,
-            (None, None) => return Ok(None),
+            (None, None) => match var.filter(|_| self.relay.is_some()) {
+                Some(token) => token,
+                None => return Ok(None),
+            },
         };
         let token = token.trim();
         if token.is_empty() {

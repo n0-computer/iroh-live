@@ -142,7 +142,8 @@ fn show(args: &RcanShowArgs) -> Result<String> {
         Some(peer) => peer,
         None => PublicKey::from_bytes(chain.holder().as_bytes()).map_err(|err| anyerr!("{err}"))?,
     };
-    let verifier = RcanVerifier::new(key.as_verifying_key(), root.trim_matches('/'));
+    let root = principal_root(principal, root)?;
+    let verifier = RcanVerifier::new(key.as_verifying_key(), root);
     let request = PeerRequest::new(peer, SessionRequest::default(), Event::Connect);
     match verifier.verify_chain(&chain, &request) {
         Ok(authorization) => {
@@ -163,6 +164,29 @@ fn show(args: &RcanShowArgs) -> Result<String> {
         }
     }
     Ok(out)
+}
+
+/// Returns the root of `--principal`, refused where the relay refuses `--rcan-principal`.
+///
+/// Keeps to the relay's checks, so `irl rcan show` does not report a grant
+/// from a principal the relay would refuse to start with.
+fn principal_root<'a>(principal: &str, root: &'a str) -> Result<&'a str> {
+    let root = root.trim_matches('/');
+    let why = if root.contains('*') {
+        Some("a root is a literal path, without * or **".to_owned())
+    } else if root.contains('\\') {
+        Some("a root holds no `\\`".to_owned())
+    } else if !root.is_empty() {
+        moq_net::Path::new(root)
+            .err()
+            .map(|err| format!("the root is not a valid path: {err}"))
+    } else {
+        None
+    };
+    match why {
+        Some(why) => Err(anyerr!("--principal {principal:?}: {why}")),
+        None => Ok(root),
+    }
 }
 
 /// Reads a chain from `path`, or from standard input for `-`.
@@ -226,6 +250,16 @@ mod tests {
             publish: Vec::new(),
             ttl: Duration::from_secs(3600),
         }
+    }
+
+    /// A principal root the relay refuses is refused by `show` too.
+    #[test]
+    fn a_principal_root_the_relay_refuses_is_refused() {
+        assert_eq!(principal_root("k", "/spaces/alice/").unwrap(), "spaces/alice");
+        assert_eq!(principal_root("k", "").unwrap(), "");
+        let err = principal_root("k@spaces/*", "spaces/*").unwrap_err();
+        assert!(err.to_string().contains("literal path"), "unexpected: {err}");
+        assert!(principal_root("k", "a\\b").is_err());
     }
 
     /// Issues a membership, delegates it to a device, and checks what a relay grants the device.
