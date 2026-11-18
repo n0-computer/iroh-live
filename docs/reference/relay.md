@@ -62,8 +62,10 @@ With any `--auth-*` or `--rcan-*` flag the relay is private:
 - A session without a token gets exactly the `--auth-public*` patterns,
   rooted at `/`, for browsers and iroh clients alike. Without patterns it is
   refused. `--auth-public-own-paths` adds an iroh client's own paths.
-- A session admitted with a token lasts at most `--max-session`. Its client
-  then redials, and presents its token again.
+- A session admitted with a token lasts at most `--max-session`. At that
+  bound the relay sends a GOAWAY, and an iroh client dials a new session
+  with its token while the old one serves for up to five seconds. The client
+  sees no refusal. A session whose token expires first closes as expired.
 - A token without an expiry is refused, unless `--allow-unexpiring-tokens`
   is set.
 
@@ -103,8 +105,9 @@ A session that presents two different JWTs is refused.
 
 The relay reads the key file again when it changes, and checks it once a
 second. A new session sees the change at once. Every live iroh session that
-presented a token is decided again, and closes if its token no longer
-verifies or its grant changed. A browser session keeps its grant until its
+presented a token is decided again. It closes as unauthorized if its token
+no longer verifies or now grants less. If the token now grants more, the
+relay sends a GOAWAY, and the client's new session gets the new grant. A browser session keeps its grant until its
 token or `--max-session` expires. A file that is gone or holds no key refuses
 every token.
 

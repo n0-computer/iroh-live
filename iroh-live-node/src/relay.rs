@@ -133,7 +133,10 @@ pub enum RelayStatus {
     /// The relay refused the link's tokens, or closed its session over them.
     ///
     /// The relay refuses a link without a token it accepts, and closes a
-    /// session whose token expired or no longer verifies. The link keeps
+    /// session whose token expired or no longer verifies. A relay that only
+    /// renews a session, at its session length bound or after a key change
+    /// that widens the token's grant, sends a GOAWAY instead: the link then
+    /// dials a new session and reports no refusal. The link keeps
     /// redialing with backoff, since the relay's keys may change, and
     /// presents the tokens set through [`RelayLink::tokens`]. The status
     /// stays here until a session is up again. Only `iroh://` links report
@@ -570,10 +573,11 @@ async fn tokio_uplink(
 /// Returns moq's connect policy for an iroh relay link.
 ///
 /// The link redials forever with backoff from [`REDIAL_MIN`] to
-/// [`REDIAL_MAX`]. An endpoint id names one node, so a GOAWAY that names no
-/// new address redials it once, which reaches a replacement started beside
-/// the draining process, and otherwise keeps the drained session until the
-/// relay closes it.
+/// [`REDIAL_MAX`]. A GOAWAY that names no new address redials the relay at
+/// once while the drained session serves, as a relay does that ends a
+/// session at its `--max-session` bound. A session drained before
+/// [`STABLE_SESSION`] instead serves until the relay closes it, so a relay
+/// that drains every session is not dialed in a loop.
 fn policy_config() -> reconnect::Config {
     let mut config = reconnect::Config::default();
     config.backoff.initial = REDIAL_MIN;
@@ -979,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn the_iroh_policy_redials_forever_and_hands_off_a_restart() {
+    fn the_iroh_policy_redials_forever_and_hands_off_after_a_goaway() {
         let config = policy_config();
         assert_eq!(config.backoff.timeout, None, "gives up after a while");
         assert_eq!(config.backoff.initial, REDIAL_MIN);

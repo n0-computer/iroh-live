@@ -34,6 +34,12 @@ use crate::pull::{Access, Client, PullGuard, Pulls};
 /// How long a closing session gets to tell its peer when the relay shuts down.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
+/// How long a session the relay asked to reconnect keeps serving before the relay closes it.
+///
+/// The client dials its new session meanwhile, so its broadcasts move over
+/// without a gap.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(5);
+
 /// How often the relay checks its JWT key file for changes.
 const KEY_CHECK: Duration = Duration::from_secs(1);
 
@@ -167,12 +173,14 @@ impl IrohSessions {
             session,
             driver,
             authorization,
+            bounded,
             recheck,
             pull,
         } = self.admit(connection).await?;
         // Held while the session runs.
         let _pull = pull.map(|(pull, name)| crate::hold_pull(pull, name));
-        self.run(session, driver, &authorization, &recheck).await;
+        self.run(session, driver, &authorization, bounded, &recheck)
+            .await;
         Ok(())
     }
 
@@ -223,14 +231,14 @@ impl IrohSessions {
         };
         // A session with a token is bounded, and decided again when the keys change.
         let mut recheck = Vec::new();
+        let mut bounded = false;
         if token.is_some() {
             if let Some(bound) = self.max_session {
                 let latest = std::time::SystemTime::now() + bound;
-                authorization.expires = Some(
-                    authorization
-                        .expires
-                        .map_or(latest, |expires| expires.min(latest)),
-                );
+                bounded = authorization.expires.is_none_or(|expires| latest < expires);
+                if bounded {
+                    authorization.expires = Some(latest);
+                }
             }
             recheck = decided
                 .into_iter()
@@ -316,6 +324,7 @@ impl IrohSessions {
             session,
             driver,
             authorization,
+            bounded,
             recheck,
             pull,
         })
@@ -415,12 +424,15 @@ impl IrohSessions {
     /// Runs an admitted session until it ends, its authorization expires, or the relay shuts down.
     ///
     /// When the key file changes, the decisions in `recheck` are made again,
-    /// and the session closes if one is rejected or its grant changed.
+    /// and the session closes if one is rejected or its grant changed. A
+    /// `bounded` session expires at the relay's `--max-session` bound before
+    /// its token does, so the relay then asks the client to reconnect.
     async fn run(
         &self,
         session: moq_net::Session,
         driver: moq_net::Driver,
         authorization: &Authorization,
+        bounded: bool,
         recheck: &[Decided],
     ) {
         let run = moq_net::time::run(driver);
@@ -428,7 +440,7 @@ impl IrohSessions {
         let expiry = expiry(authorization);
         tokio::pin!(expiry);
         let mut key_changes = self.key_changes.clone().filter(|_| !recheck.is_empty());
-        let close = loop {
+        let ending = loop {
             let changed = async {
                 match key_changes.as_mut() {
                     Some(changes) => changes.changed().await.is_ok(),
@@ -440,24 +452,46 @@ impl IrohSessions {
                     debug!(error = %err, "iroh session ended");
                     return;
                 }
-                () = self.shutdown.cancelled() => break moq_net::Error::Cancel,
+                () = self.shutdown.cancelled() => break Ending::Close(moq_net::Error::Cancel),
                 () = &mut expiry => {
+                    if bounded {
+                        info!("the iroh client's session reached --max-session, asking it to reconnect");
+                        break Ending::Reconnect;
+                    }
                     info!("the iroh client's authorization expired, closing its session");
-                    break moq_net::Error::Expired;
+                    break Ending::Close(moq_net::Error::Expired);
                 }
                 live = changed => {
                     if !live {
                         key_changes = None;
                         continue;
                     }
-                    if let Some(code) = self.decide_again(recheck).await {
-                        break code;
+                    if let Some(ending) = self.decide_again(recheck).await {
+                        break ending;
                     }
                 }
             }
         };
+        if matches!(ending, Ending::Reconnect) {
+            let goaway = moq_net::goaway::Goaway::new().with_timeout(Some(DRAIN_DEADLINE));
+            match session.goaway(goaway) {
+                // The driver closes the session at the deadline, if the client did not.
+                Ok(()) => tokio::select! {
+                    _ = tokio::time::timeout(DRAIN_DEADLINE + CLOSE_GRACE, &mut run) => {
+                        debug!("the drained iroh session ended");
+                        return;
+                    }
+                    () = self.shutdown.cancelled() => {}
+                },
+                Err(err) => debug!(error = %err, "could not send the GOAWAY"),
+            }
+        }
+        let code = match ending {
+            Ending::Close(code) => code,
+            Ending::Reconnect => moq_net::Error::Cancel,
+        };
         // The driver keeps running, so the session can tell its peer.
-        session.abort(close);
+        session.abort(code);
         if tokio::time::timeout(CLOSE_GRACE, run).await.is_err() {
             warn!(grace = ?CLOSE_GRACE, "iroh session did not close in time");
         }
@@ -465,8 +499,12 @@ impl IrohSessions {
 }
 
 impl IrohSessions {
-    /// Makes the decisions in `recheck` again, and returns the code to close the session with if one changed.
-    async fn decide_again(&self, recheck: &[Decided]) -> Option<moq_net::Error> {
+    /// Makes the decisions in `recheck` again, and returns how to end the session if one changed.
+    ///
+    /// A rejection, or a grant that no longer covers the one the session got,
+    /// closes it as unauthorized. A wider grant asks the client to reconnect,
+    /// so its new session gets the new grant.
+    async fn decide_again(&self, recheck: &[Decided]) -> Option<Ending> {
         for decided in recheck {
             let decision = moq_ext_access::policy::decide_within(
                 &*self.policy,
@@ -481,14 +519,16 @@ impl IrohSessions {
                         code = %rejection.code(),
                         "the key file changed and the token no longer verifies, closing the session",
                     );
-                    return Some(rejection.code().clone());
+                    return Some(Ending::Close(rejection.code().clone()));
                 }
                 Ok(authorization) if authorization.grant != decided.grant => {
+                    let ending = ending_for_grant(&decided.grant, &authorization.grant);
                     info!(
                         grant = ?authorization.grant,
-                        "the key file changed the token's grant, closing the session",
+                        ?ending,
+                        "the key file changed the token's grant, ending the session",
                     );
-                    return Some(moq_net::Error::Unauthorized);
+                    return Some(ending);
                 }
                 Ok(_) => debug!("the key file changed, and the token still verifies"),
             }
@@ -515,6 +555,33 @@ fn request_of(request: &PeerRequest) -> SessionRequest {
     }
 }
 
+/// How the relay ends a session that it no longer serves as it admitted it.
+#[derive(Debug)]
+enum Ending {
+    /// Closes the session with this code.
+    ///
+    /// A client takes [`Expired`](moq_net::Error::Expired) and
+    /// [`Unauthorized`](moq_net::Error::Unauthorized) as a refusal of its token.
+    Close(moq_net::Error),
+    /// Sends a GOAWAY, so the client dials a new session with the same token.
+    ///
+    /// The old session serves until the new one is up, or until
+    /// [`DRAIN_DEADLINE`].
+    Reconnect,
+}
+
+/// Returns how to end a session whose token's grant changed from `admitted` to `now`.
+///
+/// A grant that covers the admitted one asks the client to reconnect, any
+/// other closes the session as unauthorized.
+fn ending_for_grant(admitted: &Grant, now: &Grant) -> Ending {
+    if now.publish.covers(&admitted.publish) && now.subscribe.covers(&admitted.subscribe) {
+        Ending::Reconnect
+    } else {
+        Ending::Close(moq_net::Error::Unauthorized)
+    }
+}
+
 /// A decision about a live session, as the relay makes it again when the key file changes.
 struct Decided {
     request: PeerRequest,
@@ -527,6 +594,8 @@ struct Admitted {
     session: moq_net::Session,
     driver: moq_net::Driver,
     authorization: Authorization,
+    /// Whether the session expires at the relay's max-session bound, before its token does.
+    bounded: bool,
     /// The decisions to make again when the key file changes, empty without a token.
     recheck: Vec<Decided>,
     /// The pull of the ticket the session named, with that name.
@@ -686,6 +755,29 @@ mod tests {
         assert!(grant.allows_publish(&own) && grant.allows_publish("demo/cam"));
         let other = iroh::SecretKey::from_bytes(&[6; 32]).public();
         assert!(!grant.allows_publish(&format!("live/{other}/cam")));
+    }
+
+    /// A key change that widens a token's grant reconnects its session, one that narrows it closes it.
+    #[test]
+    fn a_changed_grant_reconnects_only_when_it_covers_the_admitted_one() {
+        let admitted = Grant::publish_under(Pattern::subtree("tokens").unwrap());
+        let wider = admitted.union(&Grant::publish_under(Pattern::subtree("other").unwrap()));
+        assert!(matches!(
+            ending_for_grant(&admitted, &wider),
+            Ending::Reconnect
+        ));
+        assert!(matches!(
+            ending_for_grant(&admitted, &Grant::everything()),
+            Ending::Reconnect
+        ));
+        assert!(matches!(
+            ending_for_grant(&admitted, &Grant::subscribe_only()),
+            Ending::Close(moq_net::Error::Unauthorized)
+        ));
+        assert!(matches!(
+            ending_for_grant(&wider, &admitted),
+            Ending::Close(moq_net::Error::Unauthorized)
+        ));
     }
 
     #[test]

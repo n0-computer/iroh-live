@@ -2753,6 +2753,8 @@ async fn a_key_file_change_closes_sessions_whose_token_no_longer_verifies() {
 }
 
 /// A session with a token lasts at most `--max-session`, and the client gets back in with the same token.
+///
+/// The relay asks the client to reconnect, so the link never reports a refusal.
 #[tokio::test]
 async fn a_token_session_lasts_at_most_max_session() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -2763,12 +2765,53 @@ async fn a_token_session_lasts_at_most_max_session() {
     let (_endpoint, holder) = relay_node().await;
     let _cam = publish_at(&holder, "tokens/cam");
     let mut updates = relay.cluster.origin.consume().announced();
-    let _link = attach_with_token(&holder, &relay, Some(token_for(&keys, "tokens")));
+    let link = attach_with_token(&holder, &relay, Some(token_for(&keys, "tokens")));
+    let statuses = record_statuses(&link);
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
     retracted(&mut updates, "tokens/cam").await;
     // The token still verifies, so the redial gets back in.
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    status_becomes(&link, RelayStatus::Connected).await;
+    let seen = statuses.seen();
+    assert!(
+        !seen
+            .iter()
+            .any(|status| matches!(status, RelayStatus::Refused(_))),
+        "a session at its max-session bound looked like a refusal: {seen:?}"
+    );
     holder.shutdown().await;
+}
+
+/// Every status a relay link reported, recorded while it lives.
+struct Statuses {
+    seen: Arc<std::sync::Mutex<Vec<RelayStatus>>>,
+    _task: AbortOnDropHandle<()>,
+}
+
+impl Statuses {
+    /// Returns the statuses recorded so far.
+    fn seen(&self) -> Vec<RelayStatus> {
+        self.seen.lock().expect("poisoned").clone()
+    }
+}
+
+/// Starts recording every status `link` reports.
+fn record_statuses(link: &iroh_live_node::RelayLink) -> Statuses {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut watcher = link.status();
+    let record = seen.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            record.lock().expect("poisoned").push(watcher.get());
+            if watcher.updated().await.is_err() {
+                return;
+            }
+        }
+    });
+    Statuses {
+        seen,
+        _task: AbortOnDropHandle::new(task),
+    }
 }
 
 /// Returns a token that reads exactly `path` and publishes `publish`, if set.

@@ -99,7 +99,8 @@ it.
 - Tokens must expire. A private relay refuses a token without an expiry
   unless you pass `--allow-unexpiring-tokens`.
 - A session admitted with a token lasts at most `--max-session`, 24 hours by
-  default. Its client then redials with its token.
+  default. The relay then asks the client to reconnect, and an iroh client
+  dials a new session with its token. `irl publish` keeps running.
 - The relay reads the key file again when it changes, and checks it once a
   second. Removing a key refuses it for new sessions at once, and closes the
   live iroh sessions it admitted within about a second. A browser session

@@ -191,7 +191,7 @@ The relay is open without auth flags, and private with any `--auth-*` or
 | `--auth-key` with `--auth-url` or `--auth-public*` was a parse error | It works: the key verifies tokens, and the patterns are the public area |
 | A verified iroh token's claims replaced the client's own paths | Unchanged by default. `--auth-own-paths` adds them |
 | Tokens without `exp` were accepted | A private relay refuses them, unless `--allow-unexpiring-tokens` |
-| A token session lasted until its token expired | It lasts at most `--max-session` (24 hours), and closes when the key file stops verifying its token |
+| A token session lasted until its token expired | It lasts at most `--max-session` (24 hours). At that bound the relay sends a GOAWAY, and the client dials a new session with the same token. It closes when the key file stops verifying its token |
 | `--open-pulls` let any session pull | Only a session the relay admits to read the ticket's path. On an open relay that is still every session |
 | An iroh session that named a ticket was decided at the ticket's string | It reads the ticket if its token reads the ticket's path |
 | The viewer ignored `?jwt=` | It reads `#jwt=`, and `?jwt=` for older links, and sends the token only to its own origin |

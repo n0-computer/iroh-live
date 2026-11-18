@@ -509,9 +509,11 @@ flags, for `run` and the tests alike.
   JWT to `KeyFile` and an `rcan1:` chain to the principal whose key issued
   its first link. `KeyFile` reads the file again when its modification time
   or size changes, and the relay then decides every live token session
-  again. A session lasts at most `--max-session`. When the authorization
-  expires, the relay closes the session, and the client's relay link
-  redials with the tokens set on it last.
+  again. A session lasts at most `--max-session`. At that bound, and after a
+  key change that widens the token's grant, the relay sends a GOAWAY: the
+  client's relay link dials a new session while the old one serves, and
+  reports no refusal. When the token itself expires, the relay closes the
+  session as expired, and the link redials with the tokens set on it last.
 - *Browsers* come in through moq-relay's server. On an open relay, the relay
   answers each admission with `browser_grant(path)`: read anything, and
   publish a name of one segment below the dialed path. One segment keeps a

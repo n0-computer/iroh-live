@@ -195,8 +195,9 @@ pub struct Config {
 
     /// Bounds how long a session admitted with a token lasts.
     ///
-    /// The session closes at the earlier of its token's expiry and this
-    /// bound, and its client redials, presenting its token again.
+    /// The session ends at the earlier of its token's expiry and this bound.
+    /// At this bound the relay sends a GOAWAY, and an iroh client dials a
+    /// new session with the same token, which is no refusal.
     #[arg(long, value_name = "DURATION", default_value = "24h", value_parser = humantime::parse_duration)]
     pub max_session: Duration,
 
