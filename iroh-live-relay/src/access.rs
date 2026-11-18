@@ -26,7 +26,7 @@ use crate::{
 /// [`Config::access`](crate::Config::access) names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Access {
+pub enum AccessMode {
     /// Every session reads every broadcast.
     ///
     /// Browsers publish names of one segment, and iroh clients publish at
@@ -52,7 +52,7 @@ const PULLED_PATHS: [&str; 2] = ["live/*/*/**", "rooms/*/*/*/**"];
 #[non_exhaustive]
 pub struct Policies {
     /// The mode, given or inferred.
-    pub(crate) access: Access,
+    pub(crate) access: AccessMode,
     /// Decides browser sessions in [`admit`](crate::admit), or `None` when `--auth-url` does.
     pub browsers: Option<BrowserPolicy>,
     /// Decides iroh client sessions.
@@ -102,25 +102,25 @@ impl Config {
     /// # Errors
     ///
     /// Fails with [`Error::AccessConfig`] if the mode contradicts the other
-    /// settings: [`Access::Open`] with auth settings, or an
+    /// settings: [`AccessMode::Open`] with auth settings, or an
     /// [`iroh_policy`](crate::Config::iroh_policy) without auth settings and
     /// without an explicit mode.
-    pub fn access_mode(&self) -> Result<Access, Error> {
+    pub fn access_mode(&self) -> Result<AccessMode, Error> {
         let flags = self.auth_flags();
         match self.access {
-            Some(Access::Open) if !flags.is_empty() => Err(config_error(format!(
-                "Access::Open takes no auth settings, but {} is set; leave Config::access unset \
+            Some(AccessMode::Open) if !flags.is_empty() => Err(config_error(format!(
+                "AccessMode::Open takes no auth settings, but {} is set; leave Config::access unset \
                  to make the relay private",
                 flags.join(", ")
             ))),
             Some(access) => Ok(access),
             None if flags.is_empty() && self.iroh_policy.is_some() => Err(config_error(
                 "Config::iroh_policy is set without auth settings, which would serve browsers \
-                 every broadcast; set Config::access to Access::Open to mean that, or to \
-                 Access::Private to refuse browsers without a token",
+                 every broadcast; set Config::access to AccessMode::Open to mean that, or to \
+                 AccessMode::Private to refuse browsers without a token",
             )),
-            None if flags.is_empty() => Ok(Access::Open),
-            None => Ok(Access::Private),
+            None if flags.is_empty() => Ok(AccessMode::Open),
+            None => Ok(AccessMode::Private),
         }
     }
 
@@ -196,8 +196,8 @@ impl Config {
 
         let browsers = match (self.auth_url.is_some(), access) {
             (true, _) => None,
-            (false, Access::Open) => Some(BrowserPolicy::open()),
-            (false, Access::Private) => {
+            (false, AccessMode::Open) => Some(BrowserPolicy::open()),
+            (false, AccessMode::Private) => {
                 let mut reference = serve::Policy::default();
                 reference.keys.clone_from(&key_source);
                 reference.public = anonymous.clone();
@@ -216,12 +216,12 @@ impl Config {
         };
         let iroh: Arc<dyn DynPolicy<EndpointId>> = match (&self.iroh_policy, access, &tokens) {
             (Some(policy), _, _) => policy.clone(),
-            (None, Access::Open, _) => Arc::new(relay_policy()),
-            (None, Access::Private, Some(tokens)) => Arc::new(
+            (None, AccessMode::Open, _) => Arc::new(relay_policy()),
+            (None, AccessMode::Private, Some(tokens)) => Arc::new(
                 Verify::new(tokens.clone())
                     .with_fallback(anonymous_policy(&anonymous, self.auth_public_own_paths)),
             ),
-            (None, Access::Private, None) => {
+            (None, AccessMode::Private, None) => {
                 anonymous_policy(&anonymous, self.auth_public_own_paths)
             }
         };
@@ -288,7 +288,7 @@ impl Config {
     }
 
     /// Refuses settings that contradict each other or would admit no reader.
-    fn validate(&self, access: Access) -> Result<(), Error> {
+    fn validate(&self, access: AccessMode) -> Result<(), Error> {
         let public = [
             ("--auth-public", &self.auth_public),
             ("--auth-public-publish", &self.auth_public_publish),
@@ -348,7 +348,7 @@ impl Config {
             || self.auth_url.is_some()
             || self.iroh_policy.is_some()
             || !self.anonymous().subscribe.is_empty();
-        if access == Access::Private && !admits_a_reader {
+        if access == AccessMode::Private && !admits_a_reader {
             let why = if self.auth_public_own_paths {
                 "--auth-public-own-paths admits publishers only"
             } else {
@@ -365,7 +365,7 @@ impl Config {
     /// Returns the startup lines that describe the access, and the warnings.
     fn describe(
         &self,
-        access: Access,
+        access: AccessMode,
         verifies_tokens: bool,
         anonymous: &Permissions,
     ) -> (Vec<String>, Vec<String>) {
@@ -373,7 +373,7 @@ impl Config {
         let mut warnings = Vec::new();
         let custom = "iroh clients: custom policy, not checked by the relay";
         match access {
-            Access::Open => {
+            AccessMode::Open => {
                 let from = match self.access {
                     Some(_) => "set in Config::access",
                     None => "no --auth-* or --rcan-* flag",
@@ -396,7 +396,7 @@ impl Config {
                         .to_owned(),
                 );
             }
-            Access::Private => {
+            AccessMode::Private => {
                 let from = match self.access {
                     Some(_) => "set in Config::access".to_owned(),
                     None => format!("from {}", self.auth_flags().join(", ")),
@@ -488,7 +488,7 @@ impl Config {
             self.describe_pulls(access, verifies_tokens)
         ));
         if self.open_pulls {
-            let pullable = access == Access::Open
+            let pullable = access == AccessMode::Open
                 || anonymous.subscribe.iter().any(|pattern| {
                     PULLED_PATHS
                         .iter()
@@ -506,10 +506,10 @@ impl Config {
     }
 
     /// Returns which sessions may pull a ticket, for the startup line.
-    fn describe_pulls(&self, access: Access, verifies_tokens: bool) -> &'static str {
+    fn describe_pulls(&self, access: AccessMode, verifies_tokens: bool) -> &'static str {
         match (self.open_pulls, access, verifies_tokens) {
-            (true, Access::Open, _) => "any session",
-            (true, Access::Private, _) => "sessions the relay admits to read the ticket's path",
+            (true, AccessMode::Open, _) => "any session",
+            (true, AccessMode::Private, _) => "sessions the relay admits to read the ticket's path",
             (false, _, true) => "sessions whose token reads the ticket's path",
             (false, _, false) => "none; --open-pulls or a token verifier enables them",
         }

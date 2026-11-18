@@ -63,7 +63,7 @@ fn refused(config: &Config) -> String {
 
 #[test]
 fn the_access_mode_is_inferred() {
-    assert_eq!(parse(&[]).access_mode().unwrap(), Access::Open);
+    assert_eq!(parse(&[]).access_mode().unwrap(), AccessMode::Open);
     let keys = KeysFile::new();
     let key = principal();
     for args in [
@@ -78,7 +78,7 @@ fn the_access_mode_is_inferred() {
     ] {
         assert_eq!(
             parse(&args).access_mode().unwrap(),
-            Access::Private,
+            AccessMode::Private,
             "{args:?}"
         );
     }
@@ -87,27 +87,27 @@ fn the_access_mode_is_inferred() {
         parse(&["--max-session", "1h", "--open-pulls"])
             .access_mode()
             .unwrap(),
-        Access::Open
+        AccessMode::Open
     );
     let mut explicit = parse(&[]);
-    explicit.access = Some(Access::Private);
-    assert_eq!(explicit.access_mode().unwrap(), Access::Private);
+    explicit.access = Some(AccessMode::Private);
+    assert_eq!(explicit.access_mode().unwrap(), AccessMode::Private);
 }
 
 #[test]
 fn a_contradictory_access_config_is_refused() {
     let keys = KeysFile::new();
     let mut open_with_key = parse(&["--auth-key", keys.arg()]);
-    open_with_key.access = Some(Access::Open);
+    open_with_key.access = Some(AccessMode::Open);
     assert!(refused(&open_with_key).contains("--auth-key"));
     let mut open_with_url = parse(&["--auth-url", "https://auth.example"]);
-    open_with_url.access = Some(Access::Open);
-    assert!(refused(&open_with_url).contains("Access::Open"));
+    open_with_url.access = Some(AccessMode::Open);
+    assert!(refused(&open_with_url).contains("AccessMode::Open"));
 
     let message = refused(&parse(&["--auth-public-own-paths"]));
     assert!(message.contains("publishers only"), "{message}");
     let mut nothing = parse(&[]);
-    nothing.access = Some(Access::Private);
+    nothing.access = Some(AccessMode::Private);
     assert!(refused(&nothing).contains("every reader"));
     let message = refused(&parse(&["--auth-public-publish", "demo/**"]));
     assert!(message.contains("every reader"), "{message}");
@@ -125,16 +125,16 @@ fn an_iroh_policy_needs_auth_settings_or_an_explicit_mode() {
     let mut custom = parse(&[]);
     custom.iroh_policy = Some(Arc::new(relay_policy()));
     assert!(refused(&custom).contains("Config::iroh_policy"));
-    custom.access = Some(Access::Open);
+    custom.access = Some(AccessMode::Open);
     let policies = custom.policies().expect("open, stated");
-    assert_eq!(policies.access, Access::Open);
+    assert_eq!(policies.access, AccessMode::Open);
     assert!(
         policies
             .summary
             .iter()
             .any(|line| line.contains("custom policy"))
     );
-    custom.access = Some(Access::Private);
+    custom.access = Some(AccessMode::Private);
     let policies = custom
         .policies()
         .expect("private with a custom iroh policy");

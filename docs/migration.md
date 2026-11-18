@@ -204,8 +204,8 @@ For embedders and node code:
 - `pull::Access` is gone. `Pulls::with_open_pulls(true)` replaces
   `with_access(Access::Open)`, and the default stays the old
   `Access::Authorized`. `Pulls::open_pulls` replaces `Pulls::access`. The
-  only `Access` in the crate is the relay's mode, `Access::Open` or
-  `Access::Private`.
+  relay's mode is `AccessMode`, `AccessMode::Open` or `AccessMode::Private`,
+  set through `Config::access`.
 - `IrohSessions::new` refuses every session until it gets a policy.
   `admit` takes a `BrowserPolicy`, from `Config::policies()`.
 - `RelayStatus` is `#[non_exhaustive]` and has `Refused(Refusal)`. A match

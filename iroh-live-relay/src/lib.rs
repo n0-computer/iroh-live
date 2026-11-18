@@ -99,7 +99,7 @@ mod tokens;
 #[doc(hidden)]
 pub use self::access::{BrowserPolicy, Policies};
 pub use self::{
-    access::Access,
+    access::AccessMode,
     error::Error,
     iroh_sessions::{IrohSessions, browser_grant, relay_policy},
     tokens::{IrohTokens, RcanPrincipal},
@@ -227,12 +227,12 @@ pub struct Config {
 
     /// The access mode, or `None` to infer it from the other settings.
     ///
-    /// Inferred, any auth setting means [`Access::Private`] and none means
-    /// [`Access::Open`]. [`Access::Open`] with an auth setting is refused, and
-    /// so is an [`iroh_policy`](Self::iroh_policy) without auth settings,
-    /// unless this names the mode.
+    /// Inferred, any auth setting means [`AccessMode::Private`] and none
+    /// means [`AccessMode::Open`]. [`AccessMode::Open`] with an auth setting
+    /// is refused, and so is an [`iroh_policy`](Self::iroh_policy) without
+    /// auth settings, unless this names the mode.
     #[arg(skip)]
-    pub access: Option<Access>,
+    pub access: Option<AccessMode>,
 
     /// Decides the sessions of iroh clients, instead of the relay's own rules.
     ///

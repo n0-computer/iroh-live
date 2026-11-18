@@ -132,8 +132,8 @@ access: private (from --auth-key, --auth-public-subscribe, --rcan-principal)
 ### Embedding
 
 A binary that embeds the relay starts from `Config::default()`, which holds
-the command line's defaults, and sets fields. `Config::access` names the mode
-when the flags do not. `Config::iroh_policy` replaces the key file, the
+the command line's defaults, and sets fields. `Config::access` names the mode,
+an `AccessMode`, when the flags do not. `Config::iroh_policy` replaces the key file, the
 principals and the public patterns for iroh clients, and needs auth settings
 or `Config::access`. `Config::iroh_tokens()` returns the relay's own token
 verifier to compose into it.
