@@ -191,12 +191,34 @@ pub(crate) struct LinkEntry {
     pub(crate) latest_sample: LatestSample,
 }
 
+/// Which role a direct session plays for the node's groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SessionKind {
+    /// A session as any peer opens it.
+    Plain,
+    /// A session this node dialed as a forwarder, whose routes it may serve to its site.
+    Forwarding,
+    /// A session the peer dialed as a forwarder, which gets the groups' publications.
+    Forwarded,
+}
+
+impl SessionKind {
+    /// Reports whether sessions of this kind and `other` compete for one announcing role.
+    ///
+    /// A forwarder session this node dialed lands its routes apart from the
+    /// others, so it has a standby of its own.
+    fn same_class(self, other: Self) -> bool {
+        (self == Self::Forwarding) == (other == Self::Forwarding)
+    }
+}
+
 /// What a link is: a session with a peer, or a relay.
 #[derive(Debug)]
 pub(crate) enum LinkRole {
     /// A direct session with `peer`, which takes its rights from the policy.
     Direct {
         peer: EndpointId,
+        kind: SessionKind,
         /// What the policy decided for the session.
         ///
         /// `None` for a session that may do nothing: after a rejection, while
@@ -227,6 +249,14 @@ impl LinkEntry {
         }
     }
 
+    /// Returns the peer and the session kind of a direct link, or `None` for a relay.
+    fn session(&self) -> Option<(&EndpointId, SessionKind)> {
+        match &self.role {
+            LinkRole::Direct { peer, kind, .. } => Some((peer, *kind)),
+            LinkRole::Relay { .. } => None,
+        }
+    }
+
     /// Returns what the policy decided for a direct link's session.
     fn authorized(&self) -> Option<&Authorized> {
         match &self.role {
@@ -249,23 +279,31 @@ impl State {
     }
 
     /// Adds a link and authorizes it for what it may see now.
+    ///
+    /// A forwarder session moves the group publications off the peer's other
+    /// sessions, so those are authorized again too.
     pub(crate) fn add_link(&mut self, id: LinkId, link: LinkEntry) {
+        let peer = link.peer().copied();
         self.links.insert(id, link);
-        self.authorize(id);
+        match peer {
+            Some(peer) => self.authorize_peer(&peer),
+            None => self.authorize(id),
+        }
     }
 
     /// Removes a link.
     ///
-    /// The next session with the same peer, if any, may announce from now on.
+    /// The next session with the same peer and of the same class, if any, may
+    /// announce from now on.
     pub(crate) fn remove_link(&mut self, id: LinkId) {
         let Some(link) = self.links.remove(&id) else {
             return;
         };
-        let Some(peer) = link.peer() else {
+        let Some((peer, kind)) = link.session() else {
             return;
         };
         // Removing a standby leaves the oldest session as it is.
-        if let Some(next) = self.first_session_with(peer)
+        if let Some(next) = self.first_session_with(peer, kind)
             && next > id
         {
             debug!(
@@ -274,19 +312,22 @@ impl State {
                 %next,
                 "the next session with the peer takes over its routes",
             );
-            self.authorize(next);
         }
+        self.authorize_peer(peer);
     }
 
-    /// Returns the oldest session with `peer`.
-    fn first_session_with(&self, peer: &EndpointId) -> Option<LinkId> {
+    /// Returns the oldest session with `peer` in the class of `kind`.
+    fn first_session_with(&self, peer: &EndpointId, kind: SessionKind) -> Option<LinkId> {
         self.links
             .iter()
-            .find(|(_, link)| link.peer() == Some(peer))
+            .find(|(_, link)| {
+                link.session()
+                    .is_some_and(|(other, other_kind)| other == peer && kind.same_class(other_kind))
+            })
             .map(|(id, _)| *id)
     }
 
-    /// Reports whether link `id` is a session with a peer that an older session also serves.
+    /// Reports whether link `id` is a session with a peer that an older session of its class also serves.
     ///
     /// A simultaneous dial, or a dial racing an accept, leaves two sessions
     /// with one peer, and both would announce the peer's broadcasts.
@@ -297,8 +338,11 @@ impl State {
     /// new tracks. A standby therefore may announce nothing. Link ids grow, so
     /// the oldest session has the lowest id. It is the one `connect` hands
     /// out, and the next one takes over once it is removed.
-    fn is_standby(&self, id: LinkId, peer: &EndpointId) -> bool {
-        self.first_session_with(peer)
+    ///
+    /// The forwarder sessions this node dialed form a class of their own, with
+    /// their own announcing session, since their routes land apart.
+    fn is_standby(&self, id: LinkId, peer: &EndpointId, kind: SessionKind) -> bool {
+        self.first_session_with(peer, kind)
             .is_some_and(|first| first != id)
     }
 
@@ -382,10 +426,13 @@ impl State {
         let Some(link) = self.links.get(&id) else {
             return Grant::nothing();
         };
-        let base = link
-            .authorized()
-            .map_or_else(Grant::nothing, Authorized::grant);
-        self.effective_grant(link.peer(), &base)
+        let Some(peer) = link.peer() else {
+            return Grant::nothing();
+        };
+        match admitted(link.authorized()) {
+            Some(base) => self.effective_grant(Some(peer), &self.member_grant(peer, &base)),
+            None => self.effective_grant(Some(peer), &Grant::nothing()),
+        }
     }
 
     /// Adds one claim on `path` for `peer`, and widens the peer's links to it.
@@ -444,6 +491,103 @@ impl State {
             })
     }
 
+    /// Returns `base` widened to `<root>/**` in both halves for each group that lists `peer`.
+    ///
+    /// Only for an admitted session: a group never widens a session that the
+    /// policy rejected.
+    // TODO(groups): layouts, which narrow the publish half to the member's own
+    // scope under the root.
+    fn member_grant(&self, peer: &EndpointId, base: &Grant) -> Grant {
+        self.groups
+            .values()
+            .filter(|group| group.members.contains(peer))
+            .filter_map(|group| subtree(&group.root))
+            .fold(base.clone(), |mut grant, subtree| {
+                grant.publish.insert(subtree.clone());
+                grant.subscribe.insert(subtree);
+                grant
+            })
+    }
+
+    /// Returns the groups that `peer` may forward for: those with forwarding on that list it.
+    fn forwarding_groups_of(&self, peer: &EndpointId) -> BTreeSet<GroupId> {
+        self.groups
+            .iter()
+            .filter(|(_, group)| group.forwarding && group.members.contains(peer))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Reports whether `peer` holds a forwarder session it dialed to this node.
+    fn forwards_from_here(&self, peer: &EndpointId) -> bool {
+        self.links
+            .values()
+            .any(|link| link.session() == Some((peer, SessionKind::Forwarded)))
+    }
+
+    /// Returns the moq grant of a direct session of `kind` with `peer`, before standby and expiry.
+    ///
+    /// `base` is the session's admitted grant, or `None` for a session that
+    /// may do nothing. Of the groups with forwarding on that list the peer:
+    ///
+    /// - A session the peer dialed as a forwarder sees their publications,
+    ///   `Granted` ones, and no `Peers` one.
+    /// - Once the peer holds such a session, its other sessions no longer
+    ///   offer those groups' publications.
+    /// - A session this node dialed as a forwarder lets the peer publish only
+    ///   under the roots of the groups whose hint from the peer this node holds.
+    /// - A session with a peer whose hint names this node's site offers the
+    ///   paths this node is the ingress for.
+    pub(crate) fn session_view(
+        &self,
+        peer: &EndpointId,
+        kind: SessionKind,
+        base: Option<&Grant>,
+    ) -> auth::Grant {
+        let Some(base) = base else {
+            return self.view(Viewer::Direct(peer), &Grant::nothing(), &BTreeSet::new());
+        };
+        let base = self.member_grant(peer, base);
+        let forwarding = self.forwarding_groups_of(peer);
+        if kind == SessionKind::Forwarded {
+            let viewer = Viewer::Forwarder {
+                peer,
+                groups: &forwarding,
+            };
+            return self.view(viewer, &base, &BTreeSet::new());
+        }
+        let hidden = match self.forwards_from_here(peer) {
+            true => forwarding.clone(),
+            false => BTreeSet::new(),
+        };
+        let mut grant = self.view(Viewer::Direct(peer), &base, &hidden);
+        for id in &forwarding {
+            let group = &self.groups[id];
+            let same_site = group.site.is_some()
+                && group
+                    .hints
+                    .get(peer)
+                    .is_some_and(|hint| hint.site == group.site);
+            if same_site {
+                grant.subscribe.extend(
+                    group
+                        .ingress
+                        .iter()
+                        .filter_map(|path| Pattern::literal(path.as_str()).ok()),
+                );
+            }
+        }
+        if kind == SessionKind::Forwarding {
+            grant.publish = forwarding
+                .iter()
+                .map(|id| &self.groups[id])
+                .filter(|group| group.hints.get(peer).is_some())
+                .filter_map(|group| subtree(&group.root))
+                .collect();
+        }
+        grant
+    }
+
     /// Re-authorizes every link with `peer`.
     fn authorize_peer(&self, peer: &EndpointId) {
         for (id, link) in &self.links {
@@ -464,8 +608,9 @@ impl State {
     /// Re-authorizes every link for what it may see now.
     ///
     /// Costs links times publications under the node lock, on every change of
-    /// a publication or an audience. That is fine at today's sizes, tens of
-    /// each. A node with thousands of either needs an index by path.
+    /// a publication, an audience or a group. That is fine at today's sizes,
+    /// tens of each. A node with thousands of either needs an index by path.
+    // TODO(groups): an index by path, before groups grow beyond 16 members.
     fn authorize_all(&self) {
         for id in self.links.keys() {
             self.authorize(*id);
@@ -493,12 +638,14 @@ impl State {
     fn link_grant(&self, id: LinkId, link: &LinkEntry) -> auth::Grant {
         match &link.role {
             LinkRole::Relay { .. } => self.link_view(Viewer::Relay, &Grant::everything()),
-            LinkRole::Direct { peer, authorized } => {
-                let base = authorized
-                    .as_ref()
-                    .map_or_else(Grant::nothing, Authorized::grant);
-                let mut grant = self.link_view(Viewer::Direct(peer), &base);
-                if self.is_standby(id, peer) {
+            LinkRole::Direct {
+                peer,
+                kind,
+                authorized,
+            } => {
+                let base = admitted(authorized.as_ref());
+                let mut grant = self.session_view(peer, *kind, base.as_ref());
+                if self.is_standby(id, peer, *kind) {
                     grant.publish = Default::default();
                 }
                 grant.expires = authorized
@@ -516,6 +663,16 @@ impl State {
     /// for a session, and anything for a relay, which is trusted with what it
     /// forwards.
     pub(crate) fn link_view(&self, viewer: Viewer<'_, EndpointId>, base: &Grant) -> auth::Grant {
+        self.view(viewer, base, &BTreeSet::new())
+    }
+
+    /// Returns the moq grant [`Self::link_view`] gives, without the publications of `hidden` groups.
+    fn view(
+        &self,
+        viewer: Viewer<'_, EndpointId>,
+        base: &Grant,
+        hidden: &BTreeSet<GroupId>,
+    ) -> auth::Grant {
         let peer = match viewer {
             Viewer::Direct(peer) | Viewer::Forwarder { peer, .. } => Some(peer),
             _ => None,
@@ -528,6 +685,10 @@ impl State {
         let subscribe = moq_ext_access::visible_paths(
             self.publications
                 .values()
+                .filter(|publication| match &publication.audience {
+                    AudienceKind::Group(id, _) => !hidden.contains(id),
+                    _ => true,
+                })
                 .map(|publication| (publication.path.as_str(), &publication.audience)),
             base,
             viewer,
@@ -624,6 +785,9 @@ impl State {
     /// to the hop this node assigned the session. `None` for a route
     /// published on this node, and for an unknown hop while no relay, or more
     /// than one, feeds the table.
+    // TODO(groups): a route that a forwarder session landed reports
+    // `Source::Local`, so it finds no link here and `serving_link` returns
+    // `None`. Attribute it through the hop chain.
     pub(crate) fn link_for(&self, source: Source) -> Option<LinkId> {
         let Source::Peer(_) = source else {
             return None;
@@ -660,22 +824,36 @@ impl State {
     }
 }
 
+/// Returns the pattern of `root` and every path below it.
+fn subtree(root: &Path) -> Option<Pattern> {
+    format!("{root}/**").parse().ok()
+}
+
+/// Returns the grant of an admitted session: `None` without an authorization or once it lapsed.
+fn admitted(authorized: Option<&Authorized>) -> Option<Grant> {
+    authorized
+        .filter(|authorized| !authorized.lapsed)
+        .map(Authorized::grant)
+}
+
 /// Returns what every link of the node serves its peer: the table's local view.
 ///
 /// It hides every route the node learned from a peer or a relay, so the node
-/// never carries traffic between two of its links.
+/// never carries traffic between two of its links. It includes paths with a
+/// segment that starts with `.`, which moq leaves out of a listing by
+/// default: a moq-lite-06 peer cannot ask for them, and a group's hints live
+/// at `<root>/.hint/<member>`. The grants still decide what a peer sees.
 pub(crate) fn served(table: &origin::Producer) -> origin::Consumer {
-    table.consume().local()
+    table.consume().local().with_hidden(true)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use iroh::SecretKey;
     use moq_net::origin::RouteOptions;
 
     use super::*;
+    use crate::group::{Hints, SiteId};
 
     /// A route table, with the task that drives it.
     struct Table {
@@ -753,6 +931,7 @@ mod tests {
             hop: Hop::of(&peer),
             ..link(LinkRole::Direct {
                 peer,
+                kind: SessionKind::Plain,
                 authorized: Some(Authorized::new(grant.into())),
             })
         }

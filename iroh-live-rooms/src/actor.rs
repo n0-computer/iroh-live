@@ -21,6 +21,9 @@ use tracing::{Instrument, debug, info, trace, warn};
 
 use crate::room::{Inner, LocalPublication, MemberConnection, RoomMember, RoomState};
 
+// TODO(groups): run a room as a group (`iroh_live_node::Group`) with its member
+// list, once groups have layouts and application-carried hints.
+
 /// The key a member's announcement is stored under in the room's gossip map.
 pub(crate) const ANNOUNCEMENT_KEY: &[u8] = b"s";
 

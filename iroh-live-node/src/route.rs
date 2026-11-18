@@ -377,6 +377,9 @@ fn live_route(event: &RouteEvent) -> Option<&moq_net::announce::Announce> {
     }
 }
 
+// TODO(groups): `GroupPlan::via`, and a wait of up to 300 ms here for the
+// planned forwarder's route, so a site's first viewer does not pull a WAN
+// copy and then move.
 /// Resolves `path` in the route table, for [`Node::subscribe`](crate::Node::subscribe).
 pub(crate) async fn subscribe(
     node: &Node,

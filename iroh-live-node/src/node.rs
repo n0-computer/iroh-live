@@ -35,7 +35,7 @@ use crate::{
     layout::Layout,
     policy::{self, Authorization, DynPolicy, Policy},
     publish, reauth, relay, route,
-    state::State,
+    state::{SessionKind, State},
 };
 
 /// How [`Node::subscribe`] reaches a path the route table has no route to yet.
@@ -403,8 +403,13 @@ impl Node {
     ) -> Result<Publication, Error> {
         let path = crate::error::to_path(path)?;
         self.warn_if_unreachable(&path);
-        let (publication, ()) =
-            publish::publish(&self.shared, path, audience, |_| Ok::<_, Infallible>(()))?;
+        let (publication, ()) = publish::publish(
+            &self.shared,
+            path,
+            audience,
+            publish::Publisher::Application,
+            |_| Ok::<_, Infallible>(()),
+        )?;
         Ok(publication)
     }
 
@@ -436,7 +441,13 @@ impl Node {
     {
         let path = crate::error::to_path(path)?;
         self.warn_if_unreachable(&path);
-        publish::publish(&self.shared, path, audience, fill)
+        publish::publish(
+            &self.shared,
+            path,
+            audience,
+            publish::Publisher::Application,
+            fill,
+        )
     }
 
     /// Publishes a broadcast at `path` whose one track `name` holds a latest-value JSON track.
@@ -756,14 +767,36 @@ impl ProtocolHandler for Node {
 }
 
 impl Shared {
-    /// Returns the session with `peer`, dialing if there is none, for [`Node::connect_with`].
+    /// Returns the plain session with `peer`, dialing if there is none, for [`Node::connect_with`].
     ///
     /// The future holds no borrow of the node.
     pub(crate) fn connect(
         &self,
         peer: EndpointAddr,
         options: ConnectOptions,
-    ) -> impl Future<Output = Result<Session, Error>> + Send + 'static {
+    ) -> impl Future<Output = Result<Session, Error>> + Send + 'static + use<> {
+        self.connect_kind(peer, options, SessionKind::Plain)
+    }
+
+    /// Returns the forwarder session this node dialed to `peer`, dialing if there is none.
+    pub(crate) fn connect_forwarder(
+        &self,
+        peer: EndpointId,
+    ) -> impl Future<Output = Result<Session, Error>> + Send + 'static + use<> {
+        self.connect_kind(
+            peer.into(),
+            ConnectOptions::default(),
+            SessionKind::Forwarding,
+        )
+    }
+
+    /// Returns the session of `kind` with `peer`, dialing if there is none.
+    fn connect_kind(
+        &self,
+        peer: EndpointAddr,
+        options: ConnectOptions,
+        kind: SessionKind,
+    ) -> impl Future<Output = Result<Session, Error>> + Send + 'static + use<> {
         let actor = self.actor.clone();
         let shut_down = self.shutdown.is_cancelled();
         async move {
@@ -775,6 +808,7 @@ impl Shared {
                 .send(ActorMessage::Connect {
                     peer,
                     options,
+                    kind,
                     reply,
                 })
                 .await

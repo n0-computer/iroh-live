@@ -1,9 +1,13 @@
 //! The task that runs a group with forwarding on.
 //!
-//! It publishes this node's hint, reads the other members' hints, follows
-//! the paths under the root and the node's site, and turns all of it into the
-//! group's plan, which the node's grants read. It also holds the forwarder
-//! sessions the plan asks for.
+//! It runs these steps:
+//!
+//! 1. Publishes this node's signed hint, for the other members only.
+//! 2. Follows the node's public address, which gives its site.
+//! 3. Reads each other member's hint on a plain session.
+//! 4. Lists the paths under the root.
+//! 5. Holds a forwarder session with each member the plan names.
+//! 6. Hands hints, site and ingress to the node's grants.
 
 // TODO(groups): metrics: `ingress_roles`, `forwarded_readers` and
 // `hints_rejected{reason}`.
@@ -29,10 +33,15 @@ use tracing::{Instrument, debug, debug_span, info, warn};
 use super::{
     GroupPlan, HINT_SEGMENT,
     hint::{self, Hint, Hints},
+    is_hint_path,
     plan::PlanInput,
     site::{self, SiteId},
 };
-use crate::{Audience, ConnectOptions, UnpublishOnDrop, json, node::Shared, publish};
+use crate::{
+    Audience, ConnectOptions, UnpublishOnDrop, json,
+    node::Shared,
+    publish::{self, Publisher},
+};
 
 /// How often this node signs its hint anew.
 ///
@@ -74,6 +83,8 @@ struct Running {
     paths: BTreeSet<Path>,
     /// Reads each other member's hint, by member.
     readers: BTreeMap<EndpointId, AbortOnDropHandle<()>>,
+    /// Holds a forwarder session with each member the plan names, by member.
+    forwarders: BTreeMap<EndpointId, AbortOnDropHandle<()>>,
     /// The hint readers' channel to the driver.
     hint_tx: mpsc::Sender<(EndpointId, String)>,
     /// This node's hint publication, unpublished when the driver ends.
@@ -135,6 +146,7 @@ impl Driver {
             site: None,
             paths: BTreeSet::new(),
             readers: BTreeMap::new(),
+            forwarders: BTreeMap::new(),
             hint_tx,
             hint_writer,
             _hint_publication: hint_publication,
@@ -291,6 +303,13 @@ impl Running {
             paths: &self.paths,
         };
         let plan = input.plan();
+        let forwarded: BTreeSet<EndpointId> = self
+            .members
+            .iter()
+            .filter(|member| input.dials_forwarder(&plan, member))
+            .copied()
+            .collect();
+        self.hold_forwarders(&forwarded);
         self.shared.state.lock().expect("poisoned").set_group_view(
             self.id,
             self.hints.clone(),
@@ -310,16 +329,53 @@ impl Running {
     }
 }
 
+impl Running {
+    /// Holds a forwarder session with each of `members`, and stops redialing the others.
+    // TODO(groups): close the forwarder sessions with removed members, and with
+    // members that turn out to share the site. Until then they stay open, and
+    // only stop being redialed.
+    fn hold_forwarders(&mut self, members: &BTreeSet<EndpointId>) {
+        self.forwarders.retain(|member, _| members.contains(member));
+        for member in members {
+            if self.forwarders.contains_key(member) {
+                continue;
+            }
+            debug!(member = %member.fmt_short(), "holding a forwarder session");
+            let task = hold_forwarder(Arc::downgrade(&self.shared), *member)
+                .instrument(debug_span!("forwarder", member = %member.fmt_short()));
+            self.forwarders
+                .insert(*member, AbortOnDropHandle::new(tokio::spawn(task)));
+        }
+    }
+}
+
+/// Keeps a forwarder session with `member` open, dialing it again whenever it ends.
+async fn hold_forwarder(shared: Weak<Shared>, member: EndpointId) {
+    let mut pause = RETRY.0;
+    loop {
+        let Some(connect) = shared
+            .upgrade()
+            .map(|shared| shared.connect_forwarder(member))
+        else {
+            return;
+        };
+        match connect.await {
+            Ok(session) => {
+                pause = RETRY.0;
+                let reason = session.closed().await;
+                debug!(link = %session.inner.link, %reason, "forwarder session ended");
+            }
+            Err(err) => debug!(error = %err, ?pause, "cannot dial the forwarder session, retrying"),
+        }
+        tokio::time::sleep(pause).await;
+        pause = (pause * 2).min(RETRY.1);
+    }
+}
+
 /// Returns the path of `member`'s hint broadcast in the group at `root`.
 fn hint_path(root: &Path, member: &EndpointId) -> Path {
     root.join(&Path::new(&format!("{HINT_SEGMENT}/{member}")).expect("a valid path"))
         .expect("a hint path is two segments below a valid root")
-}
-
-/// Reports whether `path` lies in the hint subtree of the group at `root`.
-pub(crate) fn is_hint_path(root: &Path, path: &Path) -> bool {
-    path.strip_prefix(root)
-        .is_some_and(|rest| rest.parts().next() == Some(HINT_SEGMENT))
 }
 
 /// Returns a listing of the paths under `root` in the node's route table.
@@ -349,6 +405,7 @@ fn publish_hint(
         shared,
         path,
         Audience::Peers(members.clone()),
+        Publisher::Group,
         |broadcast| {
             let info = track::Info::default().with_timescale(moq_net::Timescale::MILLI);
             let track = broadcast.create_track(HINT_TRACK, info)?;

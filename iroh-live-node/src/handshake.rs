@@ -3,18 +3,30 @@
 use std::{num::NonZeroU64, sync::Arc};
 
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
-use moq_ext_access::Viewer;
 use moq_net::{
     auth,
-    origin::{self, Source},
+    origin::{self, Priority, Source},
 };
 use n0_error::e;
 use tracing::{info, warn};
 
 use crate::{
-    ConnectOptions, Direction, Error, Grant, SessionRequest, admission::authorize, node::Shared,
-    policy::Authorization, state::served, transport,
+    ConnectOptions, Direction, Error, Grant, SessionRequest,
+    admission::authorize,
+    node::Shared,
+    policy::Authorization,
+    state::{SessionKind, served},
+    transport,
 };
+
+/// The SETUP path query that marks a session its dialer opens as a forwarder.
+pub(crate) const FORWARDER_ROLE: (&str, &str) = ("role", "forwarder");
+
+/// The priority of the routes a forwarder session this node dialed lands.
+///
+/// Below a plain session's, so a site's ingress, which offers the path on a
+/// plain session, outranks this node's own forwarder route.
+const FORWARDER_PRIORITY: Priority = Priority::new(-10);
 
 /// The moq hop id the routes of one link carry.
 ///
@@ -53,7 +65,7 @@ impl Hop {
     }
 }
 
-/// Authorizes `auth` for what a direct session with `peer` may see now.
+/// Authorizes `auth` for what a direct session of `kind` with `peer` may see now.
 ///
 /// Called before the session starts, so its first announcements already keep
 /// to the grant. The node re-authorizes it as its publications change.
@@ -61,28 +73,45 @@ pub(crate) fn authorize_direct(
     shared: &Shared,
     auth: &auth::Handle,
     peer: EndpointId,
+    kind: SessionKind,
     grant: &Grant,
 ) {
     let view = shared
         .state
         .lock()
         .expect("poisoned")
-        .link_view(Viewer::Direct(&peer), grant);
+        .session_view(&peer, kind, Some(grant));
     auth.authorize(&view);
 }
 
-/// Returns where a session writes what its peer announces.
+/// Returns where a session of `kind` writes what its peer announces.
 ///
-/// That is the route table, tagged [`origin::Link::Peer`] and scoped to
-/// everything: the session's authorization is the only gate, so a grant that
-/// widens later, as a ticket claim does, takes effect on the live session.
-pub(crate) fn subscriber(shared: &Shared) -> origin::Producer {
-    shared.table.clone().with_link(origin::Link::Peer)
+/// That is the route table, scoped to everything: the session's
+/// authorization is the only gate, so a grant that widens later, as a ticket
+/// claim does, takes effect on the live session. Most sessions write tagged
+/// [`origin::Link::Peer`], which the node never serves on. A forwarder
+/// session this node dialed writes tagged [`origin::Link::Local`] at
+/// [`FORWARDER_PRIORITY`], so the node may serve its routes to its site.
+// TODO(groups): a live priority setter once moq has one. Until then a later
+// feature that needs another priority, such as a planned `via`, reopens the
+// session.
+pub(crate) fn subscriber(shared: &Shared, kind: SessionKind) -> origin::Producer {
+    match kind {
+        SessionKind::Forwarding => shared
+            .table
+            .clone()
+            .with_link(origin::Link::Local)
+            .with_priority(FORWARDER_PRIORITY),
+        SessionKind::Plain | SessionKind::Forwarded => {
+            shared.table.clone().with_link(origin::Link::Peer)
+        }
+    }
 }
 
 /// Everything a session needs to run, produced by a dial or an admission.
 pub(crate) struct SessionParts {
     pub(crate) peer: EndpointId,
+    pub(crate) kind: SessionKind,
     pub(crate) connection: Connection,
     pub(crate) direction: Direction,
     /// What the policy decided for the session before the handshake.
@@ -96,15 +125,19 @@ pub(crate) struct SessionParts {
     pub(crate) auth: auth::Handle,
 }
 
-/// Dials `peer` and completes the MoQ handshake as the client.
+/// Dials `peer` for a session of `kind` and completes the MoQ handshake as the client.
 ///
 /// Asks the node's policy first. The session's authorization is in place
 /// before the handshake, so the dialed peer sees only what its grant and the
-/// audiences let it see, as an accepted one does.
+/// audiences let it see, as an accepted one does. A forwarder session sends
+/// [`FORWARDER_ROLE`] in its SETUP path.
+// TODO(groups): short idle timeouts on forwarder sessions (5 s, keep-alive
+// 1 s), so a site moves off a dead ingress quickly.
 pub(crate) async fn dial_session(
     shared: Arc<Shared>,
     peer: EndpointAddr,
     options: ConnectOptions,
+    kind: SessionKind,
 ) -> Result<SessionParts, Error> {
     let peer_id = peer.id;
     let request = SessionRequest::new(options.path.as_deref().unwrap_or_default());
@@ -124,13 +157,14 @@ pub(crate) async fn dial_session(
     let transport = transport::Transport::new(connection)?;
     let connection = transport.connection().clone();
     let auth = auth::Handle::new();
-    authorize_direct(&shared, &auth, peer_id, &authorization.grant);
+    authorize_direct(&shared, &auth, peer_id, kind, &authorization.grant);
     let (moq, driver) = client_handshake(
         transport,
         &options,
+        kind == SessionKind::Forwarding,
         peer_id,
         &served(&shared.table),
-        Some(subscriber(&shared)),
+        Some(subscriber(&shared, kind)),
         auth.clone(),
     )
     .await
@@ -140,6 +174,7 @@ pub(crate) async fn dial_session(
     })?;
     Ok(SessionParts {
         peer: peer_id,
+        kind,
         connection,
         direction: Direction::Dialed,
         authorization,
@@ -154,12 +189,14 @@ pub(crate) async fn dial_session(
 /// Completes the MoQ handshake as the client, over a transport this node dialed.
 ///
 /// Offers `publish` to the peer within what `auth` authorizes and, if given,
-/// writes what the peer announces to `subscriber`. Fails with
+/// writes what the peer announces to `subscriber`. With `forwarder`, the
+/// SETUP path carries [`FORWARDER_ROLE`]. Fails with
 /// [`moq_net::Error::Timeout`] after [`transport::HANDSHAKE_TIMEOUT`], as the
 /// accepting side does.
 pub(crate) async fn client_handshake(
     transport: transport::Transport,
     options: &ConnectOptions,
+    forwarder: bool,
     peer: EndpointId,
     publish: &origin::Consumer,
     subscriber: Option<origin::Producer>,
@@ -184,11 +221,16 @@ pub(crate) async fn client_handshake(
     }
     // The SETUP of moq-lite-06, the newest version iroh peers negotiate, has no
     // token field, so the token also rides the setup path.
-    if options.path.is_some() || options.token.is_some() {
-        let target = moq_ext_access::token::setup_url(
+    if options.path.is_some() || options.token.is_some() || forwarder {
+        let mut target = moq_ext_access::token::setup_url(
             options.path.as_deref().unwrap_or_default(),
             options.token.as_deref(),
         );
+        if forwarder {
+            let (key, value) = FORWARDER_ROLE;
+            let separator = if target.contains('?') { '&' } else { '?' };
+            target.push_str(&format!("{separator}{key}={value}"));
+        }
         match url::Url::parse(&format!("moqt://iroh{target}")) {
             Ok(url) => client = client.with_url(url),
             Err(err) => {

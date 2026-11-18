@@ -11,10 +11,11 @@ use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, debug_span, info};
+use tracing::{Instrument, debug, debug_span, info, warn};
 
 use crate::{
     BroadcastTicket, Error,
+    group::is_hint_path,
     node::Shared,
     state::{PublicationEntry, State},
 };
@@ -136,6 +137,13 @@ impl Publication {
         };
         let mut state = shared.state.lock().expect("poisoned");
         let id = self.inner.id;
+        let Some(entry) = state.publications.get(&id) else {
+            return;
+        };
+        if let Err(err) = check_group_audience(&state, &entry.path, &audience) {
+            warn!(error = %err, "refusing the audience change");
+            return;
+        }
         let Some(entry) = state.publications.get_mut(&id) else {
             return;
         };
@@ -299,6 +307,15 @@ fn apply_peers(state: &mut State, id: u64, generation: u64, audience: AudienceKi
     true
 }
 
+/// Who publishes: the application, or a group of this node for itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Publisher {
+    /// The application, which keeps to the groups' rules.
+    Application,
+    /// A group, which publishes its member's hint in its reserved subtree.
+    Group,
+}
+
 /// Publishes a broadcast at `path`, for [`Node::publish`](crate::Node::publish).
 ///
 /// Creates the broadcast and runs `fill` before taking the node's lock, so a
@@ -308,12 +325,16 @@ pub(crate) fn publish<T, E>(
     shared: &Arc<Shared>,
     path: Path,
     audience: Audience,
+    publisher: Publisher,
     fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
 ) -> Result<(Publication, T), Error>
 where
     E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     check_path(&path)?;
+    if publisher == Publisher::Application {
+        check_group_audience(&shared.state.lock().expect("poisoned"), &path, &audience)?;
+    }
     if shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));
     }
@@ -329,6 +350,12 @@ where
         return refuse(e!(Error::ShutDown));
     }
     if let Err(err) = free_path(&mut state, &path) {
+        return refuse(err);
+    }
+    // Checked again under the lock, for a group created since.
+    if publisher == Publisher::Application
+        && let Err(err) = check_group_audience(&state, &path, &audience)
+    {
         return refuse(err);
     }
     // Announced under the lock, before any link may see the path, so no peer
@@ -427,6 +454,24 @@ fn unpublish_when_closed(
             info!(%path, "broadcast ended, unpublished");
         }
     })
+}
+
+/// Refuses a publication under a group's root that is not for the group's audience.
+///
+/// The group's hint subtree, `<root>/.hint/**`, is refused whatever the audience.
+fn check_group_audience(state: &State, path: &Path, audience: &Audience) -> Result<(), Error> {
+    let Some((id, group)) = state
+        .groups
+        .iter()
+        .find(|(_, group)| path.has_prefix(&group.root))
+    else {
+        return Ok(());
+    };
+    let for_group = matches!(audience, Audience::Group { id: group_id, .. } if group_id == id);
+    if !for_group || is_hint_path(&group.root, path) {
+        return Err(e!(Error::GroupAudience { path: path.clone() }));
+    }
+    Ok(())
 }
 
 /// Refuses a path that is empty or that no literal pattern names.

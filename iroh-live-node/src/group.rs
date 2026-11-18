@@ -185,6 +185,12 @@ impl Group {
     }
 }
 
+/// Reports whether `path` lies in the hint subtree of the group at `root`.
+pub(crate) fn is_hint_path(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .is_some_and(|rest| rest.parts().next() == Some(HINT_SEGMENT))
+}
+
 /// Returns the id of the group with root `root`.
 pub(crate) fn group_id(root: &Path) -> GroupId {
     GroupId::from_bytes(blake3::derive_key(
