@@ -614,6 +614,8 @@ impl Shared {
         // A publisher that never announces the path to us would keep the
         // subscription waiting forever.
         tokio::time::timeout(SUBSCRIBE_TIMEOUT, async {
+            // TODO(groups): dial the publisher with the forwarder role, so a
+            // group publisher offers the relay only what it may forward.
             let session = self.node.connect(ticket.peer()).await.map_err(|source| {
                 e!(Error::Connect {
                     peer: ticket.peer(),

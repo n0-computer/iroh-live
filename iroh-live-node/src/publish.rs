@@ -1,9 +1,6 @@
 //! Publications: a broadcast created at a path in the route table, for an audience.
 
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Weak},
-};
+use std::sync::{Arc, Weak};
 
 use iroh::EndpointId;
 use moq_net::{
@@ -14,10 +11,11 @@ use n0_error::{AnyError, e};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, debug_span, info};
+use tracing::{Instrument, debug, debug_span, info, warn};
 
 use crate::{
     BroadcastTicket, Error,
+    group::is_hint_path,
     node::Shared,
     state::{PublicationEntry, State},
 };
@@ -139,6 +137,13 @@ impl Publication {
         };
         let mut state = shared.state.lock().expect("poisoned");
         let id = self.inner.id;
+        let Some(entry) = state.publications.get(&id) else {
+            return;
+        };
+        if let Err(err) = check_group_audience(&state, &entry.path, &audience) {
+            warn!(error = %err, "refusing the audience change");
+            return;
+        }
         let Some(entry) = state.publications.get_mut(&id) else {
             return;
         };
@@ -237,7 +242,7 @@ impl Drop for UnpublishOnDrop {
     }
 }
 
-/// Returns a task that re-authorizes the node's links as a `Peers` set changes.
+/// Returns a task that re-authorizes the node's links as a `Peers` or `Group` set changes.
 ///
 /// `None` for any other audience. Holds the node weakly, since the task lives
 /// in the state it updates. `generation` is the publication's audience
@@ -249,10 +254,15 @@ fn peers_task(
     path: &Path,
     shared: &Weak<Shared>,
 ) -> Option<AbortOnDropHandle<()>> {
-    let Audience::Peers(set) = audience else {
-        return None;
+    let (set, group) = match audience {
+        Audience::Peers(set) => (set.clone(), None),
+        Audience::Group { id, members } => (members.clone(), Some(*id)),
+        _ => return None,
     };
-    let set = set.clone();
+    let kind = move |peers| match group {
+        Some(id) => AudienceKind::Group(id, peers),
+        None => AudienceKind::Peers(peers),
+    };
     let shared = shared.clone();
     let span = debug_span!("audience", %path, generation);
     let task = async move {
@@ -265,7 +275,7 @@ fn peers_task(
                     return;
                 };
                 let mut state = shared.state.lock().expect("poisoned");
-                if !apply_peers(&mut state, id, generation, current) {
+                if !apply_peers(&mut state, id, generation, kind(current)) {
                     return;
                 }
             }
@@ -279,12 +289,12 @@ fn peers_task(
     Some(AbortOnDropHandle::new(tokio::spawn(task.instrument(span))))
 }
 
-/// Sets publication `id`'s audience to `peers`, for the peers task of `generation`.
+/// Sets publication `id`'s audience to `audience`, for the peers task of `generation`.
 ///
 /// Returns `false`, and changes nothing, once the publication is gone or a
 /// later [`Publication::set_audience`] replaced that task. The task then
 /// ends: it may have been aborted while it waited on the lock.
-fn apply_peers(state: &mut State, id: u64, generation: u64, peers: BTreeSet<EndpointId>) -> bool {
+fn apply_peers(state: &mut State, id: u64, generation: u64, audience: AudienceKind) -> bool {
     let Some(entry) = state.publications.get(&id) else {
         return false;
     };
@@ -292,9 +302,18 @@ fn apply_peers(state: &mut State, id: u64, generation: u64, peers: BTreeSet<Endp
         debug!(path = %entry.path, generation, "audience replaced, peers task ends");
         return false;
     }
-    debug!(path = %entry.path, generation, peers = peers.len(), "audience peers set");
-    state.set_audience(id, AudienceKind::Peers(peers));
+    debug!(path = %entry.path, generation, ?audience, "audience set changed");
+    state.set_audience(id, audience);
     true
+}
+
+/// Who publishes: the application, or a group of this node for itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Publisher {
+    /// The application, which keeps to the groups' rules.
+    Application,
+    /// A group, which publishes its member's hint in its reserved subtree.
+    Group,
 }
 
 /// Publishes a broadcast at `path`, for [`Node::publish`](crate::Node::publish).
@@ -306,12 +325,16 @@ pub(crate) fn publish<T, E>(
     shared: &Arc<Shared>,
     path: Path,
     audience: Audience,
+    publisher: Publisher,
     fill: impl FnOnce(&broadcast::Producer) -> Result<T, E>,
 ) -> Result<(Publication, T), Error>
 where
     E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     check_path(&path)?;
+    if publisher == Publisher::Application {
+        check_group_audience(&shared.state.lock().expect("poisoned"), &path, &audience)?;
+    }
     if shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));
     }
@@ -327,6 +350,12 @@ where
         return refuse(e!(Error::ShutDown));
     }
     if let Err(err) = free_path(&mut state, &path) {
+        return refuse(err);
+    }
+    // Checked again under the lock, for a group created since.
+    if publisher == Publisher::Application
+        && let Err(err) = check_group_audience(&state, &path, &audience)
+    {
         return refuse(err);
     }
     // Announced under the lock, before any link may see the path, so no peer
@@ -427,6 +456,24 @@ fn unpublish_when_closed(
     })
 }
 
+/// Refuses a publication under a group's root that is not for the group's audience.
+///
+/// The group's hint subtree, `<root>/.hint/**`, is refused whatever the audience.
+fn check_group_audience(state: &State, path: &Path, audience: &Audience) -> Result<(), Error> {
+    let Some((id, group)) = state
+        .groups
+        .iter()
+        .find(|(_, group)| path.has_prefix(&group.root))
+    else {
+        return Ok(());
+    };
+    let for_group = matches!(audience, Audience::Group { id: group_id, .. } if group_id == id);
+    if !for_group || is_hint_path(&group.root, path) {
+        return Err(e!(Error::GroupAudience { path: path.clone() }));
+    }
+    Ok(())
+}
+
 /// Refuses a path that is empty or that no literal pattern names.
 ///
 /// moq patterns have no escape for `*`, so a segment that holds one cannot
@@ -442,6 +489,8 @@ pub(crate) fn check_path(path: &Path) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use iroh::{Endpoint, SecretKey, endpoint::presets};
 
     use super::*;
@@ -515,7 +564,10 @@ mod tests {
         let id = publication.inner.id;
         {
             let mut state = node.shared.state.lock().expect("poisoned");
-            assert!(!apply_peers(&mut state, id, 0, old), "the old task wrote");
+            assert!(
+                !apply_peers(&mut state, id, 0, AudienceKind::Peers(old)),
+                "the old task wrote"
+            );
             assert_eq!(state.publications[&id].audience, AudienceKind::Peers(new));
         }
 

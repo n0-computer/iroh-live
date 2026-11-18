@@ -12,7 +12,7 @@ use tracing::info;
 
 use crate::{
     Direction, Error, Grant, LinkId, NetworkSample, SessionRequest, Subscription, handshake::Hop,
-    link::LatestSample, node::Shared, route,
+    link::LatestSample, node::Shared, route, state::SessionKind,
 };
 
 /// A direct session with a peer.
@@ -45,6 +45,8 @@ pub struct Session {
 pub(crate) struct SessionInner {
     pub(crate) link: LinkId,
     pub(crate) peer: EndpointId,
+    /// The role the session plays for the node's groups.
+    pub(crate) kind: SessionKind,
     pub(crate) direction: Direction,
     pub(crate) request: SessionRequest,
     pub(crate) connection: Connection,

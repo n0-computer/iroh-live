@@ -122,6 +122,15 @@ pub enum Error {
     /// A string is not a [`BroadcastTicket`](crate::BroadcastTicket).
     #[error("invalid broadcast ticket: {reason}")]
     InvalidTicket { reason: &'static str },
+    /// A group's root covers or lies under another group's root.
+    #[error("the group root {root} overlaps the group root {other}")]
+    GroupOverlap { root: Path, other: Path },
+    /// A publication under a group's root is not for the group's audience.
+    ///
+    /// Publish under a group's root with [`Group::audience`](crate::Group::audience).
+    /// The paths `<root>/.hint/**` are the group's own.
+    #[error("the publication at {path} lies under a group root and needs the group's audience")]
+    GroupAudience { path: Path },
     /// The node has shut down.
     #[error("the node has shut down")]
     ShutDown,

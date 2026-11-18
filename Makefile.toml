@@ -115,7 +115,7 @@ description = "Run the patchbay network simulation tests, including ignored ones
 workspace = false
 command = "cargo"
 args = ["nextest", "run", "--locked", "-p", "iroh-live", "--features", "full",
-        "-E", "binary(patchbay)", "--run-ignored", "all"]
+        "-E", "binary(patchbay) | binary(patchbay_groups)", "--run-ignored", "all"]
 
 # -- E2E browser tests ------------------------------------------------
 

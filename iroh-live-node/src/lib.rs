@@ -99,6 +99,7 @@ mod admission;
 mod claim;
 mod endpoint;
 mod error;
+mod group;
 mod handshake;
 pub mod layout;
 mod link;
@@ -133,6 +134,7 @@ pub use self::{
     claim::PathClaim,
     endpoint::{EndpointConfig, EndpointError, Mdns, load_or_create_secret_key},
     error::Error,
+    group::{Group, GroupId, GroupOptions, GroupPlan},
     link::{LinkId, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     preset::{Congestion, MoqPreset, UnknownCongestion},

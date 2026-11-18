@@ -54,6 +54,9 @@ tracing-subscriber = "0.3.23"
 # ELF initialiser, before the test harness has spawned a thread.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 ctor = "1.0"
+# The in-lab relay of the group test: QUIC address discovery, and a path
+# between two NATed sites.
+iroh-relay = { version = "1.4.1", features = ["server", "test-utils"] }
 patchbay = "0.7.0"
 
 [lints]

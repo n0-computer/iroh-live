@@ -362,6 +362,8 @@ impl LocalOrigin {
     }
 }
 
+// TODO(groups): a stall trigger: when a forwarded route stops delivering
+// media, ask the node to drop it so the reader moves to the standby route.
 /// Reads the broadcast, requesting it again when a change of route ends it.
 async fn follow(
     origin: Origin,

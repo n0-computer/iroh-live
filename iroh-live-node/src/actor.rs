@@ -24,8 +24,11 @@ use crate::{
     policy::{Authorization, Event, PeerRequest, Rejection},
     reauth::Reauth,
     session::SessionInner,
-    state::{Authorized, LinkEntry, LinkRole},
+    state::{Authorized, LinkEntry, LinkRole, SessionKind},
 };
+
+/// Where a connect waits for its session.
+type ConnectReply = oneshot::Sender<Result<Session, Error>>;
 
 /// The result of one re-decide: the session's link, and the decision.
 type Redecided = (LinkId, Result<Authorization, Rejection>);
@@ -38,6 +41,8 @@ pub(crate) enum ActorMessage {
     Connect {
         peer: EndpointAddr,
         options: ConnectOptions,
+        /// [`SessionKind::Plain`], or [`SessionKind::Forwarding`] for a group's forwarder session.
+        kind: SessionKind,
         reply: oneshot::Sender<Result<Session, Error>>,
     },
     Register {
@@ -58,9 +63,10 @@ pub(crate) struct Actor {
     sessions: JoinSet<moq_net::Error>,
     /// What each session task runs, so a task that panics is still cleaned up.
     session_ids: HashMap<tokio::task::Id, (LinkId, EndpointId)>,
-    pending: HashMap<EndpointId, Vec<oneshot::Sender<Result<Session, Error>>>>,
+    /// The connects that wait for a dial, by peer and session kind.
+    pending: HashMap<(EndpointId, SessionKind), Vec<ConnectReply>>,
     dials: JoinSet<Result<SessionParts, Error>>,
-    dial_ids: HashMap<tokio::task::Id, EndpointId>,
+    dial_ids: HashMap<tokio::task::Id, (EndpointId, SessionKind)>,
     /// When each session is decided again.
     reauth: Reauth,
     /// The re-decides in flight.
@@ -186,21 +192,23 @@ impl Actor {
             ActorMessage::Connect {
                 peer,
                 options,
+                kind,
                 reply,
-            } => self.connect(peer, options, reply),
+            } => self.connect(peer, options, kind, reply),
             ActorMessage::Register { parts, reply } => {
                 reply.send(self.register(*parts)).ok();
             }
         }
     }
 
-    /// Answers a connect from the live session with the peer, or dials one.
+    /// Answers a connect from the live session of `kind` with the peer, or dials one.
     ///
     /// Callers that ask while a dial is in flight wait on that dial.
     fn connect(
         &mut self,
         peer: EndpointAddr,
         options: ConnectOptions,
+        kind: SessionKind,
         reply: oneshot::Sender<Result<Session, Error>>,
     ) {
         let id = peer.id;
@@ -208,49 +216,51 @@ impl Actor {
             reply.send(Err(e!(Error::ShutDown))).ok();
             return;
         }
-        if let Some(session) = self.live_session(&id) {
+        if let Some(session) = self.live_session(&id, kind) {
             reply.send(Ok(session)).ok();
             return;
         }
-        let waiting = self.pending.entry(id).or_default();
+        let waiting = self.pending.entry((id, kind)).or_default();
         waiting.push(reply);
         if waiting.len() > 1 {
             return;
         }
-        info!(peer = %id.fmt_short(), "dialing");
+        info!(peer = %id.fmt_short(), ?kind, "dialing");
         let handle = self.dials.spawn(
-            dial_session(self.shared.clone(), peer, options)
-                .instrument(info_span!("dial", peer = %id.fmt_short())),
+            dial_session(self.shared.clone(), peer, options, kind)
+                .instrument(info_span!("dial", peer = %id.fmt_short(), ?kind)),
         );
-        self.dial_ids.insert(handle.id(), id);
+        self.dial_ids.insert(handle.id(), (id, kind));
     }
 
-    /// Returns the oldest session with `peer` that is not closing.
+    /// Returns the oldest session of `kind` with `peer` that is not closing.
     ///
     /// A session stays listed until its task ends, a little after its
-    /// connection, so the front of the list can be on its way out.
-    fn live_session(&self, peer: &EndpointId) -> Option<Session> {
+    /// connection, so the front of the list can be on its way out. A plain
+    /// connect never gets a forwarder session: on one the peer withholds
+    /// `Peers` publications, or this node lands the routes apart.
+    fn live_session(&self, peer: &EndpointId, kind: SessionKind) -> Option<Session> {
         self.peers.get(peer).and_then(|sessions| {
             sessions
                 .iter()
-                .find(|session| !session.is_closing())
+                .find(|session| session.inner.kind == kind && !session.is_closing())
                 .cloned()
         })
     }
 
     /// Registers the session a dial produced, or fails the callers waiting on it.
     fn dialed(&mut self, id: tokio::task::Id, result: Result<SessionParts, Error>) {
-        let Some(peer) = self.dial_ids.remove(&id) else {
+        let Some((peer, kind)) = self.dial_ids.remove(&id) else {
             return;
         };
         match result {
             Ok(parts) => {
-                info!(peer = %peer.fmt_short(), "connected");
+                info!(peer = %peer.fmt_short(), ?kind, "connected");
                 self.register(parts);
             }
             Err(err) => {
-                info!(peer = %peer.fmt_short(), error = %err, "dial failed");
-                for reply in self.pending.remove(&peer).into_iter().flatten() {
+                info!(peer = %peer.fmt_short(), ?kind, error = %err, "dial failed");
+                for reply in self.pending.remove(&(peer, kind)).into_iter().flatten() {
                     reply.send(Err(err.clone())).ok();
                 }
             }
@@ -403,6 +413,7 @@ impl Actor {
             peer = %inner.peer.fmt_short(),
             link = %inner.link,
             direction = ?inner.direction,
+            kind = ?inner.kind,
             "session started",
         );
         self.spawn_session(session.clone(), driver);
@@ -415,6 +426,7 @@ impl Actor {
     fn add_link(&mut self, parts: SessionParts) -> (Session, moq_net::Driver) {
         let SessionParts {
             peer,
+            kind,
             connection,
             direction,
             authorization,
@@ -432,6 +444,7 @@ impl Actor {
             inner: Arc::new(SessionInner {
                 link,
                 peer,
+                kind,
                 direction,
                 request,
                 connection,
@@ -451,6 +464,7 @@ impl Actor {
             LinkEntry {
                 role: LinkRole::Direct {
                     peer,
+                    kind,
                     authorized: (!stale).then(|| Authorized::new(authorization.clone())),
                 },
                 hop,
@@ -476,7 +490,7 @@ impl Actor {
 
     /// Adds a session to its peer's, and answers the dials that wait for the peer.
     fn add_peer_session(&mut self, session: &Session) {
-        let peer = session.inner.peer;
+        let (peer, kind) = (session.inner.peer, session.inner.kind);
         // Two peers that dial each other at once end up with two sessions
         // each. Both stay: the two sides see the collision at different
         // instants, so either may already have handed out the other's second.
@@ -488,8 +502,8 @@ impl Actor {
         }
         sessions.push(session.clone());
         self.publish_sessions();
-        if let Some(serving) = self.live_session(&peer) {
-            for reply in self.pending.remove(&peer).into_iter().flatten() {
+        if let Some(serving) = self.live_session(&peer, kind) {
+            for reply in self.pending.remove(&(peer, kind)).into_iter().flatten() {
                 reply.send(Ok(serving.clone())).ok();
             }
         }

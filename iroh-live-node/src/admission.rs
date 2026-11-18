@@ -14,10 +14,10 @@ use tracing::{debug, info};
 
 use crate::{
     Direction, Error,
-    handshake::{Hop, SessionParts, authorize_direct, subscriber},
+    handshake::{FORWARDER_ROLE, Hop, SessionParts, authorize_direct, subscriber},
     node::Shared,
     policy::{Authorization, Event, PeerRequest, Rejection},
-    state::served,
+    state::{SessionKind, served},
     transport::{self, HANDSHAKE_TIMEOUT},
 };
 
@@ -80,6 +80,11 @@ impl ConnectOptions {
 }
 
 /// Admits one incoming connection if the policy does, for the protocol handler.
+///
+/// A peer that sends [`FORWARDER_ROLE`] in its SETUP path opens a forwarder
+/// session. An older peer never sends it, and opens a plain one.
+// TODO(groups): `ConnectOptions::forwarder` as public API, and relay pulls
+// that dial with the role, which closes the pull gap.
 pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Result<(), Error> {
     if shared.shutdown.is_cancelled() {
         return Err(e!(Error::ShutDown));
@@ -101,7 +106,11 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         }
     };
     let request = SessionRequest::from_handshake(&handshake);
-    debug!(peer = %peer.fmt_short(), path = request.path(), "session requested");
+    let kind = match request.query(FORWARDER_ROLE.0) == Some(FORWARDER_ROLE.1) {
+        true => SessionKind::Forwarded,
+        false => SessionKind::Plain,
+    };
+    debug!(peer = %peer.fmt_short(), path = request.path(), ?kind, "session requested");
     let decided = tokio::select! {
         decided = authorize(shared, peer, &request, Direction::Accepted) => decided,
         _ = shared.shutdown.cancelled() => {
@@ -128,11 +137,11 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     }
     info!(peer = %peer.fmt_short(), grant = ?authorization.grant, "admitting session");
     let auth = handshake.auth();
-    authorize_direct(shared, &auth, peer, &authorization.grant);
+    authorize_direct(shared, &auth, peer, kind, &authorization.grant);
     let handshake = handshake
         .with_publisher(served(&shared.table))
         .with_peer_node(Hop::of(&peer).id())
-        .with_subscriber(subscriber(shared));
+        .with_subscriber(subscriber(shared, kind));
     let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())
         .await
         .map_err(|_| {
@@ -143,6 +152,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
         .map_err(|source| e!(Error::Moq { source }))?;
     let parts = SessionParts {
         peer,
+        kind,
         connection,
         direction: Direction::Accepted,
         authorization,

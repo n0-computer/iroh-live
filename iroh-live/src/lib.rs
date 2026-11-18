@@ -160,9 +160,9 @@ pub use iroh_live_node::moq_net;
 // so a caller never has to guess which path holds it.
 pub use iroh_live_node::{
     Audience, BroadcastTicket, Congestion, ConnectOptions, EndpointConfig, EndpointError, Grant,
-    LinkKind, Mdns, MoqPreset, NetworkSample, Node, NodeConfig, Publication, Reach, RelayConfig,
-    RelayLink, RelayStatus, ServingLink, Session, Subscription, UnpublishOnDrop, ValueReader,
-    ValueWriter, layout, load_or_create_secret_key,
+    Group, GroupId, GroupOptions, GroupPlan, LinkKind, Mdns, MoqPreset, NetworkSample, Node,
+    NodeConfig, Publication, Reach, RelayConfig, RelayLink, RelayStatus, ServingLink, Session,
+    Subscription, UnpublishOnDrop, ValueReader, ValueWriter, layout, load_or_create_secret_key,
 };
 #[cfg(feature = "rooms")]
 pub use iroh_live_rooms as rooms;
