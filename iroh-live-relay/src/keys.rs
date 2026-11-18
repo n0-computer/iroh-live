@@ -29,7 +29,7 @@ use crate::Error;
 ///
 /// Wrap it in a [`Verify`](moq_ext_access::policy::Verify) to use it as a policy.
 #[derive(Debug, Clone)]
-pub struct KeyFile {
+pub(crate) struct KeyFile {
     path: PathBuf,
     /// Whether the file held a JWK set or a single JWK when first read, for moq-auth's policy.
     source: serve::Keys,
@@ -56,7 +56,7 @@ impl KeyFile {
     /// # Errors
     ///
     /// Fails with [`Error::Keys`] if the file holds neither a JWK nor a JWK set.
-    pub fn load(path: impl Into<PathBuf>) -> Result<Self, Error> {
+    pub(crate) fn load(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let path = path.into();
         let stamp = stamp(&path);
         let (keys, source) = crate::load_keys(&path)?;

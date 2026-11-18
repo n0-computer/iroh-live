@@ -9,7 +9,7 @@ use moq_ext_access::policy::{
 use n0_error::e;
 use tracing::debug;
 
-use crate::{Error, KeyFile, iroh_sessions::own_paths};
+use crate::{Error, iroh_sessions::own_paths, keys::KeyFile};
 
 /// A key whose rcan capability chains the relay accepts, and the root they must stay within.
 ///
@@ -130,7 +130,7 @@ impl FromStr for RcanPrincipal {
 /// it once and asks only the principals whose key issued its first link, so
 /// a chain from no principal costs no more than its decoding. The first
 /// principal that accepts it decides. Any other token is a JWT, which the
-/// [`KeyFile`] checks. A token of a kind the relay has no verifier for is a
+/// key file checks. A token of a kind the relay has no verifier for is a
 /// rejection, so a client cannot get the anonymous rules by sending one.
 ///
 /// Built by [`Config::iroh_tokens`](crate::Config::iroh_tokens), which

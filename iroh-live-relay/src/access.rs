@@ -15,8 +15,9 @@ use moq_net::{Pattern, Patterns};
 use n0_error::e;
 
 use crate::{
-    Config, Error, IrohTokens, KeyFile,
+    Config, Error, IrohTokens,
     iroh_sessions::{anonymous_policy, relay_policy},
+    keys::KeyFile,
 };
 
 /// Whether a relay admits sessions without a token to everything, or only to its public area.
@@ -51,21 +52,21 @@ const PULLED_PATHS: [&str; 2] = ["live/*/*/**", "rooms/*/*/*/**"];
 #[non_exhaustive]
 pub struct Policies {
     /// The mode, given or inferred.
-    pub access: Access,
+    pub(crate) access: Access,
     /// Decides browser sessions in [`admit`](crate::admit), or `None` when `--auth-url` does.
     pub browsers: Option<BrowserPolicy>,
     /// Decides iroh client sessions.
-    pub iroh: Arc<dyn DynPolicy<EndpointId>>,
+    pub(crate) iroh: Arc<dyn DynPolicy<EndpointId>>,
     /// Decides which iroh clients may pull without [open pulls](crate::pull::Pulls::with_open_pulls).
-    pub pull_tokens: Option<Arc<dyn DynPolicy<EndpointId>>>,
+    pub(crate) pull_tokens: Option<Arc<dyn DynPolicy<EndpointId>>>,
     /// The key file iroh clients' JWTs are verified with, watched for changes.
-    pub key_file: Option<KeyFile>,
+    pub(crate) key_file: Option<KeyFile>,
     /// The longest a session admitted with a token lasts.
-    pub max_session: Duration,
+    pub(crate) max_session: Duration,
     /// The lines that describe the access at startup.
-    pub summary: Vec<String>,
+    pub(crate) summary: Vec<String>,
     /// What the operator should know about the access at startup.
-    pub warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
 }
 
 /// How [`admit`](crate::admit) decides a browser session.

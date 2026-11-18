@@ -15,8 +15,8 @@
 //! there are none. A presented token that does not verify is refused, never
 //! narrowed to the public area. Browsers present JWTs, which moq-auth's
 //! reference policy verifies with `--auth-key`, or an auth server decides
-//! under `--auth-url`. iroh clients present a JWT, which a [`KeyFile`] of the
-//! same keys verifies, or an rcan capability chain from a
+//! under `--auth-url`. iroh clients present a JWT, which the relay verifies with
+//! the same key file, or an rcan capability chain from a
 //! `--rcan-principal`, as [`IrohTokens`] does. The key file is read again
 //! when it changes, and the live iroh sessions are decided again then.
 //!
@@ -102,7 +102,6 @@ pub use self::{
     access::Access,
     error::Error,
     iroh_sessions::{IrohSessions, browser_grant, relay_policy},
-    keys::KeyFile,
     tokens::{IrohTokens, RcanPrincipal},
 };
 
