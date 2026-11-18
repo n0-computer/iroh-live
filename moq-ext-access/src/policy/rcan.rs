@@ -483,12 +483,6 @@ impl FromStr for Chain {
     }
 }
 
-impl From<Chain> for Vec<Rcan<MoqCapability>> {
-    fn from(chain: Chain) -> Self {
-        chain.0
-    }
-}
-
 /// Reports whether `chain` delegates `principal`'s capability link by link to `invoker`.
 fn runs_between(
     chain: &[Rcan<MoqCapability>],
