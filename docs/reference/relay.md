@@ -97,6 +97,9 @@ The relay decides an iroh session on one token, the first of the client's
 `RelayConfig::tokens`. A chain needs an `iroh://` relay link and the key its
 last link names. `--auth-url` decides browsers only, so iroh clients then
 need `--auth-key` or `--rcan-principal`, and the relay warns without them.
+An iroh client's JWT that caps a rate, `{"path": [...], "rate": bps}`, is
+refused: the relay does not enforce rate caps on iroh sessions, and
+dropping the cap would grant more than the token states.
 
 A browser presents its JWT as `?jwt=<token>` in the URL or as a SETUP token.
 A session that presents two different JWTs is refused.
