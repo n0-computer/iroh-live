@@ -99,6 +99,7 @@ mod admission;
 mod claim;
 mod endpoint;
 mod error;
+mod group;
 mod handshake;
 pub mod layout;
 mod link;

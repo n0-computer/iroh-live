@@ -4437,6 +4437,7 @@ dependencies = [
 name = "iroh-live-node"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "bytes",
  "data-encoding",
  "derive_more",
@@ -4458,6 +4459,7 @@ dependencies = [
  "n0-watcher",
  "noq-proto",
  "percent-encoding",
+ "postcard",
  "serde",
  "tokio",
  "tokio-util",
