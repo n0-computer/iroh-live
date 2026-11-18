@@ -12,6 +12,7 @@ use n0_error::{AnyError, stack_error};
 /// same failure. The node's errors sit in a [`Box`], since they are large.
 #[stack_error(derive, add_meta)]
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum Error {
     /// The ticket's peer may not publish the ticket's path.
     ///

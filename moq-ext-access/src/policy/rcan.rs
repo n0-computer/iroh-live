@@ -72,9 +72,12 @@ impl From<ChainError> for Rejection {
 /// What a holder may do at a moq node: publish and subscribe under a root.
 ///
 /// The patterns are relative to [`root`](Self::root), as in a moq-auth JWT.
-/// One capability permits another when its paths cover the other's.
+/// One capability permits another when its paths cover the other's. Build
+/// one with [`new`](Self::new) and the `with_*` methods, since later kinds of
+/// rights may add fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "Wire", try_from = "Wire")]
+#[non_exhaustive]
 pub struct MoqCapability {
     /// The path the patterns are relative to.
     pub root: String,
