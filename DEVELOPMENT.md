@@ -6,7 +6,7 @@ and the crate docs describe the main types.
 
 Codecs, capture, decoding, and the wgpu renderer live upstream in `moq-video`
 and `moq-audio`. See
-[docs/architecture/media-stack.md](docs/architecture/media-stack.md).
+[docs/architecture/index.md](docs/architecture/index.md#upstream-media).
 
 ## Build and test
 
@@ -34,8 +34,11 @@ run is where feature-gated mistakes show up. The browser suite needs
 `npm ci` and `npx playwright install chromium` in `tests/e2e-browser` once.
 
 For docs, run `cargo test --doc -p iroh-live --all-features`, which compiles
-the guide's Rust programs, and `python3 scripts/check-links.py`. See
-[docs/contributing.md](docs/contributing.md).
+the guide's Rust programs, `python3 scripts/check-links.py` and
+`python3 scripts/check-docs.py`. `cargo make docs-site` builds the
+documentation site with the API docs, see
+[docs-site/README.md](docs-site/README.md). See
+[docs/contributing.md](docs/contributing.md) for the docs rules.
 
 A test that has to see a rendition switch within its timeout shortens the
 timers in `PlayerConfig::adaptation`, as the patchbay suite does.

@@ -17,16 +17,18 @@ irl publish --video file:talk.mp4 --transcode
 irl publish --video none --audio file:music.mp3:loop
 ```
 
-A `file:` video source is republished without decoding. A plain MP4 or a
-looped file needs `--transcode`, which runs it through ffmpeg first. The
+A `file:` video source is republished without decoding, so it must already be
+fragmented MP4 or raw H.264. A regular MP4, or a file played with `:loop`, needs
+`--transcode`, which re-muxes it through ffmpeg first. The
 [CLI reference](../reference/cli.md#sources) lists every source, and
-[Raspberry Pi](raspberry-pi.md) covers the Pi camera.
+[Publish from a Raspberry Pi](raspberry-pi.md) covers the Pi camera.
 
 ## From Rust
 
 This program publishes the camera, or the screen with `screen` as its first
 argument. A second argument names a WAV or MP3 file to play instead of the
-microphone. It needs the `capture` and `file` features.
+microphone. It needs the `capture` and `file` features, and `file` is not
+part of `full`: `features = ["full", "file"]`.
 
 ```rust,no_run
 use iroh::protocol::Router;
@@ -106,15 +108,42 @@ does not have to track them itself. To switch cameras behind one
 source, `VideoSource::switchable` returns a `VideoSwitch` that swaps what
 feeds it.
 
+### Sources by name
+
+`media::spec` parses the source specifiers that `irl publish --video` and
+`--audio` take, such as `cam:2`, `screen` or `test:gradient`, so a flag or a
+config file of your own names sources the same way. The
+[CLI reference](../reference/cli.md#sources) lists them.
+`VideoSourceSpec::open` opens one, with `VideoOpenOptions` for the size and
+frame rate to ask for, and `VideoSwitch::open_spec` opens one behind a
+switch, for a source picker:
+
+```rust,no_run
+use iroh_live::media::{
+    VideoSwitch,
+    spec::{VideoOpenOptions, VideoSourceSpec},
+    video,
+};
+
+fn pick(switch: &VideoSwitch, choice: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let spec: VideoSourceSpec = choice.parse()?;
+    let options = VideoOpenOptions::default()
+        .with_size(video::Size::new(1280, 720))
+        .with_framerate(video::FrameRate::new(30, 1).expect("a valid rate"));
+    // Opens in the background; `switch.status()` reports how it went.
+    switch.open_spec(spec, options);
+    Ok(())
+}
+```
+
 ### Other sources
 
 - `VideoSource::push(format)` and `AudioSource::push(format)` take frames
   that the application makes.
-- A video file is republished without decoding, through moq-mux's importer.
-  `irl` does this in `iroh-live-cli/src/import.rs`. There is no
-  `VideoSource` for files.
+- There is no `VideoSource` for video files. `irl` republishes a file with
+  moq-mux's importer, without decoding. See `iroh-live-cli/src/import.rs`.
 - `rpicam_h264` publishes the Raspberry Pi camera's own H.264, see
-  [Raspberry Pi](raspberry-pi.md).
+  [Publish from a Raspberry Pi](raspberry-pi.md).
 
 ## Where to go next
 

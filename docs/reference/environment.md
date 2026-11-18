@@ -1,4 +1,7 @@
-# Environment variables
+# Environment variables and files
+
+`irl`, the iroh-live relay and the library read these variables. The
+[Files](#files) section lists the files that `irl` and the relay write.
 
 | Variable | Read by | Effect |
 |---|---|---|
@@ -19,7 +22,7 @@ is not a key fails with `EndpointError::SecretKey`. The key is a secret: whoever
 can act as this endpoint, and receive what peers send to it.
 
 `irl run` takes `secret_key_name` in its session file instead, see
-[The `irl run` session file](irl-run.md). An application can also keep its
+[`irl run`](cli.md#irl-run). An application can also keep its
 key in a file with `iroh_live::load_or_create_secret_key(path)`.
 
 ## `IROH_LIVE_RELAY_DATA`
@@ -56,5 +59,18 @@ Useful filters:
 
 `trace` is verbose. Prefer it for one module, not as the default level.
 
+## Files
+
+`<config dir>` is the platform's config directory, such as `~/.config` on
+Linux, and `<data dir>` its data directory, such as `~/.local/share`.
+
+| File | Written by | Holds |
+|---|---|---|
+| `<config dir>/iroh-live/secret_keys/<name>.key` | `irl run` with `secret_key_name` | A stored secret key, made on first use |
+| `<config dir>/iroh-live/portal/screen.token`, `window.token` | `irl publish --video screen` or `window` on Linux | The desktop portal's restore token, so a later run can skip the picker |
+| `$IROH_LIVE_RELAY_DATA/iroh_secret_key`, or `<data dir>/iroh-live-relay/iroh_secret_key` | `iroh-live-relay` | The relay's secret key, which fixes its endpoint id |
+
+On Unix, each file is readable by its user only.
+
 On Android, the demo sends the same logs to logcat, see
-[Android](../how-to/android.md#debugging).
+[Use iroh-live on Android](../how-to/android.md#debugging).

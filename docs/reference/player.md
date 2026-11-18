@@ -3,16 +3,19 @@
 `PlayerConfig` sets how a `Player` plays. Start from `Default`, and set a
 field with its `with_*` builder:
 
-```rust,ignore
+```rust,no_run
+# use iroh_live::media::{AudioMode, DEFAULT_LATENCY, PlayerConfig, audio::playback::Engine};
+# fn f(engine: Engine) {
 let config = PlayerConfig::default()
     .with_audio(AudioMode::Play(engine))
     .with_latency(DEFAULT_LATENCY);
+# }
 ```
 
 | Field, builder | Default | Meaning |
 |---|---|---|
 | `rendition`, `with_rendition` | `RenditionMode::Auto` | Which video rendition plays |
-| `latency`, `with_latency` | `DEFAULT_LATENCY`, 100 ms to 150 ms | moq-net's `Delay { min, max }`: the least time each frame is held, and the lag past which the player skips to the live edge |
+| `latency`, `with_latency` | `DEFAULT_LATENCY` (hold 100 ms, skip at 150 ms) | moq-net's `Delay { min, max }`: the least time each frame is held, and the lag past which the player skips to the live edge |
 | `audio`, `with_audio` | `AudioMode::Off` | Whether audio is subscribed, decoded and played |
 | `decoder`, `with_decoder` | `decode::Kind::Auto` | Which video decoder opens |
 | `adaptation`, `with_adaptation` | see below | Thresholds and timers of automatic choice |
@@ -31,12 +34,12 @@ let config = PlayerConfig::default()
 
 ## Latency
 
-| Constant or `irl watch --latency` | `min` | `max` |
-|---|---|---|
-| `IMMEDIATE_LATENCY` | 0, no pacing | 150 ms |
-| `realtime` | 60 ms | 100 ms |
-| `DEFAULT_LATENCY`, `balanced` | 100 ms | 150 ms |
-| `smooth` | 400 ms | 600 ms |
+| Constant or `irl watch --latency` | `min` (holds) | `max` (skips at) | For |
+|---|---|---|---|
+| `IMMEDIATE_LATENCY` | 0, no pacing | 150 ms | Tests and measurements |
+| `realtime` | 60 ms | 100 ms | Conversations |
+| `DEFAULT_LATENCY`, `balanced` | 100 ms | 150 ms | The default |
+| `smooth` | 400 ms | 600 ms | Watching over Wi-Fi or a mobile link |
 
 The playout clock holds each frame for at least `min`, and longer when the
 catalog's `delay` or the measured audio jitter asks for more. `play` and
@@ -58,7 +61,9 @@ explains the clock.
 software. `Hardware` and `Software` restrict the choice, and
 `Named("vaapi")` opens one backend only, with no fallback. `irl watch
 --decoder` takes `auto`, `hardware`, `software` or a backend name.
-`Player::set_decoder` changes a running player.
+`Player::set_decoder` changes a running player. `media::Backend` parses the
+same names, for a flag or a config file of your own, and converts into a
+`decode::Kind`.
 
 ## Adaptation
 

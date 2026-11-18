@@ -7,8 +7,8 @@
 //! on demand. Nothing here knows what the broadcasts carry.
 //!
 //! A member stays in the room while its gossip lease holds. It renews the
-//! lease every thirty seconds, and drops out about two minutes after the last
-//! renewal, or at once when it leaves.
+//! lease every thirty seconds, and drops out two minutes after the last
+//! renewal, give or take ten seconds, or at once when it leaves.
 //!
 //! A member that goes away without leaving stays listed until its lease runs
 //! out. Its [`MemberConnection`] tells sooner: a member turns

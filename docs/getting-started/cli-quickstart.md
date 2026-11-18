@@ -11,7 +11,7 @@ Publish the camera and microphone:
 irl publish
 ```
 
-It prints a ticket and the ticket as a QR code. On another machine, or in a
+It prints a ticket, as text and as a QR code. On another machine, or in a
 second terminal, play it:
 
 ```sh
@@ -73,14 +73,14 @@ irl call            # prints this side's ticket and waits
 irl call <TICKET>   # on the other machine
 ```
 
-A room holds several participants:
+A room holds several members:
 
 ```sh
 irl room --display-name alice
 irl room --display-name bob <TICKET>
 ```
 
-## Next steps
+## Where to go next
 
 - Every command and flag is in the [CLI reference](../reference/cli.md).
 - To record a stream, see [Record a broadcast](../how-to/record.md).

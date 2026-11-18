@@ -219,8 +219,9 @@ pub use self::error::Error;
 ))]
 mod guide {
     macro_rules! pages {
-        ($($name:ident => $path:literal),* $(,)?) => {
+        ($($(#[$attr:meta])* $name:ident => $path:literal),* $(,)?) => {
             $(
+                $(#[$attr])*
                 #[doc = include_str!(concat!("../../docs/", $path))]
                 mod $name {}
             )*
@@ -236,10 +237,15 @@ mod guide {
         custom_paths => "how-to/custom-paths.md",
         publish_through_relay => "how-to/publish-through-relay.md",
         data => "how-to/data.md",
-        node_only => "how-to/node-only.md",
         record => "how-to/record.md",
         tune => "how-to/tune.md",
         control_access => "how-to/control-access.md",
         tokens => "how-to/tokens.md",
+        concepts_nodes => "concepts/nodes.md",
+        concepts_paths => "concepts/paths.md",
+        reference_player => "reference/player.md",
+        // The tutorial cancels the speaker's echo.
+        #[cfg(feature = "aec")]
+        call_app => "getting-started/call-app.md",
     }
 }

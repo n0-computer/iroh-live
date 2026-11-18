@@ -11,7 +11,7 @@ the rooms crate as `iroh_live::rooms` behind the `rooms` feature.
 | [`iroh-live-node`](../../iroh-live-node) | The node: route table, publications and audiences, sessions, relay links, policies, link statistics, `BroadcastTicket`, `LiveLayout`, `EndpointConfig`, `MoqPreset` | yes |
 | [`moq-transport-iroh`](../../moq-transport-iroh) | MoQ sessions over iroh connections: dial, accept, ALPN negotiation | yes |
 | [`iroh-live-rooms`](../../iroh-live-rooms) | Rooms: gossip membership and members-only broadcasts. No media | yes |
-| [`moq-ext-access`](../../moq-ext-access) | Grants, policies, token verifiers, layouts and audiences | no |
+| [`moq-ext-access`](../../moq-ext-access) | Grants, policies, token verifiers, the `Layout` trait and audiences | no |
 | [`moq-ext-publisher`](../../moq-ext-publisher) | `LocalBroadcast`: encodes sources into a ladder of renditions | no |
 | [`moq-ext-player`](../../moq-ext-player) | `RemoteBroadcast` and `Player`: rendition choice, A/V sync, recording input | no |
 | [`moq-ext-adaptive`](../../moq-ext-adaptive) | Rendition choice and decoder handover as pure state machines | no |
@@ -31,8 +31,10 @@ Capture, codecs and rendering come from moq's
 
 ## API docs
 
-The crates are not on crates.io yet, so docs.rs has no pages for them. Build
-the API docs from a checkout:
+The crates are not on crates.io yet, so docs.rs has no pages for them. The
+documentation site hosts the [API docs](https://n0-computer.github.io/iroh-live/api/), built from `main` with every
+feature on. Start at [`iroh_live`](https://n0-computer.github.io/iroh-live/api/iroh_live/). To build them from a
+checkout:
 
 ```sh
 cargo doc --workspace --all-features --no-deps --open

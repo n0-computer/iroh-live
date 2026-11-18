@@ -1,9 +1,10 @@
 # Publish at your own path
 
 This page publishes at a path of your own choosing, to a chosen set of peers.
-`LiveLayout` publishes at `live/<id>/<name>` to every granted session. For
-anything else, use `Node::publish` and `Node::subscribe` directly.
-[Paths and layouts](../concepts/paths.md) explains the idea.
+`LiveLayout` publishes at `live/<endpoint id>/<name>` to every granted
+session. For anything else, use `Node::publish` and `Node::subscribe`
+directly. [Paths, layouts and tickets](../concepts/paths.md) explains the
+idea.
 
 ## The program
 
@@ -13,10 +14,10 @@ broadcast, and moq enforces it on each live session. Nothing here is a
 ticket: the subscriber needs the publisher's id and the path.
 
 The subscriber's node also has to let the publisher announce that path. The
-live layout allows only `live/<id>/`, so this program adds a second layout,
-`stage/<id>/`, and gives the node the union of both. Run `stage publish
-<viewer id>` on one machine and `stage watch <publisher id>` on the other.
-Each prints its own id on start.
+live layout allows only `live/<endpoint id>/`, so this program adds a second
+layout, `stage/<endpoint id>/`, and gives the node the union of both. Run
+`stage publish <viewer endpoint id>` on one machine and `stage watch
+<publisher endpoint id>` on the other. Each prints its own id on start.
 
 ```rust,no_run
 use iroh::{EndpointId, protocol::Router};
@@ -105,5 +106,6 @@ it publishes under the live layout to another audience.
 
 ## Where to go next
 
-- [Paths and layouts](../concepts/paths.md) explains the `Layout` trait.
+- [Paths, layouts and tickets](../concepts/paths.md) explains the `Layout`
+  trait.
 - [Access reference](../reference/access.md) lists the audiences.

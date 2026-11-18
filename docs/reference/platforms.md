@@ -60,21 +60,32 @@ encodes and decodes, and the renderer imports decoded pictures through
 MediaCodec encode and decode are in moq-video. The app pushes CameraX frames
 through `VideoSource::push`, and
 the demo crate's `renderer` module draws decoded `AHardwareBuffer` frames as
-an EGL external texture without a copy. See [Android](../how-to/android.md).
+an EGL external texture without a copy. See [Use iroh-live on Android](../how-to/android.md).
 
 ## Raspberry Pi
 
 `irl publish --video rpicam` runs `rpicam-vid`, which drives the camera ISP and
 the Pi's hardware H.264 encoder. It needs the `rpicam` feature and `rpicam-vid`
 on `PATH`. `--video rpicam:raw` reads raw pictures from `rpicam-vid` instead,
-for our own encoders.
+for an encoder that iroh-live runs, such as `--encoder v4l2`.
 
 The `v4l2` feature adds the VideoCore memory-to-memory encoder and decoder.
 Both run on a Pi 4. When probing picks the wrong device node, the `v4l2`
 field of moq-video's encoder and decoder configs names one explicitly.
 
 The Pi Zero has no Vulkan, so the Pi demo draws with its own GLES2 renderer.
-See [Raspberry Pi](../how-to/raspberry-pi.md).
+See [Publish from a Raspberry Pi](../how-to/raspberry-pi.md).
+
+## Codec backends
+
+moq-video picks the codec backend: platform hardware first, then openh264 as
+the software fallback. `moq_video::encode::Kind` and `moq_video::decode::Kind`
+let a caller ask for `Auto`, `Hardware`, `Software` or one backend by name,
+such as `Named("vaapi")`. The CLI's `--encoder` and `--decoder` take `auto`,
+`hardware` (`hw`), `software` (`sw`) or a name from moq-video's
+`encode::NAMES` and `decode::NAMES`.
+
+H.264 encodes and decodes everywhere, since openh264 is always compiled in.
 
 ## Codecs without software fallback
 

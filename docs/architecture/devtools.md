@@ -58,18 +58,22 @@ history itself: one point every 100 ms, twelve seconds in all.
 source frame rate, each rendition's encoder, the audio encoder and each slot's
 state. `Net` shows the encoded video bitrate summed over the renditions.
 
-`show_player(ui, rect, &player)` draws a `Player`. `Net`
-shows the round trip, loss and the publisher's delivery estimate, plus any
-lines the caller set with `set_link`. `Render` shows the rendition mode, the
-rendition, the decoder, the frame rate, the decode time and the last switch
-error. `Audio` shows the buffer and the playout latency. `Time` draws the
-player's timeline over the last ten seconds: how long each picture was held
-between decoder and screen, picture and audio cadence, the A/V offset, the
-audio buffer and the round trip. Scrolling over it pauses it and moves back in
-time, and a double click returns to the live edge. The overlay copies
-`Player::timeline()` only while the `Time` panel is open. The code that turns
-stats into lines is in `overlay/sections.rs`, and the timeline is in
-`overlay/timeline.rs`.
+`show_player(ui, rect, &player)` draws a `Player`, in these sections:
+
+- `Net`: the round trip, loss and the publisher's delivery estimate, plus any
+  lines the caller set with `set_link`.
+- `Render`: the rendition mode, the rendition, the decoder, the frame rate,
+  the decode time and the last switch error.
+- `Audio`: the buffer and the playout latency.
+- `Time`: the player's timeline over the last ten seconds. It shows how long
+  each picture was held between decoder and screen, picture and audio
+  cadence, the A/V offset, the audio buffer and the round trip. Scrolling
+  over it pauses it and moves back in time, and a double click returns to
+  the live edge. The overlay copies `Player::timeline()` only while this
+  panel is open.
+
+The code that turns stats into lines is in `overlay/sections.rs`, and the
+timeline is in `overlay/timeline.rs`.
 
 `irl publish --preview` shows `Capture` and `Net`. `irl watch` shows `Net`,
 `Render`, `Audio` and `Time`.
@@ -90,7 +94,7 @@ and subscriber in one process, and prints the figures.
 members leaving. The broadcasts carry a plain data track, since
 `iroh-live-rooms` has no media dependency.
 
-`iroh-live-node/tests/` covers sessions, the node and the moq routing behaviour the
+`iroh-live-node/tests/` covers sessions, the node and the moq routing behavior the
 node relies on. `iroh-live-relay/tests/relay_bridge.rs` covers bridging between
 the WebTransport and iroh sides of the relay. `tests/e2e-browser/` is a
 Playwright suite that builds the relay and the CLI, serves the embedded web
@@ -99,10 +103,14 @@ client, and watches a stream in Chromium.
 `iroh-live/tests/patchbay.rs` is the only place that impairs a link. It puts
 the publisher and the subscriber in separate network namespaces with a router
 between them and applies netem latency, jitter, loss and rate limits, so the
-impairment reaches QUIC. The tests cover frame delivery through a latency ramp
-and a loss spike, adaptation to loss, to a rate limit and to a marginal cap, a
-longer round trip that must not downgrade, and switches that must not blank the
-picture. They shorten the player's timers, but not its thresholds, through
+impairment reaches QUIC. The tests cover these cases:
+
+- frame delivery through a latency ramp and a loss spike;
+- adaptation to loss, to a rate limit and to a marginal cap;
+- a longer round trip, which must not downgrade;
+- switches, which must not blank the picture.
+
+They shorten the player's timers, but not its thresholds, through
 `PlayerConfig::adaptation`. The suite is Linux-only and needs unprivileged
 user namespaces, which a `ctor` initializer sets up before the harness starts
 threads. nextest runs the patchbay tests one at a time, since two at once

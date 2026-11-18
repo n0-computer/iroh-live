@@ -1,8 +1,9 @@
 # Control access
 
-Each section below is one recipe for a node's policy. [Access control](../concepts/access.md) explains the model. Check first
-whether the defaults do what you need: a node built with `LiveLayout::config()`
-lets every peer read, and publish only under its own id.
+Check the defaults first: a node built with `LiveLayout::config()` lets every
+peer read, and publish only under its own id. Each section below is a recipe
+for a different policy. [Access control](../concepts/access.md) explains the
+model.
 
 The types are in `iroh_live::node::policy`. The
 [access reference](../reference/access.md) lists every policy, event and
@@ -13,10 +14,7 @@ limit.
 On a network you trust, let every peer publish and read anything:
 
 ```rust,no_run
-use iroh_live::{
-    NodeConfig,
-    node::{Grant, policy},
-};
+use iroh_live::{Grant, NodeConfig, node::policy};
 
 fn open_lan() -> NodeConfig {
     NodeConfig::default().with_policy(policy::Open(Grant::everything()))
@@ -25,7 +23,7 @@ fn open_lan() -> NodeConfig {
 
 ## Live broadcasts, rooms and your own paths
 
-`LiveLayout::config()` lets each peer publish under `live/<its id>/`. A node
+`LiveLayout::config()` lets each peer publish under `live/<endpoint id>/`. A node
 that also runs rooms takes the union of both layouts,
 `layout::config((LiveLayout::default(), RoomsLayout))`. A layout of your own
 implements the `Layout` trait, and
@@ -79,9 +77,9 @@ again when it passes:
 use std::time::{Duration, SystemTime};
 
 use iroh::EndpointId;
-use iroh_live::node::{
+use iroh_live::{
     Grant,
-    policy::{Authorization, Decision, PeerRequest, Policy, Rejection},
+    node::policy::{Authorization, Decision, PeerRequest, Policy, Rejection},
 };
 
 #[derive(Debug)]
@@ -119,11 +117,8 @@ use std::time::Duration;
 
 use iroh::EndpointId;
 use iroh_live::{
-    NodeConfig,
-    node::{
-        Grant,
-        policy::{Queue, Rejection},
-    },
+    Grant, NodeConfig,
+    node::policy::{Queue, Rejection},
 };
 
 async fn ask_the_user(_peer: &EndpointId) -> bool {
@@ -150,16 +145,18 @@ async fn answer(queue: Queue) {
 }
 ```
 
-A full queue rejects at once with `TooManyRequests`. Some nodes admit every peer with a small grant, and ask only for more. Such
-a policy waits for the queue with a timeout of its own, and falls back to the
+A full queue rejects at once with `TooManyRequests`.
+
+Some nodes admit every peer with a small grant, and ask only for more. Such a
+policy waits for the queue with a timeout of its own, and falls back to the
 small grant:
 
 ```rust,no_run
 use std::time::Duration;
 
-use iroh_live::node::{
+use iroh_live::{
     Grant,
-    policy::{Decision, PeerRequest, Policy, Queue},
+    node::policy::{Decision, PeerRequest, Policy, Queue},
 };
 
 #[derive(Debug)]

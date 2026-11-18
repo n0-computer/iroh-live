@@ -16,8 +16,9 @@ iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["ful
 tokio = { version = "1", features = ["full"] }
 ```
 
-`full` turns on the media stack with capture, rendering and recording. The
-[features reference](../reference/features.md) lists the others.
+`full` turns on the media stack with capture, playback, rendering and
+recording. The [features reference](../reference/features.md) lists the
+others.
 
 ## Publish
 
@@ -67,7 +68,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 The broadcast is at the path `live/<endpoint id>/hello`, and the ticket names
-that path. A rendition encodes only while someone watches it.
+that path. A rendition encodes only while a viewer subscribes to it, so the
+ladder costs nothing until someone watches.
 
 ## Watch
 
@@ -132,12 +134,14 @@ this endpoint. An application that stores its own key sets
 `EndpointConfig::with_secret_key`, and `iroh_live::load_or_create_secret_key(path)`
 keeps one in a file.
 
-## Next steps
+## Where to go next
 
+- For a complete call app with a window, a camera and echo cancellation,
+  follow the [call tutorial](call-app.md).
 - To publish a camera, a screen or a file, see
   [Publish](../how-to/publish.md).
 - To draw the frames, see [Watch a broadcast](../how-to/watch.md).
-- For calls and rooms, see [Make a call](../how-to/call.md) and
+- For calls and rooms, see [Make a one-to-one call](../how-to/call.md) and
   [Run a room](../how-to/rooms.md).
 - To reach browsers, see [Serve browsers](../how-to/browsers.md).
 - To learn what a node, a path and a route are, start at

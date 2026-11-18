@@ -18,12 +18,12 @@ buffer and which rendition to play.
 `irl publish` takes these flags, and the [CLI reference](../reference/cli.md#flags)
 has the details:
 
-- `--renditions <LIST>` sets the ladder. A rung is `<height>p`,
+- `--renditions <LIST>` sets the ladder. A rendition is `<height>p`,
   `<width>x<height>` or `<name>:<width>x<height>`, with an optional
-  `@<fps>`. A ladder lets each viewer drop to a smaller rung when its link is
-  slow, and an unwatched rung costs nothing.
-- `--bitrate <BITS_PER_SECOND>` sets the bitrate of the largest rung, and the
-  smaller rungs get a share by pixel count. Without it, the encoder derives a
+  `@<fps>`. A ladder lets each viewer drop to a smaller rendition when its link is
+  slow, and an unwatched rendition costs nothing.
+- `--bitrate <BITS_PER_SECOND>` sets the bitrate of the largest rendition, and the
+  smaller renditions get a share by pixel count. Without it, the encoder derives a
   bitrate from the size and frame rate.
 - `--keyframe-interval <SECONDS>` (default 2) sets how long a new viewer waits
   for its first picture, and how long a rendition switch takes. A shorter
@@ -60,13 +60,10 @@ set.
 
 The player holds each frame for a short time before it shows it, so it can
 absorb jitter and keep audio and video in step. `--latency` sets how long,
-and how far behind it may fall before it skips ahead to the live edge:
-
-| `irl watch --latency` | Holds | Skips at | For |
-|---|---|---|---|
-| `realtime` | 60 ms | 100 ms | Conversations |
-| `balanced` | 100 ms | 150 ms | The default |
-| `smooth` | 400 ms | 600 ms | Wi-Fi or mobile links |
+and how far behind it may fall before it skips ahead to the live edge.
+`realtime` suits conversations, `balanced` is the default, and `smooth` suits
+Wi-Fi or mobile links. [Player settings](../reference/player.md#latency) lists
+the values.
 
 The hold rises above the minimum when the catalog or the measured audio
 jitter asks for more, and returns to it on a clean link.
@@ -96,8 +93,9 @@ fn pin(player: &Player) {
 - `irl watch --rendition <NAME>` and `RenditionMode::Pinned` play one
   rendition. `RenditionMode::Off` stops video while audio plays, for a tile
   off screen.
-- `irl watch --decoder` and `PlayerConfig::decoder` pick a decoder. On a
-  Raspberry Pi 4, the software decoder has less latency than the hardware one.
+- `irl watch --decoder` and `PlayerConfig::decoder` pick a decoder. A
+  Raspberry Pi 4 needs this, see
+  [Publish from a Raspberry Pi](raspberry-pi.md#watching-on-a-pi-4-name-the-decoder).
 - `PlayerConfig::adaptation` holds the thresholds and timers of automatic
   choice. The [player reference](../reference/player.md) lists them.
 

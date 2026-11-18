@@ -1,4 +1,4 @@
-# Android
+# Use iroh-live on Android
 
 `demos/android` is a Kotlin app with a Rust core. It captures with CameraX,
 encodes and decodes H.264 with MediaCodec, sends over iroh, and draws decoded
@@ -38,11 +38,16 @@ and back, which tests the codec without a peer.
 A call follows the same convention as `irl call`, so a phone and a desktop can
 call each other. Each side publishes its broadcast with `Calls::new`, as
 `iroh_live::calls::CALL`, rings the other peer only with `Calls::ring`, and
-subscribes to the other's with `Calls::answer`. `dial` offers this side to the
-ticket's peer and returns once the peer answers. `answer` opens this side and
-returns at once, so the QR code can go on screen. A task then waits for the
-first peer in `Calls::ringing` and answers it, and the screen polls
-`callConnected` to learn when a caller arrived.
+subscribes to the other's with `Calls::answer`.
+
+The JNI bridge gives the Kotlin app two call entry points:
+
+- `dial` offers this side to the ticket's peer, and returns once the peer
+  answers.
+- `answer` opens this side and returns at once, so the QR code can go on
+  screen. A task then waits for the first peer that rings with
+  `Calls::next_ring` and answers it, and the screen polls `callConnected` to learn when a caller
+  arrived.
 
 ## Prerequisites
 

@@ -1,8 +1,8 @@
 # Run a room
 
-A room holds several participants over a gossip topic. Each member publishes
-into the room and plays the others. [Calls and rooms](../concepts/calls-and-rooms.md)
-explains the model.
+A room holds several members over a gossip topic. Each member publishes into
+the room and plays the others. [Calls and
+rooms](../concepts/calls-and-rooms.md) explains the model.
 
 ## With `irl`
 
@@ -12,8 +12,8 @@ irl room --display-name bob <TICKET>    # joins it
 ```
 
 The window shows the others in a grid and has a chat panel. Pass on the
-ticket that the newest window prints, since it lists that member as the one
-to join through.
+ticket that the newest window prints. That ticket lists the newest member as
+a bootstrap member.
 
 ## From Rust
 
@@ -100,9 +100,11 @@ members cannot reach its gossip.
 the names of its broadcasts, and its connection. A slow reader sees the
 latest state and no backlog. To show "joined" and "left", compare two states.
 
-A member renews its announcement every 30 seconds. A member that stops
-renewing drops out two to two and a half minutes after its last renewal, and
-one that calls `Room::leave()` drops out at once. Lease times use the
+A member renews its announcement every 30 seconds, and its lease runs out two
+minutes after the last renewal. Other members check for expired leases every
+10 seconds. So a member that stops renewing drops out 2:00 to 2:10 after its
+last renewal, which is 2:00 to 2:40 after it went away. A member that calls
+`Room::leave()` drops out at once. Lease times use the
 member's own clock, so a member whose clock is more than two minutes behind
 is never seen.
 
@@ -120,17 +122,19 @@ It reads the node's direct sessions, dialed or accepted, and has three states:
 A member whose process exits closes its sessions, so it turns `Disconnected`
 at once. A crash or a network loss closes nothing, so the session ends only
 after the QUIC idle timeout, 30 seconds by default. A session that this node
-closes itself also counts. Stop retrying a `Disconnected` member's broadcasts,
-or show its tile as gone, and keep `Unknown` members as they are. Gossip still
-removes the member when its lease runs out.
+closes itself also counts.
+
+For a grid, stop retrying a `Disconnected` member's broadcasts, or show its
+tile as gone, and keep `Unknown` members as they are. Gossip still removes the
+member when its lease runs out.
 
 ## Publishing and subscribing
 
-`Room::publish(name)` puts the broadcast at `rooms/<topic>/<this member>/<name>`,
-where only the room's members can read it. A member that leaves or expires
-loses the path at once. `Room::unpublish(name)`, or closing the broadcast,
-removes the name from this member's announcement. A name must not be empty or
-contain a slash.
+`Room::publish(name)` puts the broadcast at `rooms/<topic>/<endpoint
+id>/<name>`, where only the room's members can read it. A member that leaves
+or expires loses the path at once. `Room::unpublish(name)`, or closing the
+broadcast, removes the name from this member's announcement. A name must not
+be empty or contain a slash.
 
 `Room::subscribe(peer, name)` dials the member if needed, and reads the
 broadcast over the session with that member, so no other peer can stand in
@@ -138,11 +142,12 @@ for it. It waits until the member announces the name, so bound the wait with
 a timeout. Leaving the room does not close subscriptions.
 
 A grid cannot follow the room state alone. A member can end a broadcast and
-publish it again before its announcement changes, and a member can drop this
-node from its membership for a moment. In both cases the state stays the same
-and the tile freezes. So a grid also checks `RemoteBroadcast::is_closed()` on a
-timer, drops every closed tile, and subscribes again if the member still
-lists the name. `iroh-live-cli/src/room.rs` does this.
+publish it again before its announcement changes. And a member's membership
+list can briefly lose this node, for example after a gossip reconnect. In both
+cases the state stays the same and the tile freezes. So a grid also checks
+`RemoteBroadcast::is_closed()` on a timer, drops every closed tile, and
+subscribes again if the member still lists the name.
+`iroh-live-cli/src/room.rs` does this.
 
 ## Limits
 
