@@ -64,6 +64,7 @@
   - [Adaptive rendition switching](architecture/adaptive.md)
   - [Playout and A/V sync](architecture/playout.md)
   - [Peer-to-peer and the relay](architecture/p2p-relay.md)
+  - [Groups and per-site forwarding](architecture/groups.md)
   - [Instrumentation and tests](architecture/devtools.md)
 
 # Help
