@@ -12,10 +12,7 @@ use std::{
 };
 
 use iroh::{EndpointId, PublicKey};
-use iroh_live::node::{
-    SessionRequest,
-    policy::{Chain, ChainError, Event, Expires, MoqCapability, PeerRequest, RcanVerifier},
-};
+use iroh_live::node::policy::{Chain, ChainError, Expires, MoqCapability, RcanVerifier};
 use moq_net::{Pattern, Patterns};
 use n0_error::{Result, anyerr};
 
@@ -144,8 +141,7 @@ fn show(args: &RcanShowArgs) -> Result<String> {
     };
     let root = principal_root(principal, root)?;
     let verifier = RcanVerifier::new(key.as_verifying_key(), root);
-    let request = PeerRequest::new(peer, SessionRequest::default(), Event::Connect);
-    match verifier.verify_chain(&chain, &request) {
+    match verifier.verify_chain(&chain, &peer) {
         Ok(authorization) => {
             out.push_str(&format!(
                 "a relay with --rcan-principal {principal} admits {}:\n  subscribe {}, publish {}\n  until {}\n",
@@ -293,9 +289,8 @@ mod tests {
         assert_eq!(delegated.links().len(), 2);
 
         let verifier = RcanVerifier::new(team.public().as_verifying_key(), "");
-        let request = PeerRequest::new(device.public(), SessionRequest::default(), Event::Connect);
         let authorization = verifier
-            .verify_chain(&delegated, &request)
+            .verify_chain(&delegated, &device.public())
             .expect("admitted");
         assert!(authorization.grant.allows_subscribe("live/someone/cam"));
         assert!(authorization.grant.publish.is_empty());

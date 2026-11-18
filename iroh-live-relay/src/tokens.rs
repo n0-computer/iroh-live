@@ -217,7 +217,7 @@ impl IrohTokens {
             .ok_or_else(|| Rejection::new("no rcan principal of this relay issued the chain"))?;
         let mut expired = None;
         for principal in candidates {
-            match principal.verifier.verify_chain(&chain, request) {
+            match principal.verifier.verify_chain(&chain, request.peer()) {
                 Ok(authorization) => return Ok((authorization, principal.own_paths)),
                 Err(rejection) => {
                     debug!(

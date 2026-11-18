@@ -236,17 +236,23 @@ impl RcanVerifier {
 }
 
 impl RcanVerifier {
-    /// Verifies `chain` as presented by the request's peer, and returns what it authorizes.
+    /// Verifies `chain` as presented by `holder`, and returns what it authorizes.
+    ///
+    /// The holder is the key the chain's last link must name, such as the
+    /// peer of a session, or the sender of a signed announcement. Any id
+    /// that borrows as a 32-byte ed25519 public key works, as iroh's
+    /// `EndpointId` and `PublicKey` do.
     ///
     /// This is [`TokenVerifier::verify`] for a chain that is decoded already,
-    /// so a caller that picks a verifier by the chain's
-    /// [`principal`](Chain::principal) decodes the token once.
-    pub fn verify_chain<P>(&self, chain: &Chain, request: &PeerRequest<P>) -> Decision
+    /// with the request's peer as the holder, so a caller that picks a
+    /// verifier by the chain's [`principal`](Chain::principal) decodes the
+    /// token once.
+    pub fn verify_chain<H>(&self, chain: &Chain, holder: &H) -> Decision
     where
-        P: PeerId + Borrow<[u8; 32]>,
+        H: Borrow<[u8; 32]>,
     {
-        let invoker = VerifyingKey::from_bytes(request.peer().borrow())
-            .map_err(|_| Rejection::new("the peer id is not an ed25519 key"))?;
+        let invoker = VerifyingKey::from_bytes(holder.borrow())
+            .map_err(|_| Rejection::new("the holder is not an ed25519 key"))?;
         let leaf = chain.capability().clone();
         if !within(&leaf.root, &self.root) {
             return Err(Rejection::new(format!(
@@ -286,7 +292,7 @@ where
     P: PeerId + Borrow<[u8; 32]>,
 {
     fn verify(&self, token: &str, request: &PeerRequest<P>) -> Decision {
-        self.verify_chain(&token.parse()?, request)
+        self.verify_chain(&token.parse()?, request.peer())
     }
 }
 
