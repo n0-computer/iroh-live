@@ -591,20 +591,33 @@ impl Node {
         peer: impl Into<EndpointAddr>,
         options: ConnectOptions,
     ) -> Result<Session, Error> {
-        if self.shared.shutdown.is_cancelled() {
-            return Err(e!(Error::ShutDown));
-        }
-        let (reply, reply_rx) = oneshot::channel();
-        self.shared
-            .actor
-            .send(ActorMessage::Connect {
-                peer: peer.into(),
-                options,
-                reply,
-            })
-            .await
-            .map_err(|_| e!(Error::ShutDown))?;
-        reply_rx.await.map_err(|_| e!(Error::ShutDown))?
+        self.shared.connect(peer.into(), options).await
+    }
+
+    /// Creates the group whose paths lie under `root`, or returns the one that exists.
+    ///
+    /// The group's members may publish and subscribe under `root`, and its
+    /// [`audience`](crate::Group::audience) admits them. A group that exists
+    /// keeps the options it was created with. Groups are experimental: see
+    /// [`Group`](crate::Group).
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::GroupOverlap`] when `root` covers or lies under
+    /// another group's root, [`Error::GroupAudience`] when a publication with
+    /// another audience already exists under `root`, [`Error::InvalidPath`] or
+    /// [`Error::Moq`] for a root that cannot be published, and
+    /// [`Error::ShutDown`] once the node has shut down.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime with forwarding on.
+    pub fn group(
+        &self,
+        root: impl TryInto<Path, Error: Into<moq_net::Error>>,
+        options: crate::GroupOptions,
+    ) -> Result<crate::Group, Error> {
+        crate::group::group(self, crate::error::to_path(root)?, options)
     }
 
     /// Returns the open direct sessions, dialed and accepted, as they change.
@@ -743,6 +756,33 @@ impl ProtocolHandler for Node {
 }
 
 impl Shared {
+    /// Returns the session with `peer`, dialing if there is none, for [`Node::connect_with`].
+    ///
+    /// The future holds no borrow of the node.
+    pub(crate) fn connect(
+        &self,
+        peer: EndpointAddr,
+        options: ConnectOptions,
+    ) -> impl Future<Output = Result<Session, Error>> + Send + 'static {
+        let actor = self.actor.clone();
+        let shut_down = self.shutdown.is_cancelled();
+        async move {
+            if shut_down {
+                return Err(e!(Error::ShutDown));
+            }
+            let (reply, reply_rx) = oneshot::channel();
+            actor
+                .send(ActorMessage::Connect {
+                    peer,
+                    options,
+                    reply,
+                })
+                .await
+                .map_err(|_| e!(Error::ShutDown))?;
+            reply_rx.await.map_err(|_| e!(Error::ShutDown))?
+        }
+    }
+
     /// Hands an established session to the actor, which runs it.
     pub(crate) async fn register(&self, parts: SessionParts) -> Result<Session, Error> {
         let (reply, reply_rx) = oneshot::channel();

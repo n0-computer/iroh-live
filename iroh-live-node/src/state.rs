@@ -13,19 +13,25 @@
 //! table (see [`State::is_standby`]).
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{Arc, Weak},
     time::SystemTime,
 };
 
 use iroh::EndpointId;
-use moq_ext_access::Viewer;
+use moq_ext_access::{GroupId, Viewer};
 use moq_net::{Path, Pattern, auth, origin, origin::Source};
+use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::{
-    Grant, LinkId, LinkKind, handshake::Hop, link::LatestSample, policy::Authorization,
+    Error, Grant, LinkId, LinkKind,
+    group::{GroupInner, Hints, SiteId},
+    handshake::Hop,
+    link::LatestSample,
+    policy::Authorization,
     publish::AudienceKind,
 };
 
@@ -45,6 +51,43 @@ pub(crate) struct State {
     /// carry rights from before the call, so it registers with nothing and
     /// is decided again.
     pub(crate) reauthorized: u64,
+    /// The node's groups, by id.
+    pub(crate) groups: BTreeMap<GroupId, GroupEntry>,
+}
+
+/// One group, as the grants read it.
+#[derive(derive_more::Debug)]
+pub(crate) struct GroupEntry {
+    pub(crate) root: Path,
+    /// Tells the group's handle from a later one with the same root.
+    handle: u64,
+    /// The handle, so `Node::group` can hand out the group that exists.
+    #[debug(skip)]
+    pub(crate) group: Weak<GroupInner>,
+    pub(crate) members: BTreeSet<EndpointId>,
+    pub(crate) forwarding: bool,
+    /// The members' valid hints, as the group's driver keeps them.
+    pub(crate) hints: Hints,
+    /// This node's site in the group.
+    pub(crate) site: Option<SiteId>,
+    /// The paths this node is the ingress for in its site.
+    pub(crate) ingress: BTreeSet<Path>,
+}
+
+impl GroupEntry {
+    /// Returns the entry of a new group at `root`, without members.
+    pub(crate) fn new(root: Path, handle: u64, forwarding: bool, group: &Arc<GroupInner>) -> Self {
+        Self {
+            root,
+            handle,
+            group: Arc::downgrade(group),
+            members: BTreeSet::new(),
+            forwarding,
+            hints: Hints::default(),
+            site: None,
+            ingress: BTreeSet::new(),
+        }
+    }
 }
 
 /// A direct session's authorization, as the node applies it.
@@ -493,6 +536,86 @@ impl State {
         grant.publish = publish;
         grant.subscribe = subscribe;
         grant
+    }
+
+    /// Fails if a group at `root` would overlap another group or a publication.
+    ///
+    /// A group's root may neither cover nor lie under another group's root,
+    /// and every publication under it has to be for the group's audience.
+    pub(crate) fn check_group_root(&self, id: GroupId, root: &Path) -> Result<(), Error> {
+        if let Some(other) = self
+            .groups
+            .values()
+            .find(|other| root.has_prefix(&other.root) || other.root.has_prefix(root))
+        {
+            return Err(e!(Error::GroupOverlap {
+                root: root.clone(),
+                other: other.root.clone()
+            }));
+        }
+        if let Some(publication) = self.publications.values().find(|publication| {
+            publication.path.has_prefix(root)
+                && !matches!(publication.audience, AudienceKind::Group(group, _) if group == id)
+        }) {
+            return Err(e!(Error::GroupAudience {
+                path: publication.path.clone()
+            }));
+        }
+        Ok(())
+    }
+
+    /// Adds a group, and re-authorizes every link for it.
+    pub(crate) fn add_group(&mut self, id: GroupId, group: GroupEntry) {
+        self.groups.insert(id, group);
+        self.authorize_all();
+    }
+
+    /// Removes group `id` if `handle` still names it, and re-authorizes every link.
+    ///
+    /// Returns whether the group was removed.
+    pub(crate) fn remove_group(&mut self, id: GroupId, handle: u64) -> bool {
+        if self
+            .groups
+            .get(&id)
+            .is_none_or(|group| group.handle != handle)
+        {
+            return false;
+        }
+        self.groups.remove(&id);
+        self.authorize_all();
+        true
+    }
+
+    /// Replaces the member list of group `id`, and re-authorizes every link.
+    pub(crate) fn set_group_members(&mut self, id: GroupId, members: BTreeSet<EndpointId>) {
+        let Some(group) = self.groups.get_mut(&id) else {
+            return;
+        };
+        if group.members == members {
+            return;
+        }
+        group.members = members;
+        self.authorize_all();
+    }
+
+    /// Replaces what group `id`'s driver learned, and re-authorizes every link if it changed.
+    pub(crate) fn set_group_view(
+        &mut self,
+        id: GroupId,
+        hints: Hints,
+        site: Option<SiteId>,
+        ingress: BTreeSet<Path>,
+    ) {
+        let Some(group) = self.groups.get_mut(&id) else {
+            return;
+        };
+        if group.hints == hints && group.site == site && group.ingress == ingress {
+            return;
+        }
+        group.hints = hints;
+        group.site = site;
+        group.ingress = ingress;
+        self.authorize_all();
     }
 
     /// Returns the link whose peer announced a route from `source`.

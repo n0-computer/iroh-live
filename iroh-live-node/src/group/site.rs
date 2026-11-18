@@ -62,7 +62,9 @@ fn is_public(addr: Ipv4Addr) -> bool {
 }
 
 /// Returns the public IPv4 address of `endpoint`, as it changes.
-pub(crate) fn watch_public_v4(endpoint: &Endpoint) -> impl Watcher<Value = Option<Ipv4Addr>> {
+pub(crate) fn watch_public_v4(
+    endpoint: &Endpoint,
+) -> impl Watcher<Value = Option<Ipv4Addr>> + use<> {
     #[cfg(test)]
     let fixed = test_hook::public_v4(endpoint.id());
     endpoint.watch_addr().map(move |addr| {
