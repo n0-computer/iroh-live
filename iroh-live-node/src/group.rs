@@ -48,6 +48,8 @@ use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watchable;
 use tracing::{Instrument, info, info_span};
 
+#[cfg(test)]
+pub(crate) use self::hint::{Hint, now_ms};
 pub(crate) use self::{hint::Hints, site::SiteId};
 use crate::{Audience, Error, Node, node::Shared, publish::check_path, state::GroupEntry};
 

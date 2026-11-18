@@ -1221,6 +1221,204 @@ mod tests {
         assert_eq!(state.session_grant(LinkId(1)), Grant::subscribe_only());
     }
 
+    /// The id of the group the group tests use.
+    const GROUP: GroupId = GroupId::from_bytes([9; 32]);
+
+    /// Returns the site with public address 198.18.0.`n` in [`GROUP`].
+    fn site(n: u8) -> SiteId {
+        SiteId::new(GROUP, std::net::Ipv4Addr::new(198, 18, 0, n))
+    }
+
+    /// Adds group [`GROUP`] at `party`, with forwarding on, `members`, this node at `own`, and `hints`.
+    fn add_group(
+        state: &mut State,
+        members: &[EndpointId],
+        own: Option<SiteId>,
+        hints: &[(EndpointId, Option<SiteId>)],
+    ) {
+        let mut kept = Hints::default();
+        for (member, site) in hints {
+            kept.offer(
+                *member,
+                crate::group::Hint::new(GROUP, *site, crate::group::now_ms()),
+            );
+        }
+        state.add_group(
+            GROUP,
+            GroupEntry {
+                root: Path::new("party").expect("a path"),
+                handle: 1,
+                group: Weak::new(),
+                members: members.iter().copied().collect(),
+                forwarding: true,
+                hints: kept,
+                site: own,
+                ingress: BTreeSet::new(),
+            },
+        );
+    }
+
+    /// Returns a direct link of `kind` with `peer`, whose session holds every right.
+    fn session(peer: EndpointId, kind: SessionKind) -> LinkEntry {
+        let mut link = direct_with(peer, Grant::everything());
+        if let LinkRole::Direct { kind: own, .. } = &mut link.role {
+            *own = kind;
+        }
+        link
+    }
+
+    #[tokio::test]
+    async fn a_forwarding_link_may_publish_only_under_shared_roots() {
+        let mut state = State::default();
+        let peer = SecretKey::generate().public();
+        add_group(&mut state, &[peer], Some(site(1)), &[(peer, Some(site(2)))]);
+        add(
+            &mut state,
+            LinkId(1),
+            session(peer, SessionKind::Forwarding),
+        );
+        let grant = grant_of(&state, LinkId(1));
+        assert!(grant.publish.matches("party/x/cam"));
+        assert!(!grant.publish.matches("live/x/cam"), "outside the root");
+
+        // Without the peer's hint, the session may announce nothing.
+        state.set_group_view(GROUP, Hints::default(), Some(site(1)), BTreeSet::new());
+        assert!(!grant_of(&state, LinkId(1)).publish.matches("party/x/cam"));
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_link_never_lists_a_peers_publication() {
+        let table = Table::new();
+        let mut state = State::default();
+        let peer = SecretKey::generate().public();
+        add_group(&mut state, &[peer], Some(site(1)), &[]);
+        add(&mut state, LinkId(1), session(peer, SessionKind::Forwarded));
+        let members = BTreeSet::from([peer]);
+        state.add_publication(
+            10,
+            table.publication("party/me/cam", AudienceKind::Group(GROUP, members.clone())),
+        );
+        state.add_publication(
+            11,
+            table.publication("private", AudienceKind::Peers(members)),
+        );
+        state.add_publication(12, table.publication("public", AudienceKind::Granted));
+        let grant = grant_of(&state, LinkId(1));
+        assert!(grant.subscribe.matches("party/me/cam"));
+        assert!(!grant.subscribe.matches("private"));
+        assert!(grant.subscribe.matches("public"));
+    }
+
+    #[tokio::test]
+    async fn group_publications_move_from_the_plain_link_to_the_forwarded_one() {
+        let table = Table::new();
+        let mut state = State::default();
+        let peer = SecretKey::generate().public();
+        add_group(&mut state, &[peer], Some(site(1)), &[]);
+        add(&mut state, LinkId(1), session(peer, SessionKind::Plain));
+        let members = BTreeSet::from([peer]);
+        state.add_publication(
+            10,
+            table.publication("party/me/cam", AudienceKind::Group(GROUP, members.clone())),
+        );
+        state.add_publication(
+            11,
+            table.publication("private", AudienceKind::Peers(members)),
+        );
+        assert!(
+            grant_of(&state, LinkId(1))
+                .subscribe
+                .matches("party/me/cam")
+        );
+
+        add(&mut state, LinkId(2), session(peer, SessionKind::Forwarded));
+        let plain = grant_of(&state, LinkId(1));
+        assert!(
+            !plain.subscribe.matches("party/me/cam"),
+            "still on the plain link"
+        );
+        assert!(plain.subscribe.matches("private"), "a `Peers` one stays");
+        assert!(
+            grant_of(&state, LinkId(2))
+                .subscribe
+                .matches("party/me/cam")
+        );
+
+        state.remove_link(LinkId(2));
+        assert!(
+            grant_of(&state, LinkId(1))
+                .subscribe
+                .matches("party/me/cam")
+        );
+    }
+
+    #[tokio::test]
+    async fn ingress_paths_are_offered_to_same_site_members_only() {
+        let mut state = State::default();
+        let (near, far) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
+        add_group(
+            &mut state,
+            &[near, far],
+            Some(site(1)),
+            &[(near, Some(site(1))), (far, Some(site(2)))],
+        );
+        add(&mut state, LinkId(1), session(near, SessionKind::Plain));
+        add(&mut state, LinkId(2), session(far, SessionKind::Plain));
+        add(&mut state, LinkId(3), session(far, SessionKind::Forwarded));
+        let forwarded = Path::new("party/remote/cam").expect("a path");
+        let hints = state.groups[&GROUP].hints.clone();
+        state.set_group_view(
+            GROUP,
+            hints,
+            Some(site(1)),
+            BTreeSet::from([forwarded.clone()]),
+        );
+        assert!(
+            grant_of(&state, LinkId(1))
+                .subscribe
+                .matches(forwarded.as_str())
+        );
+        for link in [LinkId(2), LinkId(3)] {
+            assert!(
+                !grant_of(&state, link).subscribe.matches(forwarded.as_str()),
+                "{link}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_session_class_has_one_announcing_session() {
+        let mut state = State::default();
+        let peer = SecretKey::generate().public();
+        add_group(&mut state, &[peer], Some(site(1)), &[(peer, Some(site(2)))]);
+        add(&mut state, LinkId(1), session(peer, SessionKind::Plain));
+        add(
+            &mut state,
+            LinkId(2),
+            session(peer, SessionKind::Forwarding),
+        );
+        add(&mut state, LinkId(3), session(peer, SessionKind::Forwarded));
+        add(
+            &mut state,
+            LinkId(4),
+            session(peer, SessionKind::Forwarding),
+        );
+        let announces = |state: &State, id| grant_of(state, id).publish.matches("party/x/cam");
+        assert!(announces(&state, LinkId(1)));
+        assert!(announces(&state, LinkId(2)), "the first of its own class");
+        assert!(!announces(&state, LinkId(3)), "a standby of the plain one");
+        assert!(!announces(&state, LinkId(4)));
+        state.remove_link(LinkId(2));
+        assert!(
+            announces(&state, LinkId(4)),
+            "the next forwarder session takes over"
+        );
+        assert!(!announces(&state, LinkId(3)));
+    }
+
     #[test]
     fn an_expired_authorization_lapses_when_stored() {
         let expired = Authorization {
