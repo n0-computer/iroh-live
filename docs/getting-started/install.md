@@ -54,7 +54,7 @@ nothing on macOS and Windows. To cross-compile for a Raspberry Pi, see
 
 iroh-live depends on the unreleased `main` branch of
 [moq-dev/moq](https://github.com/moq-dev/moq), pinned by git rev in the root
-`Cargo.toml`. The pinned rev is `e8075629a` (2026-11-16). The moq crates on
+`Cargo.toml`. The pinned rev is `4a6f52248` (2026-11-18). The moq crates on
 crates.io come from moq's `release` branch, which lags `main` by weeks, and
 iroh-live uses APIs that exist only on `main`. A crate with git dependencies
 cannot be published to crates.io, so none of the iroh-live crates is there
@@ -70,7 +70,7 @@ moq crate directly, such as `moq-mux`, must name the same rev, or Cargo
 builds two copies whose types do not match:
 
 ```toml
-moq-mux = { git = "https://github.com/moq-dev/moq", rev = "e8075629a" }
+moq-mux = { git = "https://github.com/moq-dev/moq", rev = "4a6f52248" }
 ```
 
 `iroh-live` has no default features. `full` turns on the media stack with

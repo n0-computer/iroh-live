@@ -84,8 +84,8 @@ impl<P: PeerId> TokenVerifier<P> for JwtVerifier {
         };
         Ok(Authorization {
             grant: Grant {
-                subscribe: absolute(grant.subscribe)?,
-                publish: absolute(grant.publish)?,
+                subscribe: absolute(grant.subscribe.path)?,
+                publish: absolute(grant.publish.path)?,
             },
             expires: grant.expires.map(SystemTime::from),
         })
@@ -227,8 +227,8 @@ mod tests {
         let grant = verifier
             .verify_grant(&token, "spaces/alice")
             .expect("admitted");
-        assert!(grant.publish.matches("bob/cam"));
-        assert!(!grant.publish.matches("spaces/alice/bob/cam"));
+        assert!(grant.publish.path.matches("bob/cam"));
+        assert!(!grant.publish.path.matches("spaces/alice/bob/cam"));
         assert_eq!(grant.expires, None);
         verifier
             .verify_grant(&token, "spaces/eve")

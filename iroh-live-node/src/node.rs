@@ -180,7 +180,7 @@ impl NodeConfig {
 /// # }
 /// ```
 #[derive(Clone, derive_more::Debug)]
-#[debug("Node({}, hop {})", shared.id.fmt_short(), shared.table.hop())]
+#[debug("Node({}, origin node {})", shared.id.fmt_short(), shared.table.node())]
 pub struct Node {
     pub(crate) shared: Arc<Shared>,
     /// Aborts the node's tasks when the last handle drops.
@@ -275,7 +275,7 @@ impl Node {
             mounted: AtomicBool::new(false),
             warned_unreachable: AtomicBool::new(false),
         });
-        info!(id = %id.fmt_short(), hop = %shared.table.hop(), "moq node started");
+        info!(id = %id.fmt_short(), node = %shared.table.node(), "moq node started");
         let shutdown = shared.shutdown.clone();
         let actor = Actor::new(shared.clone());
         let actor_task = tokio::spawn(

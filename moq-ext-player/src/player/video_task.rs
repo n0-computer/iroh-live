@@ -784,7 +784,10 @@ mod tests {
     struct Published {
         _broadcast: moq_net::broadcast::Producer,
         _catalog: moq_mux::catalog::Producer,
-        _import: moq_mux::codec::h264::Import,
+        _track: moq_mux::container::Finished<
+            moq_mux::catalog::hang::Container,
+            hang::catalog::VideoConfig,
+        >,
         /// Cancels every decode task on drop, so the reader stops with it.
         _remote: RemoteBroadcast,
     }
@@ -925,7 +928,7 @@ mod tests {
         assert_eq!(first, 0, "the reader opened past the first picture");
 
         feed(&mut import, &mut split, &units[boundary..], broken)?;
-        import.finish()?;
+        let track = import.finish()?;
 
         Ok((
             reader,
@@ -934,7 +937,7 @@ mod tests {
             Published {
                 _broadcast: broadcast,
                 _catalog: catalog,
-                _import: import,
+                _track: track,
                 _remote: remote,
             },
         ))

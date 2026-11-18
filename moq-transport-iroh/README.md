@@ -16,7 +16,7 @@ which is built on this crate.
   dials a peer, and `Transport::new` wraps a connection that is already open,
   accepted or dialed with iroh's connect options. Both check the negotiated
   ALPN. Hand the transport to
-  `moq_net::Client::connect` or `moq_net::Server::accept_request`. MoQ runs on
+  `moq_net::Client::connect` or `moq_net::Server::handshake`. MoQ runs on
   raw QUIC, so the request path and any token travel in the MoQ SETUP.
 - `ALPN`, `alpns()`, `HANDSHAKE_TIMEOUT`: the protocol identifiers to mount a
   handler under, newest MoQ version first.
@@ -39,7 +39,7 @@ round robin while send fairness is on, its default, so they share the bytes. The
 `probe` and `receive_window` return `None`: iroh's
 congestion controller takes no probe target, and iroh does not report its
 receive windows. `export_keying_material` derives 32 bytes from the
-connection's TLS secrets, so a moq-lite-07 route key proof binds to the session.
+connection's TLS secrets, the same bytes at both ends of one session.
 
 See `iroh-live-relay/src/iroh_sessions.rs` for the server side.
 

@@ -80,7 +80,7 @@ impl Server {
             .expect("router gone");
         let transport = moq_transport_iroh::Transport::new(connection).expect("a MoQ ALPN");
         let handshake = moq_net::Server::new()
-            .accept_request(now(), transport)
+            .handshake(now(), transport)
             .await
             .expect("handshake failed");
         if let Some(grant) = grant {
@@ -413,7 +413,7 @@ async fn a_route_table_fails_over_between_links() {
                     .expect("dial relay");
                 let (session, driver) = moq_net::Client::new()
                     .with_subscriber(table.clone().with_link(Link::Upstream))
-                    .with_peer_hop(NonZeroU64::new(RELAY_HOP).expect("a hop"))
+                    .with_peer_node(NonZeroU64::new(RELAY_HOP).expect("a hop"))
                     .with_cost(RELAY_COST)
                     .connect(now(), transport)
                     .await

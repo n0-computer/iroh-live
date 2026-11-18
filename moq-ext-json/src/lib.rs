@@ -39,7 +39,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-use moq_json::{Timed, snapshot};
+use moq_json::snapshot;
 use moq_net::{Timestamp, time::Instant, track};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -120,7 +120,7 @@ impl<T: Serialize> ValueWriter<T> {
     pub fn update(&self, value: &T) -> moq_json::Result<Option<usize>> {
         let mut shared = self.lock();
         let at = shared.next(Timestamp::from(Instant::now()))?;
-        let written = shared.producer.update(Timed::new(value, at))?;
+        let written = shared.producer.update(value, at)?;
         if written.is_some() {
             shared.advance(at);
         }
@@ -141,7 +141,7 @@ impl<T: Serialize> ValueWriter<T> {
     pub fn update_at(&self, value: &T, at: Timestamp) -> moq_json::Result<Option<usize>> {
         let mut shared = self.lock();
         let at = shared.info.rescale(at)?;
-        let written = shared.producer.update(Timed::new(value, at))?;
+        let written = shared.producer.update(value, at)?;
         if written.is_some() {
             shared.advance(at);
         }

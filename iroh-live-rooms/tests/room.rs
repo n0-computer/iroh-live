@@ -34,6 +34,22 @@ fn publish_counter(
     Ok((broadcast, writer))
 }
 
+/// Returns the next group `track` delivers, past the groups it gave up on.
+///
+/// A reader that joins a live track gives up on the backlog its delay budget
+/// already aged out, and reports it as a gap before the first group.
+async fn next_group(
+    track: &mut track::Ordered,
+) -> moq_net::Result<Option<moq_net::group::Consumer>> {
+    loop {
+        match track.next_group().await? {
+            Some(track::Item::Group(group)) => return Ok(Some(group)),
+            Some(track::Item::Gap { .. }) => {}
+            None => return Ok(None),
+        }
+    }
+}
+
 /// Returns a predicate that holds once a room state lists `member` with a `cam` broadcast.
 fn lists_cam(member: EndpointId) -> impl Fn(&RoomState) -> bool + Copy {
     lists(member, "cam")
@@ -120,7 +136,7 @@ async fn a_member_subscribes_on_demand() {
         .ordered();
     let mut previous = None;
     for index in 0..5 {
-        let mut group = tokio::time::timeout(TIMEOUT, track.next_group())
+        let mut group = tokio::time::timeout(TIMEOUT, next_group(&mut track))
             .await
             .unwrap_or_else(|_| panic!("timed out on frame {index}"))
             .expect("track failed")
@@ -546,7 +562,7 @@ async fn a_member_cannot_forge_anothers_broadcast() {
         .await
         .expect("subscribe to the track")
         .ordered();
-    let mut group = tokio::time::timeout(TIMEOUT, track.next_group())
+    let mut group = tokio::time::timeout(TIMEOUT, next_group(&mut track))
         .await
         .expect("timed out reading")
         .expect("track failed")
@@ -621,7 +637,7 @@ async fn a_room_resyncs_after_its_map_subscription_restarts() {
         .await
         .expect("subscribe to the track")
         .ordered();
-    tokio::time::timeout(TIMEOUT, track.next_group())
+    tokio::time::timeout(TIMEOUT, next_group(&mut track))
         .await
         .expect("timed out on a frame")
         .expect("track failed")
