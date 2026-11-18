@@ -175,7 +175,7 @@ impl Publisher {
         let track = broadcast
             .create_track(TRACK, info)
             .std_context("creating the chat track")?;
-        let config = window::ProducerConfig::default().with_ops(false);
+        let config = window::Config::default().with_ops(false);
         Ok(Self {
             producer: window::Producer::new(track, config),
             expires: VecDeque::new(),
@@ -190,7 +190,7 @@ impl Publisher {
         self.prune()?;
         let text = text.to_owned();
         self.producer
-            .push(moq_json::Timed::new(&text, track_time()))
+            .push(&text, track_time())
             .std_context("writing the chat window")?;
         self.expires.push_back(Instant::now() + HISTORY);
         Ok(())
@@ -212,7 +212,7 @@ impl Publisher {
             return Ok(());
         }
         self.producer
-            .pop(moq_json::Timed::new(count as u64, track_time()))
+            .pop(count as u64, track_time())
             .std_context("retiring chat messages")?;
         self.expires.drain(..count);
         Ok(())

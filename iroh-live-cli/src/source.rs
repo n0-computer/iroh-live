@@ -236,7 +236,11 @@ async fn capture(
     config.width = options.width;
     config.height = options.height;
     config.framerate = options.framerate;
-    config.cursor = options.cursor;
+    config.cursor = if options.cursor {
+        video::capture::Cursor::Drawn
+    } else {
+        video::capture::Cursor::Hidden
+    };
     Ok(Video::Raw(VideoSource::capture(config).await?))
 }
 

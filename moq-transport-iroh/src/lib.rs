@@ -7,7 +7,7 @@
 //!   [`Transport::connect`] dials a peer, and [`Transport::new`] wraps a
 //!   connection that is already open, accepted or dialed. Both check the
 //!   negotiated ALPN. Hand the transport to [`moq_net::Client::connect`] or
-//!   [`moq_net::Server::accept_request`].
+//!   [`moq_net::Server::handshake`].
 //! - [`SendGroup`] is moq-net's send group on iroh: it packs a group's
 //!   priority and its streams' orders into iroh's stream urgency, so
 //!   equal-priority subscriptions share the bytes.

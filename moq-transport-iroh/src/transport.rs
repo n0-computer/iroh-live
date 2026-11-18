@@ -43,8 +43,8 @@ use crate::{ALPN, Error, RecvStream, SendGroup, SendStream, TransportError};
 /// - [`receive_window`](poll::Session::receive_window) is `None`: iroh does not
 ///   report the receive windows in force. moq-net then never pauses a stream.
 /// - [`export_keying_material`](poll::Session::export_keying_material) derives
-///   from the connection's TLS secrets, so a moq-lite-07 route key proof binds
-///   to the session.
+///   from the connection's TLS secrets, so both ends export the same bytes and
+///   no other session does.
 pub struct Transport {
     connection: Connection,
     // One slot per operation that may wait. iroh's futures for them borrow
@@ -65,7 +65,7 @@ type IrohBi = (endpoint::SendStream, endpoint::RecvStream);
 impl Transport {
     /// Wraps an incoming or outgoing `connection` that negotiated a MoQ ALPN.
     ///
-    /// Hand the transport to [`moq_net::Server::accept_request`] for an
+    /// Hand the transport to [`moq_net::Server::handshake`] for an
     /// accepted connection, or to [`moq_net::Client::connect`] for a dialed
     /// one. To dial with iroh's connect options, such as another QUIC
     /// transport config for this one connection while the endpoint keeps its
@@ -465,7 +465,6 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn both_ends_export_the_same_keying_material() {
         let (client, server, _endpoints) = pair().await;
-        // The label moq-lite-07 proves a route key under.
         let label = b"EXPORTER-moq-lite-route-key";
         let dialed = client
             .export_keying_material(label, b"ctx")
@@ -660,7 +659,7 @@ pub(crate) mod tests {
         };
         let accept = async {
             moq_net::Server::new()
-                .accept_request(now, server)
+                .handshake(now, server)
                 .await
                 .expect("accept request")
         };

@@ -403,7 +403,7 @@ fn uplink(
             })
         })?
         .with_publisher(served(&shared.table))
-        .with_peer_hop(hop.id())
+        .with_peer_node(hop.id())
         .with_cost(RELAY_COST);
     if let Some(subscriber) = subscriber {
         client = client.with_subscriber(subscriber);
@@ -531,13 +531,15 @@ async fn tokio_uplink(
 ///
 /// The link redials forever with backoff from [`REDIAL_MIN`] to
 /// [`REDIAL_MAX`]. An endpoint id names one node, so a GOAWAY that names no
-/// new address keeps the drained session until the relay closes it.
+/// new address redials it once, which reaches a replacement started beside
+/// the draining process, and otherwise keeps the drained session until the
+/// relay closes it.
 fn policy_config() -> reconnect::Config {
     let mut config = reconnect::Config::default();
     config.backoff.initial = REDIAL_MIN;
     config.backoff.max = Some(REDIAL_MAX);
     config.backoff.healthy = STABLE_SESSION;
-    config.restart = reconnect::Restart::Wait;
+    config.restart = reconnect::Restart::Handoff;
     config
 }
 
@@ -560,7 +562,7 @@ async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToke
     } = parts;
     let mut client = moq_net::Client::new()
         .with_publisher(served(&shared.table))
-        .with_peer_hop(Hop::of(&relay).id())
+        .with_peer_node(Hop::of(&relay).id())
         .with_cost(RELAY_COST);
     if let Some(subscriber) = subscriber {
         client = client.with_subscriber(subscriber);
@@ -693,6 +695,12 @@ impl IrohUplink {
                 }
                 // The policy counted the timeout already. Dropping the dial cancels it.
                 Action::Abandon => dial = None,
+                // The relay accepted the session's credential, so a refusal is ruled out.
+                Action::Established(_) => {
+                    debug!("the relay accepted the session");
+                    self.established = true;
+                    self.status.set(RelayStatus::Connected).ok();
+                }
                 Action::Migrating => info!("the relay sent a GOAWAY, migrating"),
                 Action::Retired => debug!("the drained relay session ended"),
                 Action::Offline(err) => {
@@ -722,7 +730,6 @@ impl IrohUplink {
             connection,
         } = dialed;
         info!("relay connected");
-        self.established = true;
         while self.drivers.try_join_next().is_some() {}
         self.drivers.spawn(async move {
             moq_net::time::run(driver).await;
@@ -736,7 +743,6 @@ impl IrohUplink {
             self.sampler.clone(),
         ))));
         policy.connected(kio::clock::now(), session);
-        self.status.set(RelayStatus::Connected).ok();
     }
 
     /// Stops reading the session that ended, and clears its last reading.
@@ -874,13 +880,13 @@ mod tests {
     }
 
     #[test]
-    fn the_iroh_policy_redials_forever_and_waits_out_a_restart() {
+    fn the_iroh_policy_redials_forever_and_hands_off_a_restart() {
         let config = policy_config();
         assert_eq!(config.backoff.timeout, None, "gives up after a while");
         assert_eq!(config.backoff.initial, REDIAL_MIN);
         assert_eq!(config.backoff.max, Some(REDIAL_MAX));
         assert_eq!(config.backoff.healthy, STABLE_SESSION);
-        assert_eq!(config.restart, reconnect::Restart::Wait);
+        assert_eq!(config.restart, reconnect::Restart::Handoff);
         assert!(!config.once);
     }
 }

@@ -311,7 +311,7 @@ impl iroh::protocol::ProtocolHandler for OpenSessions {
         let transport =
             moq_transport_iroh::Transport::new(connection).map_err(AcceptError::from_err)?;
         let handshake = moq_net::Server::new()
-            .accept_request(moq_net::time::Instant::now(), transport)
+            .handshake(moq_net::time::Instant::now(), transport)
             .await
             .map_err(AcceptError::from_err)?;
         let (_session, driver) = handshake
@@ -534,11 +534,11 @@ async fn publish_into(relay: &TestRelay, end: End) -> (String, Box<dyn std::any:
                     .broadcast()
                     .create_track(name, timed())
                     .expect("track");
-                let mut group = track.append_group(0).expect("group");
+                let mut group = track.append_group(moq_net::Timestamp::ZERO).expect("group");
                 group
                     .write_frame(moq_net::Timestamp::ZERO, payload)
                     .expect("write");
-                group.close().expect("finish");
+                group.finish().expect("finish");
                 track
             })
             .collect();
@@ -909,11 +909,11 @@ async fn a_relay_link_publishes_and_consumes() {
         .broadcast()
         .create_track("data", timed())
         .expect("track");
-    let mut group = track.append_group(0).expect("group");
+    let mut group = track.append_group(moq_net::Timestamp::ZERO).expect("group");
     group
         .write_frame(moq_net::Timestamp::ZERO, b"from-the-browser".as_ref())
         .expect("write");
-    group.close().expect("finish");
+    group.finish().expect("finish");
     let _browser_publisher = established(
         noq_client()
             .with_publisher(pub_origin.consume())
@@ -1383,11 +1383,11 @@ async fn the_shipped_relay_refuses_forged_paths() {
         .broadcast()
         .create_track("data", timed())
         .expect("track");
-    let mut group = track.append_group(0).expect("group");
+    let mut group = track.append_group(moq_net::Timestamp::ZERO).expect("group");
     group
         .write_frame(moq_net::Timestamp::ZERO, b"from-the-browser".as_ref())
         .expect("write");
-    group.close().expect("finish");
+    group.finish().expect("finish");
     let subscription = step(
         "subscribe timeout",
         viewer.subscribe("browser-stream", iroh_live_node::Reach::Relays),
@@ -1420,7 +1420,6 @@ async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
     .await;
 
     let alice = iroh::SecretKey::generate().public();
-    let mut sessions = Vec::new();
     let mut held = Vec::new();
     for dialed in [format!("live/{alice}"), format!("rooms/topic/{alice}")] {
         let browser = moq_tokio::origin::spawn();
@@ -1430,8 +1429,27 @@ async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
                 .expect("broadcast"),
         );
         let url = relay.url().join(&dialed).expect("a url");
-        sessions
-            .push(established(noq_client().with_publisher(browser.consume()).connect(url)).await);
+        // The grant leaves nothing to publish there, so the relay refuses the publisher.
+        let Err(refused) = step(
+            "connect timeout",
+            noq_client()
+                .with_publisher(browser.consume())
+                .connect(url)
+                .established(),
+        )
+        .await
+        else {
+            panic!("the relay admitted a browser publisher at {dialed}");
+        };
+        assert!(
+            matches!(
+                refused,
+                moq_tokio::Error::MoqNet(moq_net::Error::Session(
+                    moq_net::SessionError::Unauthorized
+                ))
+            ),
+            "{refused}"
+        );
     }
     // A browser at the root still publishes a name of its own.
     let browser = moq_tokio::origin::spawn();
@@ -1440,14 +1458,12 @@ async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
             .route("hello", origin::RouteOptions::default())
             .expect("broadcast"),
     );
-    sessions.push(
-        established(
-            noq_client()
-                .with_publisher(browser.consume())
-                .connect(relay.url()),
-        )
-        .await,
-    );
+    let session = established(
+        noq_client()
+            .with_publisher(browser.consume())
+            .connect(relay.url()),
+    )
+    .await;
 
     announced_at(&sub_origin, "hello").await;
     for path in [
@@ -1459,7 +1475,7 @@ async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
             "a browser published at {path}"
         );
     }
-    drop((sessions, held));
+    drop((session, held));
 }
 
 /// Two pulls of one publisher share a session, which closes with the last.

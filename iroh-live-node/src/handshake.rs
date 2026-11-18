@@ -167,7 +167,7 @@ pub(crate) async fn client_handshake(
 ) -> Result<(moq_net::Session, moq_net::Driver), moq_net::Error> {
     let mut client = moq_net::Client::new()
         .with_publisher(publish.clone())
-        .with_peer_hop(Hop::of(&peer).id())
+        .with_peer_node(Hop::of(&peer).id())
         .with_auth(auth);
     if let Some(subscriber) = subscriber {
         client = client.with_subscriber(subscriber);

@@ -63,7 +63,7 @@ const REFRESH: u32 = 2;
 
 /// A rendition's track, left open by a replaced video task for its successor.
 pub(super) struct HandedOver {
-    producer: encode::Producer,
+    producer: encode::Publisher,
     /// The last timestamp published on the track.
     last: Option<moq_net::Timestamp>,
 }
@@ -80,7 +80,7 @@ pub(super) fn finish_handovers(handovers: &Handovers) {
 
 /// Finishes handed over tracks that nothing takes over.
 fn finish_tracks(tracks: HashMap<String, HandedOver>) {
-    for (rendition, mut handed) in tracks {
+    for (rendition, handed) in tracks {
         debug!(%rendition, "finishing a track nobody took over");
         if let Err(err) = handed.producer.finish() {
             debug!(%rendition, error = %err, "the track did not finish cleanly");
@@ -267,7 +267,7 @@ fn open_track(
     name: &str,
     config: &encode::Config,
     published: hang::catalog::VideoConfig,
-) -> Result<encode::Producer, Error> {
+) -> Result<encode::Publisher, Error> {
     let reserved = catalog.reserve().with_interval(config.effective_join());
     let track_info = reserved
         .track_info(hang::catalog::PRIORITY.video)
@@ -275,7 +275,7 @@ fn open_track(
     let track = producer
         .create_track(name, Some(track_info))
         .map_err(Error::broadcast)?;
-    encode::Producer::new(track, reserved, published).map_err(Error::catalog)
+    encode::Publisher::new(track, reserved, published).map_err(Error::catalog)
 }
 
 /// Returns the refresh ratio a rendition encoded by `kind` advertises.
@@ -429,7 +429,7 @@ fn encode_error(err: moq_video::Error) -> Error {
 /// One rendition's encoder.
 struct Encoder {
     name: String,
-    producer: encode::Producer,
+    producer: encode::Publisher,
     config: encode::Config,
     /// The source's frames, observed: the encoder wants them only while it encodes.
     frames: VideoFrames,
@@ -453,8 +453,10 @@ struct Encoder {
 
 /// How an encoder stopped without failing.
 enum Stopped {
-    /// The track finished or closed.
+    /// The track closed under the encoder, so nothing is left to finish.
     Done,
+    /// The source ended or the slot stopped, so the track finishes.
+    Finish,
     /// The slot stopped for a successor, which takes the track over.
     HandOver,
 }
@@ -478,6 +480,21 @@ impl Encoder {
     async fn run(mut self) -> Option<Arc<Error>> {
         let err = match self.encode().await {
             Ok(Stopped::Done) => return None,
+            Ok(Stopped::Finish) => match self.producer.finish() {
+                // Dropping the finished track releases it, as the publisher did.
+                Ok(_finished) => return None,
+                Err(err) => {
+                    // A failed finish already ends the track with its error.
+                    let err = Arc::new(Error::broadcast(err));
+                    warn!(
+                        error = format_args!("{err:#}"),
+                        "finishing the rendition failed"
+                    );
+                    self.reporter
+                        .rendition(&self.name, RenditionState::Failed(err.clone().into()));
+                    return Some(err);
+                }
+            },
             Ok(Stopped::HandOver) => {
                 debug!(last = ?self.clock.last(), "handing the track over");
                 let handed = HandedOver {
@@ -503,13 +520,12 @@ impl Encoder {
         Some(err)
     }
 
-    /// Leaves the track for a successor if the slot stops for one, and finishes it otherwise.
-    fn stopped(&mut self) -> Result<Stopped, Error> {
+    /// Returns whether a successor takes the track over or the track finishes.
+    fn stopped(&self) -> Stopped {
         if self.stop.is_cancelled() && self.handing_over.load(Ordering::Acquire) {
-            return Ok(Stopped::HandOver);
+            return Stopped::HandOver;
         }
-        self.producer.finish().map_err(Error::broadcast)?;
-        Ok(Stopped::Done)
+        Stopped::Finish
     }
 
     /// Encodes frames for as long as someone watches, one demand cycle at a time.
@@ -532,8 +548,8 @@ impl Encoder {
                         return Ok(Stopped::Done);
                     }
                 }
-                () = self.frames.closed() => return self.stopped(),
-                () = self.stop.cancelled() => return self.stopped(),
+                () = self.frames.closed() => return Ok(self.stopped()),
+                () = self.stop.cancelled() => return Ok(self.stopped()),
             }
 
             // Counts as demand on the source while this encodes, so an
@@ -585,7 +601,7 @@ impl Encoder {
                             self.producer.publish(unit).map_err(Error::broadcast)?;
                             self.clock.encoded(unit.timestamp);
                         }
-                        return self.stopped();
+                        return Ok(self.stopped());
                     }
                 };
                 let mapped = self.clock.map(frame.timestamp, self.frames.sent_at());
@@ -809,7 +825,8 @@ pub(super) async fn run_encoded(
         let tail = split.flush(None).map_err(Error::decoder)?;
         units += tail.len() as u64;
         import.decode(tail).map_err(Error::decoder)?;
-        import.finish().map_err(Error::catalog)?;
+        // Dropping the finished track releases it, as dropping the importer did.
+        let _finished = import.finish().map_err(Error::catalog)?;
         Ok::<_, Error>(units)
     }
     .await;

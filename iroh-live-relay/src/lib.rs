@@ -432,7 +432,7 @@ async fn may_pull(
     at_ticket.path = format!("/{}", ticket.path());
     // The grant is rooted at the ticket's path, so the broadcast is its root.
     match policy.decide(&at_ticket).await {
-        Ok(grant) if grant.subscribe.matches("") => Ok(()),
+        Ok(grant) if grant.subscribe.path.matches("") => Ok(()),
         _ => Err(denied()),
     }
 }

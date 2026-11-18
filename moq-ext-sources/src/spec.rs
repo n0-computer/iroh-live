@@ -556,7 +556,11 @@ async fn capture(source: CaptureSource, options: &VideoOpenOptions) -> Result<Vi
     config.width = options.width;
     config.height = options.height;
     config.framerate = options.framerate;
-    config.cursor = options.cursor;
+    config.cursor = if options.cursor {
+        video::capture::Cursor::Drawn
+    } else {
+        video::capture::Cursor::Hidden
+    };
     VideoSource::capture(config).await
 }
 

@@ -88,7 +88,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     let transport = transport::Transport::new(connection.clone())?;
     let opened = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
-        moq_net::Server::new().accept_request(moq_net::time::Instant::now(), transport),
+        moq_net::Server::new().handshake(moq_net::time::Instant::now(), transport),
     )
     .await;
     let handshake = match opened {
@@ -131,7 +131,7 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
     authorize_direct(shared, &auth, peer, &authorization.grant);
     let handshake = handshake
         .with_publisher(served(&shared.table))
-        .with_peer_hop(Hop::of(&peer).id())
+        .with_peer_node(Hop::of(&peer).id())
         .with_subscriber(subscriber(shared));
     let (moq, driver) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake.ok())
         .await

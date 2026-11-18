@@ -128,7 +128,7 @@ impl IrohSessions {
             moq_transport_iroh::Transport::new(connection).map_err(AcceptError::from_err)?;
         let handshake = tokio::time::timeout(
             moq_transport_iroh::HANDSHAKE_TIMEOUT,
-            moq_net::Server::new().accept_request(moq_net::time::Instant::now(), transport),
+            moq_net::Server::new().handshake(moq_net::time::Instant::now(), transport),
         )
         .await
         .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
@@ -387,7 +387,11 @@ mod tests {
 
     /// Returns whether [`browser_grant`] lets a browser at the root publish at `path`.
     fn a_browser_may_publish(path: &str) -> bool {
-        browser_grant("/").expect("a grant").publish.matches(path)
+        browser_grant("/")
+            .expect("a grant")
+            .publish
+            .path
+            .matches(path)
     }
 
     #[test]
@@ -408,15 +412,15 @@ mod tests {
         ] {
             let grant = browser_grant(&dialed).expect("a grant");
             assert!(
-                !grant.publish.matches("cam"),
+                !grant.publish.path.matches("cam"),
                 "a browser at {dialed} may publish cam beneath it"
             );
-            assert!(grant.subscribe.matches("cam"), "{dialed}");
+            assert!(grant.subscribe.path.matches("cam"), "{dialed}");
         }
         // A one-segment path is itself the one segment a browser may publish.
         let grant = browser_grant("/hello").expect("a grant");
-        assert!(grant.publish.matches(""));
-        assert!(!grant.publish.matches("cam"));
+        assert!(grant.publish.path.matches(""));
+        assert!(!grant.publish.path.matches("cam"));
     }
 
     /// A browser that dials a ticket reads it, and publishes nothing beneath it.
@@ -426,8 +430,8 @@ mod tests {
         let path = LiveLayout::default().path(peer, "cam").expect("a path");
         let ticket = BroadcastTicket::at(peer, path);
         let grant = browser_grant(&format!("/{ticket}")).expect("a grant");
-        assert!(grant.publish.is_empty());
-        assert!(grant.subscribe.matches(""));
+        assert!(grant.publish.path.is_empty());
+        assert!(grant.subscribe.path.matches(""));
     }
 
     /// A browser cannot publish at the name a pull is read under.

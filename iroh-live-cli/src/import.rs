@@ -97,15 +97,13 @@ impl Importer {
                 mut split,
                 mut import,
             } => {
-                let flushed = split
-                    .flush(None)
-                    .and_then(|tail| import.decode(tail))
-                    .and_then(|()| import.finish())
-                    .anyerr();
+                let flushed = split.flush(None).and_then(|tail| import.decode(tail));
                 if let Err(err) = &flushed {
                     import.abort(moq_net::Error::Transport(err.to_string()));
+                    return flushed.anyerr();
                 }
-                flushed
+                // A failed finish ends the track with its cause.
+                import.finish().map(drop).anyerr()
             }
             // A failed finish has already dropped the tracks.
             Self::Container(container) => container.finish().map(drop).anyerr(),
