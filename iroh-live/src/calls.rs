@@ -211,7 +211,8 @@ impl Calls {
     /// peer is rung. One side serves every call in turn, so a camera and a
     /// preview keep running between calls. `B` is built from the route
     /// table's `broadcast::Producer` before the path is announced: a
-    /// `LocalBroadcast`, or the producer itself.
+    /// `LocalBroadcast`, or the producer itself. A `LocalBroadcast` follows the
+    /// node's rate control, as [`Node::bandwidth`] hands it out.
     ///
     /// For a `LocalBroadcast`, dropping the side ends every call and
     /// [`closed`](Self::closed) resolves. A bare producer has to be closed by
@@ -232,7 +233,7 @@ impl Calls {
     /// Panics when called outside a Tokio runtime.
     pub fn new<B>(node: &Node, layout: &LiveLayout) -> Result<(Self, B), Error>
     where
-        B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static>,
+        B: TryFrom<broadcast::Producer, Error: std::error::Error + Send + Sync + 'static> + 'static,
     {
         let local_id = node.id();
         let path = layout.path(local_id, CALL)?;
@@ -242,6 +243,7 @@ impl Calls {
             node.publish_with(path, Audience::Peers(audience.clone()), |producer| {
                 B::try_from(producer.clone())
             })?;
+        follow_rate(node, &side);
         let inner = Arc::new(Inner {
             node: node.clone(),
             layout: layout.clone(),
@@ -560,4 +562,19 @@ async fn watch_rings(inner: Weak<Inner>, publication: Publication) {
         debug!(id = %local_id.fmt_short(), "calls closed");
         inner.closed.cancel();
     }
+}
+
+/// Hands `node`'s allocator to `broadcast` if it is a `LocalBroadcast` and the node has rate control.
+///
+/// Any other broadcast type is left alone: a bare producer has no encoder to
+/// follow a grant.
+fn follow_rate<B: 'static>(node: &Node, broadcast: &B) {
+    #[cfg(feature = "media")]
+    if let Some(local) =
+        (broadcast as &dyn std::any::Any).downcast_ref::<moq_ext_publisher::LocalBroadcast>()
+    {
+        crate::publish::follow_rate(node, local);
+    }
+    #[cfg(not(feature = "media"))]
+    let _ = (node, broadcast);
 }

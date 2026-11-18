@@ -53,6 +53,13 @@ pub struct EncodeStats {
     /// new source or a slower frame rate can move away from the configured
     /// one.
     pub keyframe_interval: Option<Duration>,
+    /// The rendition's slice of the bandwidth estimate, `None` while it has none.
+    ///
+    /// Set only on a broadcast that follows an allocator, as
+    /// [`LocalBroadcast::set_bandwidth`](crate::LocalBroadcast::set_bandwidth) sets.
+    pub grant: Option<Rate>,
+    /// The bitrate the encoder was last set to, `None` while it is not following a grant.
+    pub target: Option<Rate>,
     /// The track the rendition writes now, its key in [`PublishStats::sent`].
     ///
     /// A keyframe with another decoder identity, such as a new level after a

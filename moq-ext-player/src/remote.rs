@@ -14,7 +14,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, info, info_span, trace, warn};
 
 use crate::{
-    NetworkSample, Player, PlayerConfig, clean_close::CleanClose as _, network::NetworkSignals,
+    NetworkSample, Player, PlayerConfig,
+    catalog::{Pausing, Sections},
+    clean_close::CleanClose as _,
+    network::NetworkSignals,
 };
 
 /// How long to look for an ended broadcast again before it counts as gone.
@@ -71,6 +74,9 @@ struct Shared {
     epoch: watch::Sender<Epoch>,
     #[debug(skip)]
     catalog: watch::Sender<Option<Arc<Catalog>>>,
+    /// Whether the publisher pauses renditions, from the catalog's `rate` section.
+    #[debug(skip)]
+    pausing: watch::Sender<Pausing>,
     closed: CancellationToken,
     #[debug(skip)]
     network: Mutex<Option<NetworkSignals>>,
@@ -294,6 +300,11 @@ impl RemoteBroadcast {
         self.shared.epoch.subscribe()
     }
 
+    /// Returns whether the publisher pauses renditions, as its latest catalog says.
+    pub(crate) fn pausing(&self) -> Pausing {
+        *self.shared.pausing.borrow()
+    }
+
     /// Returns the network signals, if a transport attached any.
     pub(crate) fn network(&self) -> Option<NetworkSignals> {
         self.shared.network.lock().expect("poisoned").clone()
@@ -307,14 +318,18 @@ impl RemoteBroadcast {
     fn spawn(origin: Origin, first: Option<moq_net::broadcast::Consumer>, span: Span) -> Self {
         let epoch = watch::Sender::new(Epoch::default());
         let catalog = watch::Sender::new(None);
+        let pausing = watch::Sender::new(Pausing::default());
         let closed = CancellationToken::new();
         let task = {
             let origin = origin.clone();
             let epoch = epoch.clone();
-            let catalog = catalog.clone();
+            let sink = CatalogSink {
+                catalog: catalog.clone(),
+                pausing: pausing.clone(),
+            };
             let closed = closed.clone();
             n0_future::task::spawn(
-                follow(origin, first, epoch, catalog, closed).instrument(span.clone()),
+                follow(origin, first, epoch, sink, closed).instrument(span.clone()),
             )
         };
         Self {
@@ -322,6 +337,7 @@ impl RemoteBroadcast {
                 origin,
                 epoch,
                 catalog,
+                pausing,
                 closed,
                 #[cfg(feature = "record")]
                 local: std::sync::OnceLock::new(),
@@ -362,12 +378,18 @@ impl LocalOrigin {
     }
 }
 
+/// Where the catalog reader writes what it reads.
+struct CatalogSink {
+    catalog: watch::Sender<Option<Arc<Catalog>>>,
+    pausing: watch::Sender<Pausing>,
+}
+
 /// Reads the broadcast, requesting it again when a change of route ends it.
 async fn follow(
     origin: Origin,
     first: Option<moq_net::broadcast::Consumer>,
     epoch: watch::Sender<Epoch>,
-    catalog: watch::Sender<Option<Arc<Catalog>>>,
+    catalog: CatalogSink,
     closed: CancellationToken,
 ) {
     let mut generation = 0u64;
@@ -456,17 +478,14 @@ async fn follow(
     closed.cancel();
 }
 
-/// Reads catalog updates into `catalog` until the catalog track ends.
+/// Reads catalog updates into `sink` until the catalog track ends.
 ///
 /// Asks again for a catalog track that is not there yet, as
 /// [`RemoteBroadcast::catalog`] describes. Cancellation safe.
-async fn read_catalog(
-    consumer: &moq_net::broadcast::Consumer,
-    catalog: &watch::Sender<Option<Arc<Catalog>>>,
-) {
+async fn read_catalog(consumer: &moq_net::broadcast::Consumer, sink: &CatalogSink) {
     let mut retry = CATALOG_RETRY;
     let mut reader = loop {
-        match moq_mux::catalog::Consumer::<()>::new(consumer, Default::default()).await {
+        match moq_mux::catalog::Consumer::<Sections>::new(consumer, Default::default()).await {
             Ok(reader) => break reader,
             // A local origin answers `NotFound`. A peer's answer arrives as a
             // stream error.
@@ -497,7 +516,18 @@ async fn read_catalog(
         match reader.next().await {
             Ok(Some(next)) => {
                 trace!(catalog = ?next, "catalog updated");
-                catalog.send_replace(Some(Arc::new(next)));
+                let (next, pausing) = crate::catalog::split(next);
+                // Before the catalog, so a player that wakes on the catalog
+                // reads the rule that goes with it.
+                sink.pausing.send_if_modified(|current| {
+                    let changed = *current != pausing;
+                    if changed {
+                        debug!(?pausing, "the publisher's pausing changed");
+                        *current = pausing;
+                    }
+                    changed
+                });
+                sink.catalog.send_replace(Some(Arc::new(next)));
             }
             Ok(None) => {
                 debug!("catalog track ended");

@@ -13,8 +13,8 @@ data-encoding = "2.11.1"
 derive_more = { version = "2.1.1", features = ["debug"] }
 iroh = { workspace = true }
 iroh-live-node = { workspace = true }
-# Re-exported as `iroh_live::rooms` behind the `rooms` feature. The rest of
-# the crate knows nothing about rooms.
+# Re-exported as `iroh_live::rooms` behind the `rooms` feature. With `media`
+# too, `media::RoomExt` publishes a `LocalBroadcast` into a room.
 iroh-live-rooms = { workspace = true, optional = true }
 moq-net = { workspace = true }
 # Re-exported as `iroh_live::json`: typed JSON tracks, the latest-value
@@ -64,8 +64,9 @@ default = []
 # What an app that plays and publishes media wants: the media stack, device
 # capture, speaker playback, GPU rendering, the sound server and recording.
 full = ["media", "capture", "playback", "render", "sound-server", "record"]
-# The media stack: `iroh_live::media`, with `media::SubscriptionExt`. Without it
-# the crate is the node, the layout, calls and endpoint setup, with no codecs.
+# The media stack: `iroh_live::media`, with `media::SubscriptionExt` and
+# `media::LiveLayoutExt`. Without it the crate is the node, the layout, calls
+# and endpoint setup, with no codecs.
 media = ["dep:moq-ext-player", "dep:moq-ext-publisher", "dep:moq-ext-sources", "dep:moq-audio", "dep:moq-video"]
 # Recording a broadcast to a file.
 record = ["media", "moq-ext-player/record"]

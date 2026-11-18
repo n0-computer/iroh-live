@@ -37,6 +37,7 @@
 
 mod error;
 mod group;
+pub mod rate;
 mod stream;
 mod transport;
 

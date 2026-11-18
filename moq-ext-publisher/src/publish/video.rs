@@ -31,6 +31,7 @@ use moq_ext_sources::{
     ByPtr, Error, SlotState, VideoFrames, VideoSource,
     stats::{RateMeter, Smoothed},
 };
+use moq_mux::rate::Target;
 use moq_video::encode;
 use n0_future::{StreamExt, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -40,6 +41,7 @@ use super::{
     Job, SourceClock,
     cuts::Cuts,
     encoding::{VideoEncoding, VideoRendition},
+    follow::{self, Follower},
     status::{RenditionState, Reporter},
 };
 use crate::stats::{EncodeStats, FrameSizes, PublishRecorder};
@@ -126,6 +128,7 @@ pub(super) async fn run_raw(
         handing_over,
         stats,
         reporter,
+        bandwidth,
         ..
     } = job;
     // Every encoder task holds a share of the track names. Encoder tasks
@@ -173,7 +176,18 @@ pub(super) async fn run_raw(
             .into_iter()
             .partition(|(name, _)| probed.iter().any(|(rendition, ..)| rendition.name == *name));
     finish_tracks(left);
-    for (rendition, config, published) in probed {
+    // Each rung's ceiling is its configured bitrate, or the one the encoder
+    // derives, and the next lower ceiling of the ladder is where it pauses.
+    let ceilings: Vec<_> = probed
+        .iter()
+        .map(|(_, config, published)| {
+            config
+                .bitrate
+                .or_else(|| published.bitrate.map(moq_net::bandwidth::Rate::from_bps))
+        })
+        .collect();
+    let policies = follow::policies(&ceilings);
+    for ((rendition, config, published), policy) in probed.into_iter().zip(policies) {
         let (producer, last) = match inherited.remove(&rendition.name) {
             Some(HandedOver { producer, last }) => {
                 info!(rendition = %rendition.name, "taking over the rendition's track");
@@ -203,6 +217,7 @@ pub(super) async fn run_raw(
             reporter: reporter.clone(),
             stats: stats.rendition(&rendition.name),
             stop: stop.clone(),
+            follow: Follower::new(bandwidth.clone(), policy),
         };
         encoders.spawn(
             encoder
@@ -263,7 +278,7 @@ async fn probe_ladder<'a>(
 /// unless `config` names an encoder that cannot cut one.
 fn open_track(
     producer: &moq_net::broadcast::Producer,
-    catalog: &moq_mux::catalog::Producer,
+    catalog: &follow::CatalogProducer,
     name: &str,
     config: &encode::Config,
     published: hang::catalog::VideoConfig,
@@ -449,6 +464,8 @@ struct Encoder {
     reporter: Reporter,
     stats: moq_ext_sources::stats::SharedCell<EncodeStats>,
     stop: CancellationToken,
+    /// The rendition's reservation and the grant it follows.
+    follow: Follower,
 }
 
 /// How an encoder stopped without failing.
@@ -520,12 +537,17 @@ impl Encoder {
         Some(err)
     }
 
-    /// Returns whether a successor takes the track over or the track finishes.
-    fn stopped(&self) -> Stopped {
+    /// Returns whether a successor takes the track over, enabled again, or the track finishes.
+    fn stopped(&mut self) -> Result<Stopped, Error> {
         if self.stop.is_cancelled() && self.handing_over.load(Ordering::Acquire) {
-            return Stopped::HandOver;
+            // The successor encodes the track from its first frame, so the
+            // catalog advertises it again.
+            if self.follow.paused() {
+                self.producer.set_enabled(true).map_err(Error::encoder)?;
+            }
+            return Ok(Stopped::HandOver);
         }
-        Stopped::Finish
+        Ok(Stopped::Finish)
     }
 
     /// Encodes frames for as long as someone watches, one demand cycle at a time.
@@ -537,10 +559,15 @@ impl Encoder {
 
         loop {
             let mut demand = self.producer.demand();
+            self.follow.reserve(&demand);
+            // What a new allocator reserves for, apart from the handle the waits poll.
+            let track = demand.clone();
             // Idle until someone subscribes, the source ends, or the slot
             // stops. The track and its catalog entry are already advertised.
+            // A paused rendition waits for its grant to resume it first, since
+            // it encodes nothing while paused.
             tokio::select! {
-                used = wanted(&mut demand) => {
+                used = wanted(&mut demand), if !self.follow.paused() => {
                     // The track was closed or aborted under the encoder, so
                     // there is nothing left to finish.
                     if let Err(err) = used {
@@ -548,8 +575,19 @@ impl Encoder {
                         return Ok(Stopped::Done);
                     }
                 }
-                () = self.frames.closed() => return Ok(self.stopped()),
-                () = self.stop.cancelled() => return Ok(self.stopped()),
+                target = self.follow.next(&track) => {
+                    if let Target::Enabled(rate) = target {
+                        info!(kbps = rate.as_bps() / 1000, "resuming the rendition");
+                        self.producer.set_enabled(true).map_err(Error::encoder)?;
+                        self.follow.applied(target);
+                        self.follow.rest();
+                        self.reporter.rendition(&self.name, RenditionState::Idle);
+                        self.report_rate();
+                    }
+                    continue;
+                }
+                () = self.frames.closed() => return self.stopped(),
+                () = self.stop.cancelled() => return self.stopped(),
             }
 
             // Counts as demand on the source while this encodes, so an
@@ -563,6 +601,10 @@ impl Encoder {
                 Err(err) => return Err(encode_error(err)),
             };
             self.report_encoder(encoder.name());
+            // The encoder opened at its ceiling, which openh264 needs: it
+            // refuses a bitrate above the one it opened with.
+            self.follow.start();
+            self.report_rate();
             // Per encoder, since a fresh one opens with a keyframe that serves
             // every earlier request.
             let mut cuts = Cuts::default();
@@ -573,6 +615,7 @@ impl Encoder {
             let mut timing = Smoothed::default();
             let mut sizes = FrameSizes::default();
             loop {
+                let track = demand.clone();
                 let next = tokio::select! {
                     // The last viewer left. Mark the gap so the next timestamp
                     // does not stretch this frame across it.
@@ -583,7 +626,16 @@ impl Encoder {
                         }
                         self.producer.discontinuity().map_err(Error::broadcast)?;
                         self.reporter.rendition(&self.name, RenditionState::Idle);
+                        self.follow.rest();
+                        self.report_rate();
                         break;
+                    }
+                    // Retune between frames, and only when the grant moved enough.
+                    target = self.follow.next(&track) => {
+                        if self.apply(&mut encoder, target).await? {
+                            break;
+                        }
+                        continue;
                     }
                     frame = self.frames.next() => frame.map_or(Next::Ended, Next::Frame),
                     () = self.stop.cancelled() => Next::Stopped,
@@ -601,7 +653,7 @@ impl Encoder {
                             self.producer.publish(unit).map_err(Error::broadcast)?;
                             self.clock.encoded(unit.timestamp);
                         }
-                        return Ok(self.stopped());
+                        return self.stopped();
                     }
                 };
                 let mapped = self.clock.map(frame.timestamp, self.frames.sent_at());
@@ -646,6 +698,7 @@ impl Encoder {
                         .await
                         .map_err(encode_error)?;
                     self.report_encoder(encoder.name());
+                    self.retune(&mut encoder).await;
                     cuts = Cuts::default();
                     can_cut = encoder.applied().cut;
                 }
@@ -677,6 +730,7 @@ impl Encoder {
                             .await
                             .map_err(encode_error)?;
                         self.report_encoder(encoder.name());
+                        self.retune(&mut encoder).await;
                         cuts = Cuts::default();
                         can_cut = encoder.applied().cut;
                         continue;
@@ -707,6 +761,7 @@ impl Encoder {
                 if moved.name() != demand.name() {
                     // The new track's first frame was a keyframe.
                     cuts = Cuts::default();
+                    self.follow.reserve(&moved);
                 } else if encoded.iter().any(|unit| unit.keyframe) {
                     cuts.served(moved.wanted());
                 }
@@ -719,6 +774,82 @@ impl Encoder {
                 });
             }
         }
+    }
+
+    /// Applies a target of the grant to the running encoder.
+    ///
+    /// Returns whether the rendition paused, which drains the encoder and
+    /// marks the catalog entry disabled, so the caller closes the encoder. An
+    /// encoder that cannot retune keeps its bitrate, but still pauses.
+    async fn apply(&mut self, encoder: &mut encode::Sink, target: Target) -> Result<bool, Error> {
+        match target {
+            Target::Enabled(rate) if self.follow.retunable() => {
+                match encoder.set_bitrate(rate).await {
+                    Ok(()) => {
+                        debug!(kbps = rate.as_bps() / 1000, "following the grant");
+                        self.follow.applied(target);
+                    }
+                    Err(moq_video::Error::BitrateUnsupported(name)) => {
+                        warn!(
+                            encoder = name,
+                            "the encoder cannot follow the grant, so it only pauses"
+                        );
+                        self.follow.unsupported();
+                    }
+                    Err(err) => {
+                        warn!(error = %err, kbps = rate.as_bps() / 1000, "failed to set the encoder's bitrate");
+                        self.follow.failed();
+                    }
+                }
+            }
+            Target::Enabled(_) => {}
+            Target::Disabled => {
+                info!(
+                    grant_kbps = self.follow.grant().map(|rate| rate.as_bps() / 1000),
+                    "the grant cannot fund the rendition, pausing it"
+                );
+                // The catalog first, so no player picks a rendition whose
+                // frames stop.
+                self.producer.set_enabled(false).map_err(Error::encoder)?;
+                encoder.flush().await.map_err(Error::encoder)?;
+                let mut tail = received(encoder).map_err(Error::encoder)?;
+                self.restamp(&mut tail);
+                for unit in &tail {
+                    self.producer.publish(unit).map_err(Error::broadcast)?;
+                    self.clock.encoded(unit.timestamp);
+                }
+                self.producer.discontinuity().map_err(Error::broadcast)?;
+                self.follow.applied(target);
+                self.reporter.rendition(&self.name, RenditionState::Paused);
+                self.report_rate();
+                return Ok(true);
+            }
+        }
+        self.report_rate();
+        Ok(false)
+    }
+
+    /// Sets a reopened encoder, which runs at its ceiling, back to the followed target.
+    async fn retune(&mut self, encoder: &mut encode::Sink) {
+        let (Some(target), Some(ceiling)) = (self.follow.target(), self.follow.ceiling()) else {
+            return;
+        };
+        if target < ceiling
+            && self.follow.retunable()
+            && let Err(err) = encoder.set_bitrate(target).await
+        {
+            debug!(error = %err, kbps = target.as_bps() / 1000, "the reopened encoder kept its ceiling");
+            self.follow.applied(Target::Enabled(ceiling));
+        }
+    }
+
+    /// Records the grant and the target in the rendition's stats.
+    fn report_rate(&self) {
+        let (grant, target) = (self.follow.grant(), self.follow.target());
+        self.stats.update(|stats| {
+            stats.grant = grant;
+            stats.target = target;
+        });
     }
 
     /// Reports which encoder backend is running.

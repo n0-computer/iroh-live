@@ -30,7 +30,7 @@ use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
     EndpointConfig, Node, RelayConfig,
     layout::LiveLayout,
-    media::{LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
+    media::{LiveLayoutExt, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource, video},
 };
 
 #[tokio::main]
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let link = node.attach_relay(RelayConfig::iroh(relay).with_consume(false))?;
 
-    let broadcast: LocalBroadcast = layout.publish(&node, "pattern")?;
+    let broadcast: LocalBroadcast = layout.publish_media(&node, "pattern")?;
     let rate = video::FrameRate::new(30, 1).expect("a valid rate");
     broadcast.set_video(
         VideoSource::test_pattern(video::Size::new(640, 360), rate)?,

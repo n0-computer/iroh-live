@@ -28,7 +28,7 @@ use iroh::protocol::Router;
 use iroh_live::{
     EndpointConfig, Node,
     layout::LiveLayout,
-    media::{LocalBroadcast, RpicamConfig, rpicam_h264, video::Size},
+    media::{LiveLayoutExt, LocalBroadcast, RpicamConfig, rpicam_h264, video::Size},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 use n0_error::StdResultExt;
@@ -49,7 +49,7 @@ async fn main() -> n0_error::Result {
     let node = Node::new(endpoint.clone(), layout.config());
     let router = node.mount(Router::builder(endpoint)).spawn();
     // Published while `broadcast` lives, or until the node shuts down.
-    let broadcast: LocalBroadcast = layout.publish(&node, BROADCAST)?;
+    let broadcast: LocalBroadcast = layout.publish_media(&node, BROADCAST)?;
     // The default keyframe interval is one second, so a new viewer waits up
     // to a second for a picture.
     let config = RpicamConfig::new(Size::new(640, 360), 30);

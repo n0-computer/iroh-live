@@ -62,6 +62,7 @@
   - [Publishing](architecture/publish.md)
   - [Subscribing](architecture/subscribe.md)
   - [Adaptive rendition switching](architecture/adaptive.md)
+  - [Rate control](architecture/rate-control.md)
   - [Playout and A/V sync](architecture/playout.md)
   - [Peer-to-peer and the relay](architecture/p2p-relay.md)
   - [Instrumentation and tests](architecture/devtools.md)

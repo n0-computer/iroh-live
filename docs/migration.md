@@ -60,7 +60,7 @@ let endpoint = EndpointConfig::from_env()?.bind().await?;
 let layout = LiveLayout::default();
 let node = Node::new(endpoint.clone(), layout.config());
 let router = node.mount(Router::builder(endpoint)).spawn();
-let broadcast: LocalBroadcast = layout.publish(&node, "hello")?;
+let broadcast: LocalBroadcast = layout.publish_media(&node, "hello")?;
 broadcast.set_video(camera, VideoEncoding::single(VideoRendition::new("video")))?;
 println!("{}", layout.ticket(node.id(), "hello")?);
 
@@ -97,6 +97,7 @@ Names from development versions between the two releases:
 |---|---|
 | `EndpointOptions` | `EndpointConfig` |
 | `media::remote_broadcast(&subscription)` | `subscription.remote_broadcast()`, from `media::SubscriptionExt` |
+| `layout.publish(&node, name)` and `room.publish(name)` for a `LocalBroadcast`, with a manual `set_bandwidth` | `layout.publish_media(&node, name)` and `room.publish_media(name)`, from `media::LiveLayoutExt` and `media::RoomExt` |
 | `iroh_live::Error::SecretKey`, `iroh_live::Error::Bind` | `EndpointError::SecretKey`, `EndpointError::Bind`, inside `iroh_live::Error::Endpoint` |
 | `iroh_live::layout::LiveLayout` and the `layout` module | `iroh_live_node::layout`, still re-exported as `iroh_live::layout` |
 | `iroh_live::{EndpointConfig, Mdns, load_or_create_secret_key}` | The same names in `iroh_live_node`, still re-exported from `iroh_live` |

@@ -38,6 +38,7 @@ pub(crate) fn micros(timestamp: moq_net::Timestamp) -> u128 {
 mod audio;
 mod cuts;
 mod encoding;
+mod follow;
 pub(crate) mod status;
 mod video;
 
@@ -116,7 +117,7 @@ const FINISH_PATIENCE: Duration = Duration::from_secs(2);
 /// Everything a slot task needs.
 struct Job {
     producer: moq_net::broadcast::Producer,
-    catalog: moq_mux::catalog::Producer,
+    catalog: follow::CatalogProducer,
     clock: moq_mux::Clock,
     /// Where the video task records the source timestamp of each frame it publishes.
     timestamps: TimestampLog,
@@ -127,6 +128,8 @@ struct Job {
     handing_over: Arc<AtomicBool>,
     stats: PublishRecorder,
     reporter: status::Reporter,
+    /// The allocator the tracks reserve on, `None` while rate control is off.
+    bandwidth: follow::Bandwidth,
     /// The task this one replaces. It stops before the track names are taken.
     predecessor: Option<SlotTask>,
 }
@@ -400,7 +403,7 @@ enum SlotSource {
 #[debug("Shared {{ status: {status:?} }}")]
 struct Shared {
     producer: moq_net::broadcast::Producer,
-    catalog: Mutex<moq_mux::catalog::Producer>,
+    catalog: Mutex<follow::CatalogProducer>,
     clock: moq_mux::Clock,
     /// The source timestamps and capture instants of the published video.
     ///
@@ -419,6 +422,8 @@ struct Shared {
     generations: AtomicU64,
     status: StatusCell,
     stats: PublishRecorder,
+    /// The allocator the tracks reserve on, `None` until `set_bandwidth`.
+    bandwidth: watch::Sender<Option<moq_net::bandwidth::Allocator>>,
     /// Cancelled by `close`. Every publish task watches it.
     closed: CancellationToken,
     /// Cancelled once `close` has finished every track and the broadcast.
@@ -510,7 +515,7 @@ impl LocalBroadcast {
         // the clock that stamps the media.
         let clock = moq_mux::Clock::new();
         let config = moq_mux::catalog::Config::default()
-            .with_catalog(hang::catalog::Catalog::default())
+            .with_catalog(hang::catalog::Catalog::<follow::Sections>::default())
             .with_clock(clock.clone());
         let catalog =
             moq_mux::catalog::Producer::new(&mut producer, config).map_err(Error::broadcast)?;
@@ -529,6 +534,7 @@ impl LocalBroadcast {
                 generations: AtomicU64::new(0),
                 status: StatusCell::default(),
                 stats: PublishRecorder::default(),
+                bandwidth: watch::Sender::new(None),
                 closed: CancellationToken::new(),
                 finished: CancellationToken::new(),
                 closer: Mutex::new(None),
@@ -707,6 +713,34 @@ impl LocalBroadcast {
         match &self.shared.audio.lock().expect("poisoned").as_ref()?.source {
             SlotSource::Audio(source) => Some(source.clone()),
             SlotSource::Video(_) | SlotSource::Encoded => None,
+        }
+    }
+
+    /// Divides `allocator`'s estimate among this broadcast's tracks from now on.
+    ///
+    /// Each video rendition reserves its configured bitrate and follows its
+    /// grant: a falling grant lowers the encoder's bitrate at once, a rising
+    /// one raises it by at most 25% a second, and never above the configured
+    /// bitrate. A rendition above a lower one of the ladder pauses, shown as
+    /// [`RenditionState::Paused`], while its grant cannot fund it beside the
+    /// lower ones and a session probes for it, and resumes when it can. Audio
+    /// reserves its bitrate too but keeps it, and so does a pre-encoded video,
+    /// which reserves nothing.
+    ///
+    /// The audio takes the allocator when its encoding starts, so set the
+    /// allocator before the audio. Video renditions move to a new allocator at
+    /// once and go on from their current bitrate.
+    ///
+    /// Until this is called the broadcast reserves nothing, and every encoder
+    /// runs at its configured bitrate. `iroh_live_node::Node::bandwidth` hands
+    /// out the allocator of a node with rate control.
+    pub fn set_bandwidth(&self, allocator: moq_net::bandwidth::Allocator) {
+        debug!(parent: &self.shared.span, ?allocator, "following an allocator");
+        self.shared.bandwidth.send_replace(Some(allocator));
+        // Players then fit each rendition at the boundary it pauses at.
+        let mut catalog = self.shared.catalog.lock().expect("poisoned");
+        if let Err(err) = follow::advertise(&mut catalog) {
+            debug!(parent: &self.shared.span, error = %err, "could not advertise rate control in the catalog");
         }
     }
 
@@ -933,6 +967,7 @@ impl LocalBroadcast {
             handing_over: handing_over.clone(),
             stats: shared.stats.clone(),
             reporter: shared.status.begin(medium, generation, &names),
+            bandwidth: shared.bandwidth.subscribe(),
             predecessor: slot.take().map(|previous| previous.task),
         };
         let task = SlotTask::spawn(span, &shared.closed, handing_over, |stop| run(job, stop));

@@ -41,6 +41,9 @@
 //!   [`EndpointConfig`] binds an endpoint with it, a secret key and mDNS.
 //! - [`layout::LiveLayout`]: the `<root>/<peer>/<name>` path convention, with
 //!   the policy that lets each peer publish only under its own id.
+//! - [`RateControl`]: off by default. With it in [`NodeConfig::rate_control`],
+//!   the links estimate their send rate in the application, and
+//!   [`Node::bandwidth`] hands out the allocator encoders follow.
 //!
 //! Every link runs a connection monitor, and [`Subscription::serving_link`]
 //! returns its latest [`NetworkSample`], with the rates bytes arrive and leave
@@ -106,6 +109,7 @@ mod node;
 pub mod policy;
 mod preset;
 mod publish;
+mod rate;
 mod reauth;
 mod relay;
 mod route;
@@ -137,6 +141,7 @@ pub use self::{
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     preset::{Congestion, MoqPreset, UnknownCongestion},
     publish::{Audience, Publication, UnpublishOnDrop},
+    rate::{FanOut, RateControl, RateSample, SendEstimate, UnknownSendEstimate},
     relay::{RelayConfig, RelayLink, RelayStatus},
     route::Subscription,
     session::Session,

@@ -28,9 +28,9 @@ use iroh_live::{
     calls::{Call, Calls},
     layout::LiveLayout,
     media::{
-        AudioMode, AudioSource, Catalog, FrameSender, LocalBroadcast, Player, PlayerConfig,
-        RemoteBroadcast, RenditionMode, SubscriptionExt, VideoEncoding, VideoFormat, VideoFrames,
-        VideoRendition, VideoSource, audio, audio::playback::Engine, audio_encoding,
+        AudioMode, AudioSource, Catalog, FrameSender, LiveLayoutExt, LocalBroadcast, Player,
+        PlayerConfig, RemoteBroadcast, RenditionMode, SubscriptionExt, VideoEncoding, VideoFormat,
+        VideoFrames, VideoRendition, VideoSource, audio, audio::playback::Engine, audio_encoding,
     },
     moq_net::Timestamp,
 };
@@ -551,7 +551,7 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     let (node, router) = bind_node().await?;
     info!(id = %node.endpoint().id().fmt_short(), "endpoint ready");
 
-    let broadcast: LocalBroadcast = LiveLayout::default().publish(&node, &name)?;
+    let broadcast: LocalBroadcast = LiveLayout::default().publish_media(&node, &name)?;
     let (camera, preview) = set_camera(&broadcast, size)?;
     // A publish-only session plays no sound, so there is no echo to cancel.
     set_microphone(&broadcast, None).await;
