@@ -1,9 +1,6 @@
 //! Publications: a broadcast created at a path in the route table, for an audience.
 
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Weak},
-};
+use std::sync::{Arc, Weak};
 
 use iroh::EndpointId;
 use moq_net::{
@@ -237,7 +234,7 @@ impl Drop for UnpublishOnDrop {
     }
 }
 
-/// Returns a task that re-authorizes the node's links as a `Peers` set changes.
+/// Returns a task that re-authorizes the node's links as a `Peers` or `Group` set changes.
 ///
 /// `None` for any other audience. Holds the node weakly, since the task lives
 /// in the state it updates. `generation` is the publication's audience
@@ -249,10 +246,15 @@ fn peers_task(
     path: &Path,
     shared: &Weak<Shared>,
 ) -> Option<AbortOnDropHandle<()>> {
-    let Audience::Peers(set) = audience else {
-        return None;
+    let (set, group) = match audience {
+        Audience::Peers(set) => (set.clone(), None),
+        Audience::Group { id, members } => (members.clone(), Some(*id)),
+        _ => return None,
     };
-    let set = set.clone();
+    let kind = move |peers| match group {
+        Some(id) => AudienceKind::Group(id, peers),
+        None => AudienceKind::Peers(peers),
+    };
     let shared = shared.clone();
     let span = debug_span!("audience", %path, generation);
     let task = async move {
@@ -265,7 +267,7 @@ fn peers_task(
                     return;
                 };
                 let mut state = shared.state.lock().expect("poisoned");
-                if !apply_peers(&mut state, id, generation, current) {
+                if !apply_peers(&mut state, id, generation, kind(current)) {
                     return;
                 }
             }
@@ -279,12 +281,12 @@ fn peers_task(
     Some(AbortOnDropHandle::new(tokio::spawn(task.instrument(span))))
 }
 
-/// Sets publication `id`'s audience to `peers`, for the peers task of `generation`.
+/// Sets publication `id`'s audience to `audience`, for the peers task of `generation`.
 ///
 /// Returns `false`, and changes nothing, once the publication is gone or a
 /// later [`Publication::set_audience`] replaced that task. The task then
 /// ends: it may have been aborted while it waited on the lock.
-fn apply_peers(state: &mut State, id: u64, generation: u64, peers: BTreeSet<EndpointId>) -> bool {
+fn apply_peers(state: &mut State, id: u64, generation: u64, audience: AudienceKind) -> bool {
     let Some(entry) = state.publications.get(&id) else {
         return false;
     };
@@ -292,8 +294,8 @@ fn apply_peers(state: &mut State, id: u64, generation: u64, peers: BTreeSet<Endp
         debug!(path = %entry.path, generation, "audience replaced, peers task ends");
         return false;
     }
-    debug!(path = %entry.path, generation, peers = peers.len(), "audience peers set");
-    state.set_audience(id, AudienceKind::Peers(peers));
+    debug!(path = %entry.path, generation, ?audience, "audience set changed");
+    state.set_audience(id, audience);
     true
 }
 
@@ -442,6 +444,8 @@ pub(crate) fn check_path(path: &Path) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use iroh::{Endpoint, SecretKey, endpoint::presets};
 
     use super::*;
@@ -515,7 +519,10 @@ mod tests {
         let id = publication.inner.id;
         {
             let mut state = node.shared.state.lock().expect("poisoned");
-            assert!(!apply_peers(&mut state, id, 0, old), "the old task wrote");
+            assert!(
+                !apply_peers(&mut state, id, 0, AudienceKind::Peers(old)),
+                "the old task wrote"
+            );
             assert_eq!(state.publications[&id].audience, AudienceKind::Peers(new));
         }
 

@@ -4,6 +4,7 @@
 //! - [`SessionRequest`]: what a peer asked for when it opened a session.
 //! - [`Direction`]: which side opened a session.
 //! - [`Audience`]: who may see a publication, generic over the peer id.
+//! - [`GroupId`]: names a group of peers that share a path root.
 //! - [`AudienceKind`]: an [`Audience`] as a registry keeps it, the current set.
 //! - [`visible_paths`]: the paths a link may see, given its [`Viewer`].
 //! - [`policy`]: who may hold a session, and with which [`Grant`].
@@ -272,8 +273,29 @@ impl SessionRequest {
     }
 }
 
+/// Names a group of peers: a hash of the group's path root.
+///
+/// The node that owns the group derives the id. This crate only compares it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GroupId([u8; 32]);
+
+impl GroupId {
+    /// Returns the group id with these bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the bytes of the id.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 /// Who may see a publication.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Audience<P: PeerId> {
     /// Every session whose grant covers the path, relays included.
     Granted,
@@ -287,6 +309,16 @@ pub enum Audience<P: PeerId> {
     /// names it lets the relay read the publication, and the relay then
     /// serves it to every session its own policy admits.
     Peers(n0_watcher::Watchable<BTreeSet<P>>),
+    /// The members of group `id`, as the member list changes.
+    ///
+    /// Offered to a member, and to a member that dials as a forwarder for the
+    /// group. Never offered to a relay.
+    Group {
+        /// The group the members belong to.
+        id: GroupId,
+        /// The member list, which the group keeps up to date.
+        members: n0_watcher::Watchable<BTreeSet<P>>,
+    },
 }
 
 impl<P: PeerId> Audience<P> {
@@ -315,11 +347,14 @@ impl<P: PeerId> Default for Audience<P> {
 
 /// An [`Audience`] as a registry keeps it: the current set, not its watcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AudienceKind<P: PeerId> {
     /// See [`Audience::Granted`].
     Granted,
     /// See [`Audience::Peers`], as of now.
     Peers(BTreeSet<P>),
+    /// See [`Audience::Group`], with the member list as of now.
+    Group(GroupId, BTreeSet<P>),
 }
 
 impl<P: PeerId> From<&Audience<P>> for AudienceKind<P> {
@@ -327,6 +362,7 @@ impl<P: PeerId> From<&Audience<P>> for AudienceKind<P> {
         match audience {
             Audience::Granted => Self::Granted,
             Audience::Peers(peers) => Self::Peers(peers.get()),
+            Audience::Group { id, members } => Self::Group(*id, members.get()),
         }
     }
 }
@@ -344,6 +380,7 @@ pub enum Direction {
 ///
 /// The kind decides which publications a link may be offered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum LinkKind {
     /// A session with a peer, dialed or accepted.
     Direct,
@@ -353,11 +390,22 @@ pub enum LinkKind {
 
 /// The link that [`visible_paths`] works out the visible publications for.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Viewer<'a, P: PeerId> {
     /// A session with this peer, dialed or accepted.
     Direct(&'a P),
     /// A moq relay, which gets the [`Audience::Granted`] publications.
     Relay,
+    /// A session that `peer` dialed to forward what it reads to others.
+    ///
+    /// Sees `Granted` publications, and those of the `groups` that list the
+    /// peer. Never sees a `Peers` one.
+    Forwarder {
+        /// The peer that dialed the session.
+        peer: &'a P,
+        /// The groups the peer may forward for.
+        groups: &'a BTreeSet<GroupId>,
+    },
 }
 
 /// A path convention: where each peer publishes, and which peer owns a path.
@@ -400,8 +448,10 @@ impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
 ///
 /// A publication is visible when the link's `grant` covers its path and its
 /// audience admits the link. A relay sees `Granted` publications, and never a
-/// `Peers` one, which a relay would forward to anyone. A direct link is in a
-/// `Peers` audience when its peer is in the set.
+/// `Peers` or `Group` one, which a relay would forward to anyone. A direct
+/// link is in a `Peers` or `Group` audience when its peer is in the set. A
+/// forwarder sees a `Group` publication when it may forward for the group and
+/// is a member, and never a `Peers` one.
 ///
 /// Each path is a literal pattern, so nothing beside the listed publications
 /// matches. A path no pattern can spell is left out.
@@ -435,8 +485,14 @@ fn visible<P: PeerId>(
     }
     match (audience, viewer) {
         (AudienceKind::Granted, _) => true,
-        (AudienceKind::Peers(peers), Viewer::Direct(peer)) => peers.contains(*peer),
-        (AudienceKind::Peers(_), Viewer::Relay) => false,
+        (AudienceKind::Peers(peers) | AudienceKind::Group(_, peers), Viewer::Direct(peer)) => {
+            peers.contains(*peer)
+        }
+        (AudienceKind::Group(id, members), Viewer::Forwarder { peer, groups }) => {
+            groups.contains(id) && members.contains(*peer)
+        }
+        (AudienceKind::Peers(_), Viewer::Forwarder { .. })
+        | (AudienceKind::Peers(_) | AudienceKind::Group(..), Viewer::Relay) => false,
     }
 }
 
@@ -579,6 +635,93 @@ mod tests {
             publish: Patterns::new(),
         };
         assert!(!visible("p", &granted, &none, &Viewer::Direct(&a)));
+    }
+
+    /// Returns a group with id byte `n` whose members are `members`.
+    fn group(n: u8, members: &[&str]) -> AudienceKind<String> {
+        AudienceKind::Group(
+            GroupId::from_bytes([n; 32]),
+            members.iter().map(|member| member.to_string()).collect(),
+        )
+    }
+
+    #[test]
+    fn a_group_publication_is_visible_to_its_members() {
+        let grant = Grant::everything();
+        let audience = group(1, &["a"]);
+        let (a, b) = ("a".to_string(), "b".to_string());
+        assert!(visible("p", &audience, &grant, &Viewer::Direct(&a)));
+        assert!(!visible("p", &audience, &grant, &Viewer::Direct(&b)));
+    }
+
+    #[test]
+    fn a_group_publication_is_visible_to_a_member_forwarding_for_the_group() {
+        let grant = Grant::everything();
+        let audience = group(1, &["a"]);
+        let a = "a".to_string();
+        let groups = BTreeSet::from([GroupId::from_bytes([1; 32])]);
+        let forwarder = Viewer::Forwarder {
+            peer: &a,
+            groups: &groups,
+        };
+        assert!(visible("p", &audience, &grant, &forwarder));
+    }
+
+    #[test]
+    fn a_group_publication_is_hidden_from_a_forwarder_without_the_group() {
+        let grant = Grant::everything();
+        let audience = group(1, &["a"]);
+        let a = "a".to_string();
+        let other = BTreeSet::from([GroupId::from_bytes([2; 32])]);
+        let forwarder = Viewer::Forwarder {
+            peer: &a,
+            groups: &other,
+        };
+        assert!(!visible("p", &audience, &grant, &forwarder));
+        let none = BTreeSet::new();
+        let forwarder = Viewer::Forwarder {
+            peer: &a,
+            groups: &none,
+        };
+        assert!(!visible("p", &audience, &grant, &forwarder));
+    }
+
+    #[test]
+    fn a_group_publication_is_hidden_from_a_forwarder_outside_the_group() {
+        let grant = Grant::everything();
+        let audience = group(1, &["a"]);
+        let b = "b".to_string();
+        let groups = BTreeSet::from([GroupId::from_bytes([1; 32])]);
+        let forwarder = Viewer::Forwarder {
+            peer: &b,
+            groups: &groups,
+        };
+        assert!(!visible("p", &audience, &grant, &forwarder));
+    }
+
+    #[test]
+    fn a_group_publication_is_hidden_from_a_relay() {
+        let audience = group(1, &["a"]);
+        assert!(!visible(
+            "p",
+            &audience,
+            &Grant::everything(),
+            &Viewer::Relay
+        ));
+    }
+
+    #[test]
+    fn a_forwarder_sees_granted_but_never_peers_publications() {
+        let grant = Grant::everything();
+        let a = "a".to_string();
+        let groups = BTreeSet::from([GroupId::from_bytes([1; 32])]);
+        let forwarder = Viewer::Forwarder {
+            peer: &a,
+            groups: &groups,
+        };
+        let peers = AudienceKind::Peers(BTreeSet::from([a.clone()]));
+        assert!(!visible("p", &peers, &grant, &forwarder));
+        assert!(visible("p", &AudienceKind::Granted, &grant, &forwarder));
     }
 
     #[test]

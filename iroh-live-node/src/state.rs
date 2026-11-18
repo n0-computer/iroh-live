@@ -474,13 +474,13 @@ impl State {
     /// forwards.
     pub(crate) fn link_view(&self, viewer: Viewer<'_, EndpointId>, base: &Grant) -> auth::Grant {
         let peer = match viewer {
-            Viewer::Direct(peer) => Some(peer),
-            Viewer::Relay => None,
+            Viewer::Direct(peer) | Viewer::Forwarder { peer, .. } => Some(peer),
+            _ => None,
         };
         let base = &self.effective_grant(peer, base);
-        let publish = match viewer {
-            Viewer::Direct(_) => base.publish.clone(),
-            Viewer::Relay => Pattern::all().into(),
+        let publish = match peer {
+            Some(_) => base.publish.clone(),
+            None => Pattern::all().into(),
         };
         let subscribe = moq_ext_access::visible_paths(
             self.publications
