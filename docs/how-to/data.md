@@ -54,7 +54,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .subscribe(None)
                 .await?
                 .ordered();
-            while let Some(mut group) = control.next_group().await? {
+            while let Some(item) = control.next_group().await? {
+                let mut group = match item {
+                    track::Item::Group(group) => group,
+                    track::Item::Gap { range, .. } => {
+                        println!("skipped groups {range:?}");
+                        continue;
+                    }
+                };
                 while let Some(frame) = group.read_frame().await? {
                     println!("{}", String::from_utf8_lossy(&frame.payload));
                 }
@@ -67,8 +74,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 Frames are bytes, so the format is yours. A reader that falls behind skips to
-the newest group, so put a self-contained message in each group when a reader
-should never wait for old ones.
+the newest group and reports the groups it gave up on as a gap, so put a
+self-contained message in each group when a reader should never wait for old
+ones.
 
 ## Latest-value state
 
