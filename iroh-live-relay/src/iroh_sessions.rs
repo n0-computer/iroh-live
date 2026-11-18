@@ -516,9 +516,7 @@ impl IrohSessions {
 impl IrohSessions {
     /// Makes the decisions in `recheck` again, and returns how to end the session if one changed.
     ///
-    /// A rejection, or a grant that no longer covers the one the session got,
-    /// closes it as unauthorized. A wider grant asks the client to reconnect,
-    /// so its new session gets the new grant.
+    /// See [`ending_for`] for how a changed decision ends the session.
     async fn decide_again(&self, recheck: &[Decided]) -> Option<Ending> {
         for decided in recheck {
             let decision = moq_ext_access::policy::decide_within(
@@ -527,25 +525,23 @@ impl IrohSessions {
                 DECIDE_TIMEOUT,
             )
             .await;
-            match decision {
-                Err(rejection) => {
+            match (&decision, ending_for(&decision, &decided.grant)) {
+                (_, None) => debug!("the key file changed, and the token still verifies"),
+                (Err(rejection), Some(ending)) => {
                     info!(
                         reason = rejection.reason(),
                         code = %rejection.code(),
                         "the key file changed and the token no longer verifies, closing the session",
                     );
-                    return Some(Ending::Close(rejection.code().clone()));
+                    return Some(ending);
                 }
-                Ok(authorization) if authorization.grant != decided.grant => {
-                    let ending = ending_for_grant(&decided.grant, &authorization.grant);
+                (Ok(authorization), Some(ending)) => {
                     info!(
                         grant = ?authorization.grant,
-                        ?ending,
-                        "the key file changed the token's grant, ending the session",
+                        "the key file changed the token's grant, asking the client to reconnect",
                     );
                     return Some(ending);
                 }
-                Ok(_) => debug!("the key file changed, and the token still verifies"),
             }
         }
         None
@@ -585,15 +581,19 @@ enum Ending {
     Reconnect,
 }
 
-/// Returns how to end a session whose token's grant changed from `admitted` to `now`.
+/// Returns how to end a session admitted with `admitted`, given the decision made again now.
 ///
-/// A grant that covers the admitted one asks the client to reconnect, any
-/// other closes the session as unauthorized.
-fn ending_for_grant(admitted: &Grant, now: &Grant) -> Ending {
-    if now.publish.covers(&admitted.publish) && now.subscribe.covers(&admitted.subscribe) {
-        Ending::Reconnect
-    } else {
-        Ending::Close(moq_net::Error::Unauthorized)
+/// A rejection closes the session with the rejection's code, which the
+/// client takes as a refusal of its token. A token that still verifies is
+/// never a refusal: a changed grant, wider or narrower, asks the client to
+/// reconnect, and its new session gets the new grant. A narrower grant thus
+/// keeps serving the admitted one until the new session is up, at most
+/// [`DRAIN_DEADLINE`]. An unchanged grant keeps the session.
+fn ending_for(decision: &policy::Decision, admitted: &Grant) -> Option<Ending> {
+    match decision {
+        Err(rejection) => Some(Ending::Close(rejection.code().clone())),
+        Ok(authorization) if authorization.grant != *admitted => Some(Ending::Reconnect),
+        Ok(_) => None,
     }
 }
 
@@ -774,26 +774,32 @@ mod tests {
         assert!(!grant.allows_publish(&format!("live/{other}/cam")));
     }
 
-    /// A key change that widens a token's grant reconnects its session, one that narrows it closes it.
+    /// A key change that changes a token's grant reconnects its session, one that rejects the token closes it.
     #[test]
-    fn a_changed_grant_reconnects_only_when_it_covers_the_admitted_one() {
+    fn a_changed_grant_reconnects_and_a_rejection_closes() {
         let admitted = Grant::publish_under(Pattern::subtree("tokens").unwrap());
         let wider = admitted.union(&Grant::publish_under(Pattern::subtree("other").unwrap()));
+        let decided = |grant: &Grant| -> policy::Decision { Ok(grant.clone().into()) };
+        for now in [&wider, &Grant::everything(), &Grant::subscribe_only()] {
+            assert!(matches!(
+                ending_for(&decided(now), &admitted),
+                Some(Ending::Reconnect)
+            ));
+        }
+        // A narrower grant is not a refusal, since the token still verifies.
         assert!(matches!(
-            ending_for_grant(&admitted, &wider),
-            Ending::Reconnect
+            ending_for(&decided(&admitted), &wider),
+            Some(Ending::Reconnect)
+        ));
+        assert!(ending_for(&decided(&admitted), &admitted).is_none());
+        let expired = policy::Rejection::new("expired").with_code(moq_net::Error::Expired);
+        assert!(matches!(
+            ending_for(&Err(expired), &admitted),
+            Some(Ending::Close(moq_net::Error::Expired))
         ));
         assert!(matches!(
-            ending_for_grant(&admitted, &Grant::everything()),
-            Ending::Reconnect
-        ));
-        assert!(matches!(
-            ending_for_grant(&admitted, &Grant::subscribe_only()),
-            Ending::Close(moq_net::Error::Unauthorized)
-        ));
-        assert!(matches!(
-            ending_for_grant(&wider, &admitted),
-            Ending::Close(moq_net::Error::Unauthorized)
+            ending_for(&Err(policy::Rejection::new("gone")), &admitted),
+            Some(Ending::Close(moq_net::Error::Unauthorized))
         ));
     }
 

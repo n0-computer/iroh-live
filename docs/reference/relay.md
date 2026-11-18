@@ -106,9 +106,11 @@ A session that presents two different JWTs is refused.
 The relay reads the key file again when it changes, and checks it once a
 second. A new session sees the change at once. Every live iroh session that
 presented a token is decided again. It closes as unauthorized if its token
-no longer verifies or now grants less. If the token now grants more, the
-relay sends a GOAWAY, and the client's new session gets the new grant. A browser session keeps its grant until its
-token or `--max-session` expires. A file that is gone refuses every token and
+no longer verifies. If the token still verifies but now grants something
+else, more or less, the relay sends a GOAWAY, and the client's new session
+gets the new grant. The old session serves until then, for at most five
+seconds. A browser session keeps its grant until its token or
+`--max-session` expires. A file that is gone refuses every token and
 closes the iroh sessions it admitted. A file that is there but does not parse,
 as it may be for a moment while an editor rewrites it, refuses new tokens and
 leaves live sessions alone until it parses again. To revoke every token,

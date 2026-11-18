@@ -139,8 +139,9 @@ pub enum RelayStatus {
     /// The relay refuses a link without a token it accepts, and closes a
     /// session whose token expired or no longer verifies. A relay that only
     /// renews a session, at its session length bound or after a key change
-    /// that widens the token's grant, sends a GOAWAY instead: the link then
-    /// dials a new session and reports no refusal. The link keeps
+    /// that changes the grant of a token that still verifies, sends a
+    /// GOAWAY instead: the link then dials a new session and reports no
+    /// refusal. The link keeps
     /// redialing with backoff, since the relay's keys may change, and
     /// presents the tokens set through [`RelayLink::tokens`]. The status
     /// stays here until a session is up again. Only `iroh://` links report
