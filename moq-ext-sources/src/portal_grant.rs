@@ -15,14 +15,23 @@ use tracing::{debug, warn};
 /// that keeps grants. [`PortalGrant::selection`] seeds a [`Selection`] with
 /// the stored token and stores each new token the portal grants.
 ///
-/// The file is kept when moq-video holds no token. moq-video drops its token
-/// while an open uses it, so deleting the file then would lose the grant to a
-/// run killed during the open, or to one the compositor refuses (GNOME does
-/// while the screen is locked), and the next unattended run would wait on the
-/// picker. A stale token costs nothing, since the portal ignores it and asks
-/// again.
+/// The file follows the selection's token, as [`Selection::restore_token`]
+/// asks, with one exception. An open takes the token before it asks the
+/// portal, so the selection holds none while the stored grant is in use. A
+/// `None` before the selection's first new grant therefore keeps the file:
+/// deleting it then would lose the grant to a run killed during the open, or
+/// to an open the compositor refuses (GNOME does while the screen is locked),
+/// and the next unattended run would wait on the picker. Once the portal has
+/// granted a token, `None` means the stream ended, for example because the
+/// user stopped sharing, and deletes the file, so the next run asks again.
 ///
-/// The file holds the token as text, readable only by its owner.
+/// The file holds the token as text, readable only by its owner. Two live
+/// selections of the same grant both write the file, in the order their
+/// tokens change, so the file follows whichever changed last.
+///
+/// [`VideoOpenOptions::with_portal_grants`](crate::spec::VideoOpenOptions::with_portal_grants)
+/// keeps grants for the sources a [`VideoSourceSpec`](crate::spec::VideoSourceSpec)
+/// opens. [`VideoSource::screen`](crate::VideoSource::screen) keeps none.
 ///
 /// # Examples
 ///
@@ -58,8 +67,13 @@ impl PortalGrant {
     ///
     /// The file is `<app>/portal/screen.token` or `<app>/portal/window.token`
     /// under `$XDG_CONFIG_HOME`, or under `~/.config` when that is unset or
-    /// not absolute. Returns `None` without either.
+    /// not absolute. Returns `None` without either, or when `app` is not a
+    /// single file name, such as an empty name, `..` or a path.
     pub fn in_config_dir(kind: Kind, app: &str) -> Option<Self> {
+        if app.is_empty() || Path::new(app).file_name() != Some(app.as_ref()) {
+            warn!(app, "the portal grant's app name is not a file name");
+            return None;
+        }
         let config = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .filter(|dir| dir.is_absolute())
@@ -88,25 +102,31 @@ impl PortalGrant {
 
     /// Returns a selection seeded with the stored token, which stores each new one.
     ///
-    /// A task watches the selection's token and writes each new token to the
-    /// file. It does not keep the selection alive, and ends once every clone
-    /// of the selection is dropped. A missing or unreadable file gives a
-    /// selection without a token, so the portal asks.
-    ///
-    /// # Panics
-    ///
-    /// Panics outside a tokio runtime.
+    /// A task watches the selection's token and updates the file as the type
+    /// docs describe. It does not keep the selection alive, and ends once
+    /// every clone of the selection is dropped. A missing or unreadable file
+    /// gives a selection without a token, so the portal asks. Outside a tokio
+    /// runtime there is no task: the selection is seeded, and logs a warning
+    /// that its new grants are not stored.
     pub fn selection(&self) -> Selection {
         let mut selection = Selection::new(self.kind);
         if let Some(token) = self.load() {
             debug!(path = %self.path.display(), "seeding the portal with a stored grant");
             selection = selection.with_restore_token(token);
         }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            warn!(
+                path = %self.path.display(),
+                "no tokio runtime, so new portal grants are not stored",
+            );
+            return selection;
+        };
         let path = self.path.clone();
         let mut tokens = selection.restore_token();
-        tokio::spawn(async move {
+        runtime.spawn(async move {
+            let mut granted = false;
             while let Some(token) = tokens.changed().await {
-                store(&path, token.as_ref());
+                apply(&path, update(&mut granted, token.as_ref()));
             }
         });
         selection
@@ -126,32 +146,76 @@ impl PortalGrant {
     }
 }
 
-/// Writes `token` to `path`, readable only by this user. Without a token, keeps the file.
-fn store(path: &Path, token: Option<&RestoreToken>) {
-    let Some(token) = token else {
-        debug!(path = %path.display(), "no portal grant held now, keeping the stored one");
-        return;
-    };
-    match write_private(path, token.as_str()) {
-        Ok(()) => debug!(path = %path.display(), "portal grant stored"),
-        Err(err) => warn!(path = %path.display(), %err, "cannot store the portal grant"),
+/// What to do with the stored file when the selection's token changes.
+#[derive(Debug, PartialEq, Eq)]
+enum Update<'a> {
+    /// Writes the new token.
+    Store(&'a RestoreToken),
+    /// Leaves the file as it is.
+    Keep,
+    /// Deletes the file.
+    Delete,
+}
+
+/// Decides what a change of the token to `token` does to the file.
+///
+/// `granted` says whether the selection has reported a token since it was
+/// created, and is set by the first one. A `None` before that is an open
+/// taking the stored token and keeps the file. A `None` after it is the end
+/// of the stream and deletes the file.
+fn update<'a>(granted: &mut bool, token: Option<&'a RestoreToken>) -> Update<'a> {
+    match token {
+        Some(token) => {
+            *granted = true;
+            Update::Store(token)
+        }
+        None if *granted => Update::Delete,
+        None => Update::Keep,
+    }
+}
+
+/// Carries out `update` on the file at `path`.
+fn apply(path: &Path, update: Update<'_>) {
+    match update {
+        Update::Store(token) => match write_private(path, token.as_str()) {
+            Ok(()) => debug!(path = %path.display(), "portal grant stored"),
+            Err(err) => warn!(path = %path.display(), %err, "cannot store the portal grant"),
+        },
+        Update::Keep => {
+            debug!(path = %path.display(), "the open took the stored portal grant, keeping it");
+        }
+        Update::Delete => match std::fs::remove_file(path) {
+            Ok(()) => debug!(path = %path.display(), "portal grant ended, deleted"),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => warn!(path = %path.display(), %err, "cannot delete the portal grant"),
+        },
     }
 }
 
 /// Writes `contents` to `path` with mode 0600, creating its directory.
+///
+/// Writes a temporary file next to `path` and renames it over `path`, so a
+/// reader sees the old or the new contents, and an existing file with wider
+/// permissions is replaced.
 fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::OpenOptions::new()
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(path)?
-        .write_all(contents.as_bytes())
+        .open(&temp)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(contents.as_bytes())?;
+    drop(file);
+    std::fs::rename(&temp, path)
 }
 
 #[cfg(test)]
@@ -168,15 +232,56 @@ mod tests {
     }
 
     #[test]
-    fn store_writes_a_private_file_and_keeps_it_without_a_token() {
-        let dir = test_dir("store");
+    fn write_private_replaces_the_file_with_a_private_one() {
+        let dir = test_dir("write");
         let path = dir.join("portal").join("screen.token");
-        store(&path, Some(&RestoreToken::new("grant")));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "grant");
+        write_private(&path, "first").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_private(&path, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
-        store(&path, None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn none_keeps_the_file_until_the_first_grant_and_deletes_it_after() {
+        let token = RestoreToken::new("grant");
+        let mut granted = false;
+        // The open takes the stored token, or the compositor refuses it.
+        assert_eq!(update(&mut granted, None), Update::Keep);
+        assert_eq!(update(&mut granted, None), Update::Keep);
+        // The portal grants a token, and later the user stops sharing.
+        assert_eq!(update(&mut granted, Some(&token)), Update::Store(&token));
+        assert_eq!(update(&mut granted, None), Update::Delete);
+        // A reopen takes and replaces the token again.
+        assert_eq!(update(&mut granted, Some(&token)), Update::Store(&token));
+    }
+
+    #[test]
+    fn apply_stores_keeps_and_deletes_the_file() {
+        let dir = test_dir("apply");
+        let path = dir.join("window.token");
+        let token = RestoreToken::new("grant");
+        apply(&path, Update::Store(&token));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "grant");
+        apply(&path, Update::Keep);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "grant");
+        apply(&path, Update::Delete);
+        assert!(!path.exists());
+        apply(&path, Update::Delete);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn selection_outside_a_runtime_is_seeded_without_a_task() {
+        let dir = test_dir("no-runtime");
+        let grant = PortalGrant::new(Kind::Screen, dir.join("screen.token"));
+        write_private(grant.path(), "grant").unwrap();
+        let token = grant.selection().restore_token().token();
+        assert_eq!(token, Some(RestoreToken::new("grant")));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -186,7 +291,7 @@ mod tests {
         let grant = PortalGrant::new(Kind::Window, dir.join("window.token"));
         assert_eq!(grant.selection().restore_token().token(), None);
 
-        store(grant.path(), Some(&RestoreToken::new("grant\n")));
+        write_private(grant.path(), "grant\n").unwrap();
         let token = grant.selection().restore_token().token();
         assert_eq!(token, Some(RestoreToken::new("grant")));
         std::fs::remove_dir_all(dir).ok();
@@ -200,5 +305,16 @@ mod tests {
         assert!(grant.path().ends_with("app/portal/screen.token"));
         assert!(grant.path().is_absolute());
         assert_eq!(grant.kind(), Kind::Screen);
+    }
+
+    #[test]
+    fn in_config_dir_takes_only_a_file_name() {
+        for app in ["", ".", "..", "../x", "a/b", "/tmp/x"] {
+            assert_eq!(
+                PortalGrant::in_config_dir(Kind::Window, app),
+                None,
+                "{app:?} is not a file name",
+            );
+        }
     }
 }
