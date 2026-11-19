@@ -101,6 +101,15 @@ async fn a_session_connection_lists_its_paths() {
         "no path is selected"
     );
 
+    let summary = session.network_paths();
+    assert_eq!(summary.len(), paths.len());
+    assert!(summary[0].selected, "the selected path is not first");
+    assert_eq!(
+        summary.iter().filter(|path| path.selected).count(),
+        1,
+        "not exactly one path is selected"
+    );
+
     alice.shutdown().await;
     bob.shutdown().await;
 }

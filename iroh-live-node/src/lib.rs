@@ -133,7 +133,7 @@ pub use self::{
     claim::PathClaim,
     endpoint::{EndpointConfig, EndpointError, Mdns, load_or_create_secret_key},
     error::Error,
-    link::{LinkId, ServingLink},
+    link::{LinkId, NetworkPath, NetworkPathKind, ServingLink},
     node::{DECIDE_TIMEOUT, Node, NodeConfig, Reach},
     preset::{Congestion, MoqPreset, UnknownCongestion},
     publish::{Audience, Publication, UnpublishOnDrop},

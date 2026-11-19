@@ -4,6 +4,7 @@
 //! [`LinkSampler`], which turns the session's statistics into a
 //! [`NetworkSample`].
 
+mod path;
 mod sampler;
 
 use std::{
@@ -15,6 +16,7 @@ use moq_ext_access::LinkKind;
 use moq_ext_adaptive::NetworkSample;
 use tracing::trace;
 
+pub use self::path::{NetworkPath, NetworkPathKind};
 use self::sampler::{LinkSampler, SAMPLE_INTERVAL};
 
 /// The id of one link of a node: a session or a relay.

@@ -159,7 +159,10 @@ hands the sample to the player and makes its path generation count changes of
 the serving link too. The monitor logs every sample at TRACE as `link sample`.
 The node keeps no list of paths of its own: `Session::connection()` is the iroh
 connection, and its `paths()` and `paths_stream()` give each path's remote
-address, selection and RTT.
+address, selection and RTT. `Session::network_paths()` sums up each open path
+as a `NetworkPath`, the selected one first: its kind, remote address, RTT,
+congestion window, bandwidth estimate, and the byte and packet counters, with
+the path MTU probes left out of the packets.
 
 ## Relay links
 
