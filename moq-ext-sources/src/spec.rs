@@ -152,6 +152,7 @@ impl FromStr for VideoSourceSpec {
 
 /// The generated picture `test` and `test:<name>` publish.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TestPattern {
     /// A sweeping bar, a frame counter, a clock, and a flashing marker.
     ///

@@ -36,6 +36,11 @@ const SATURATION: f64 = 50.0;
 
 /// A bouncing square on a background that drifts through the hues.
 ///
+/// This is the test pattern for drawing on demand. The timing pattern and the
+/// gradient are drawn from a frame count inside a
+/// [`VideoSource`](crate::VideoSource); this one is drawn from elapsed time
+/// alone, so it has a type of its own that a consumer can hold and draw from.
+///
 /// [`draw`](Self::draw) returns the picture for any elapsed time, so a
 /// consumer that decides itself when to send a frame can draw it at exactly
 /// that instant. [`VideoSource::test_bounce`](crate::VideoSource::test_bounce)
@@ -107,8 +112,11 @@ impl BouncePattern {
     /// Fails with [`Error::InvalidConfig`] if `elapsed` is beyond what a
     /// timestamp holds.
     pub fn draw(&self, elapsed: Duration) -> Result<video::Frame, Error> {
-        let timestamp = Timestamp::from_micros(elapsed.as_micros() as u64)
-            .map_err(|_| Error::invalid(format!("{elapsed:?} is beyond a timestamp")))?;
+        let timestamp = u64::try_from(elapsed.as_micros())
+            .ok()
+            .and_then(|micros| Timestamp::from_micros(micros).ok())
+            .ok_or_else(|| Error::invalid(format!("{elapsed:?} is beyond a timestamp")))?;
+        // Unreachable: `new` checked the size, and only the size can make the planes not fit.
         let surface = self
             .surface(elapsed)
             .map_err(|err| Error::invalid(err.to_string()))?;
@@ -195,6 +203,16 @@ mod tests {
         assert_eq!(BouncePattern::new(Size::new(4, 360)).unwrap().side, 4);
         let tiny = BouncePattern::new(Size::new(2, 2)).unwrap();
         tiny.draw(Duration::from_secs(1)).unwrap();
+    }
+
+    /// An elapsed time beyond a timestamp fails instead of wrapping.
+    #[test]
+    fn an_elapsed_time_beyond_a_timestamp_is_refused() {
+        let pattern = BouncePattern::new(Size::new(2, 2)).unwrap();
+        assert!(pattern.draw(Duration::MAX).is_err());
+        // Would wrap to zero microseconds if cast.
+        let wraps = Duration::from_micros(u64::MAX) + Duration::from_micros(1);
+        assert!(pattern.draw(wraps).is_err());
     }
 
     /// An odd or empty size has no I420 picture.
