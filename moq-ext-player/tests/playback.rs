@@ -1253,7 +1253,7 @@ async fn take_latest_video_hands_out_the_newest_picture_once() {
 
 /// A reader on its own tick takes every picture presented between two takes, once and in order.
 #[tokio::test]
-async fn a_video_history_hands_out_every_presented_picture_once() {
+async fn a_video_backlog_hands_out_every_presented_picture_once() {
     let format = VideoFormat {
         size: moq_video::Size::new(64, 48),
         rate: fps(30),
@@ -1270,13 +1270,13 @@ async fn a_video_history_hands_out_every_presented_picture_once() {
     let player = local(&broadcast)
         .play(PlayerConfig::default())
         .expect("valid");
-    let history = player.video_history(64);
+    let backlog = player.video_backlog(64);
     let mut taken = Vec::new();
     tokio::time::timeout(TIMEOUT, async {
         // A tick far slower than the frames, so the frames handle would coalesce.
         while taken.len() < 20 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            taken.extend(history.take());
+            taken.extend(backlog.take());
         }
     })
     .await

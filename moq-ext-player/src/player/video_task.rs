@@ -274,7 +274,7 @@ fn show(delivery: Delivery, frames: &FrameSlot, stats: &PlaybackRecorder) {
     // The timing goes into the log before the picture is handed out, so a
     // reader of the frames finds it.
     stats.video_log.push(timing);
-    stats.video_histories.record(&frame, timing);
+    stats.video_backlogs.record(&frame, timing);
     frames.send(frame);
 }
 

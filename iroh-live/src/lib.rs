@@ -128,7 +128,7 @@ pub mod media {
         Adaptation, AudioFrame, AudioFrames, AudioMode, AudioPlaybackStats, Catalog,
         DEFAULT_LATENCY, Delay, FrameTiming, IMMEDIATE_LATENCY, MediaKind, NetworkSample,
         PlaybackStats, Player, PlayerConfig, PlayerStatus, RemoteBroadcast, RenditionMode,
-        VideoHistory, VideoPlaybackStats, video_rendition,
+        VideoBacklog, VideoPlaybackStats, video_rendition,
     };
     pub use moq_ext_publisher::{
         AudioEncodeStats, EncodeStats, LocalBroadcast, PublishStats, PublishStatus, RenditionState,
