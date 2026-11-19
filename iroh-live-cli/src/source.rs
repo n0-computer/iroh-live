@@ -18,7 +18,7 @@ use crate::{
     args::{AudioCodecArg, CaptureArgs},
     playback::Speaker,
     rendition::{self, CaptureFramerate},
-    source_spec::{AudioSourceSpec, PORTAL, VideoOpenOptions, VideoSourceSpec},
+    source_spec::{AudioSourceSpec, VideoOpenOptions, VideoSourceSpec},
 };
 
 /// Capture size of the Raspberry Pi camera without `--width` and `--height`.
@@ -131,18 +131,6 @@ async fn video_source(
         }
         #[cfg(all(target_os = "linux", feature = "rpicam"))]
         VideoSourceSpec::Rpicam(mode) => rpicam_source(args, framerate, *mode).await?,
-        // The portal opens here, rather than in the library, so its grant is
-        // kept for the next run. On Wayland the default display is always the
-        // portal's picker.
-        VideoSourceSpec::Display(Some(id)) if id == PORTAL => {
-            portal(PortalPick::Screen, args, framerate).await?
-        }
-        VideoSourceSpec::Display(None) if portal_default() => {
-            portal(PortalPick::Screen, args, framerate).await?
-        }
-        VideoSourceSpec::Window(id) if id == PORTAL => {
-            portal(PortalPick::Window, args, framerate).await?
-        }
         spec => match spec.open(&open_options(args, framerate)).await? {
             Some(source) => Video::Raw(source),
             None => return Ok(None),
@@ -161,83 +149,8 @@ fn open_options(args: &CaptureArgs, framerate: CaptureFramerate) -> VideoOpenOpt
             .expect("the ladder settles only on rates from 1 to MAX_FRAMERATE")
     });
     options.cursor = !args.no_cursor;
-    options
-}
-
-/// What the desktop portal's picker offers.
-#[derive(Debug, Clone, Copy)]
-enum PortalPick {
-    /// A whole screen, for `screen:portal`.
-    Screen,
-    /// A single window, for `window:portal`.
-    Window,
-}
-
-/// Opens what the user picks for `pick` in the desktop portal's dialog.
-///
-/// Seeds the portal with the grant an earlier run stored, and keeps the grant
-/// this open gets for the next run. Fails off Linux and in a build without
-/// the `pipewire` feature, which have no portal.
-#[cfg_attr(
-    not(all(target_os = "linux", feature = "pipewire")),
-    expect(clippy::unused_async, reason = "only the portal build awaits")
-)]
-async fn portal(
-    pick: PortalPick,
-    args: &CaptureArgs,
-    framerate: CaptureFramerate,
-) -> Result<Video> {
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
-    {
-        use video::capture::portal::Kind;
-        let kind = match pick {
-            PortalPick::Screen => Kind::Screen,
-            PortalPick::Window => Kind::Window,
-        };
-        let selection = match iroh_live::media::PortalGrant::in_config_dir(kind, "iroh-live") {
-            Some(grant) => grant.selection(),
-            None => video::capture::portal::Selection::new(kind),
-        };
-        capture(video::capture::Source::Portal(selection), args, framerate).await
-    }
-    #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
-    {
-        let _ = (pick, args, framerate);
-        Err(anyerr!(
-            "the desktop portal's picker needs a Linux build with the `pipewire` feature"
-        ))
-    }
-}
-
-/// Returns whether the default display opens the desktop portal's picker.
-///
-/// True in a Wayland session on Linux with the `pipewire` feature. An X11
-/// session keeps the default display, which tries the portal and falls back
-/// to X11.
-fn portal_default() -> bool {
-    cfg!(all(target_os = "linux", feature = "pipewire"))
-        && std::env::var_os("WAYLAND_DISPLAY").is_some()
-}
-
-/// Opens a capture device with the geometry hints from the flags.
-#[cfg(all(target_os = "linux", feature = "pipewire"))]
-async fn capture(
-    source: video::capture::Source,
-    args: &CaptureArgs,
-    framerate: CaptureFramerate,
-) -> Result<Video> {
-    let options = open_options(args, framerate);
-    let mut config = video::capture::Config::default();
-    config.source = source;
-    config.width = options.width;
-    config.height = options.height;
-    config.framerate = options.framerate;
-    config.cursor = if options.cursor {
-        video::capture::Cursor::Drawn
-    } else {
-        video::capture::Cursor::Hidden
-    };
-    Ok(Video::Raw(VideoSource::capture(config).await?))
+    // The portal keeps its grant for the next run, as the CLI reference says.
+    options.with_portal_grants("iroh-live")
 }
 
 /// Starts `rpicam-vid` in the mode `mode` names.

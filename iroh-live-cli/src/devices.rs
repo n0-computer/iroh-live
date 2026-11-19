@@ -80,7 +80,7 @@ async fn displays() -> Result<Vec<String>, String> {
     #[cfg(all(target_os = "linux", feature = "pipewire"))]
     lines.push(format!(
         "screen:{}  pick a screen in the desktop portal's dialog (what `screen` opens)",
-        crate::source_spec::PORTAL
+        iroh_live::media::spec::PORTAL
     ));
     let xwayland = cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some();
     let note = if xwayland {
@@ -144,7 +144,7 @@ async fn list() {
         "windows",
         Ok::<_, String>(vec![format!(
             "window:{}  pick a window in the desktop portal's dialog",
-            crate::source_spec::PORTAL
+            iroh_live::media::spec::PORTAL
         )]),
         String::clone,
     );

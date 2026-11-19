@@ -410,6 +410,8 @@ pub struct VideoOpenOptions {
     pub framerate: Option<video::FrameRate>,
     /// Whether a screen or window capture draws the mouse cursor, `true` by default.
     pub cursor: bool,
+    /// The app whose config directory keeps the desktop portal's grants.
+    portal_grants: Option<String>,
 }
 
 impl Default for VideoOpenOptions {
@@ -419,6 +421,7 @@ impl Default for VideoOpenOptions {
             height: None,
             framerate: None,
             cursor: true,
+            portal_grants: None,
         }
     }
 }
@@ -436,6 +439,22 @@ impl VideoOpenOptions {
     #[must_use]
     pub fn with_framerate(mut self, rate: video::FrameRate) -> Self {
         self.framerate = Some(rate);
+        self
+    }
+
+    /// Keeps the desktop portal's grants in `app`'s config directory.
+    ///
+    /// A source that opens through the portal, `screen:portal`,
+    /// `window:portal` or the default display on Wayland, then uses the grant
+    /// stored there and stores the one it gets, as
+    /// `PortalGrant::in_config_dir` does, so a later run
+    /// skips the picker on a compositor that keeps grants. Without this, each
+    /// open asks. Has no effect off Linux or without the `pipewire` feature,
+    /// which have no portal. A name that is not a single file name keeps no
+    /// grant.
+    #[must_use]
+    pub fn with_portal_grants(mut self, app: impl Into<String>) -> Self {
+        self.portal_grants = Some(app.into());
         self
     }
 
@@ -461,8 +480,11 @@ impl VideoSourceSpec {
     /// A camera, display, window or app opens through
     /// [`VideoSource::capture`], so the default camera follows its rules. The
     /// default display is [`screen_source`](crate::screen_source), the
-    /// desktop portal on Wayland with the `pipewire` feature. `screen:portal` and `window:portal` always ask the
-    /// portal. A test pattern defaults to 1280x720 at 30 fps.
+    /// desktop portal on Wayland with the `pipewire` feature. `screen:portal`
+    /// and `window:portal` always ask the portal. The portal shows its picker
+    /// on each open unless the options keep grants with
+    /// [`VideoOpenOptions::with_portal_grants`]. A test pattern defaults to
+    /// 1280x720 at 30 fps.
     ///
     /// Cancellation safe, as [`VideoSource::capture`] is.
     ///
@@ -545,11 +567,11 @@ async fn capture(source: CaptureSource, options: &VideoOpenOptions) -> Result<Vi
     use video::capture::{DisplaySelection, Source};
     let source = match source {
         CaptureSource::Camera(id) => Source::Camera(id),
-        CaptureSource::Display(None) => crate::screen_source(),
+        CaptureSource::Display(None) => screen(options),
         CaptureSource::Display(Some(id)) => Source::Display(DisplaySelection::new(id)),
         CaptureSource::Window(id) => Source::Window(id),
         CaptureSource::App(id) => Source::App(id),
-        CaptureSource::Portal(kind) => portal(kind)?,
+        CaptureSource::Portal(kind) => portal(kind, options)?,
     };
     let mut config = video::capture::Config::default();
     config.source = source;
@@ -573,19 +595,46 @@ async fn capture(source: CaptureSource, _options: &VideoOpenOptions) -> Result<V
     )))
 }
 
-/// Returns the portal source for `kind`, a new selection the user picks in the dialog.
+/// Returns the capture source of the default display, keeping its portal grant as `options` ask.
+#[cfg(feature = "capture")]
+fn screen(options: &VideoOpenOptions) -> video::capture::Source {
+    let source = crate::screen_source();
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    if matches!(source, video::capture::Source::Portal(_)) {
+        return portal_selection(PortalKind::Screen, options);
+    }
+    #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
+    let _ = options;
+    source
+}
+
+/// Returns the portal source for `kind`, a selection the user picks in the dialog.
 #[cfg(all(feature = "capture", target_os = "linux", feature = "pipewire"))]
 #[expect(
     clippy::unnecessary_wraps,
     reason = "the build without a portal fails here"
 )]
-fn portal(kind: PortalKind) -> Result<video::capture::Source, Error> {
+fn portal(kind: PortalKind, options: &VideoOpenOptions) -> Result<video::capture::Source, Error> {
+    Ok(portal_selection(kind, options))
+}
+
+/// Returns a portal selection for `kind`, seeded from the grant `options` keep.
+#[cfg(all(feature = "capture", target_os = "linux", feature = "pipewire"))]
+fn portal_selection(kind: PortalKind, options: &VideoOpenOptions) -> video::capture::Source {
     use video::capture::portal::{Kind, Selection};
     let kind = match kind {
         PortalKind::Screen => Kind::Screen,
         PortalKind::Window => Kind::Window,
     };
-    Ok(video::capture::Source::Portal(Selection::new(kind)))
+    let grant = options
+        .portal_grants
+        .as_deref()
+        .and_then(|app| crate::PortalGrant::in_config_dir(kind, app));
+    let selection = match grant {
+        Some(grant) => grant.selection(),
+        None => Selection::new(kind),
+    };
+    video::capture::Source::Portal(selection)
 }
 
 /// Fails, since only Linux with the `pipewire` feature has the portal.
@@ -593,7 +642,7 @@ fn portal(kind: PortalKind) -> Result<video::capture::Source, Error> {
     feature = "capture",
     not(all(target_os = "linux", feature = "pipewire"))
 ))]
-fn portal(kind: PortalKind) -> Result<video::capture::Source, Error> {
+fn portal(kind: PortalKind, _options: &VideoOpenOptions) -> Result<video::capture::Source, Error> {
     Err(Error::invalid(format!(
         "the desktop portal's {kind:?} picker needs a Linux build with the `pipewire` feature"
     )))
