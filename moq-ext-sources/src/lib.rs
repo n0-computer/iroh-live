@@ -26,6 +26,10 @@
 //! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
 //! | Any of the above, switched while published | [`VideoSource::switchable`] | always |
 //!
+//! [`PortalGrant`] keeps the desktop portal's screen-sharing grant in a file,
+//! so a later run shares the same screen or window without the picker. It
+//! needs the `pipewire` feature on Linux.
+//!
 //! [`Backend`] is a choice of video encoder or decoder backend, as a
 //! `--encoder` or `--decoder` flag takes it.
 //!
@@ -71,6 +75,8 @@ mod error;
 pub mod frames;
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
 pub mod local_task;
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+mod portal_grant;
 mod source;
 pub mod spec;
 pub mod stats;
@@ -79,6 +85,8 @@ mod status;
 use moq_audio as audio;
 use moq_video as video;
 
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+pub use self::portal_grant::PortalGrant;
 #[cfg(feature = "capture")]
 pub use self::source::screen_source;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]

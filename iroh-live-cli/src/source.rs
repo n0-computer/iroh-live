@@ -194,15 +194,11 @@ async fn portal(
             PortalPick::Screen => Kind::Screen,
             PortalPick::Window => Kind::Window,
         };
-        let selection = crate::portal_grant::selection(kind);
-        let opened = capture(
-            video::capture::Source::Portal(selection.clone()),
-            args,
-            framerate,
-        )
-        .await;
-        crate::portal_grant::watch(kind, &selection);
-        opened
+        let selection = match iroh_live::media::PortalGrant::in_config_dir(kind, "iroh-live") {
+            Some(grant) => grant.selection(),
+            None => video::capture::portal::Selection::new(kind),
+        };
+        capture(video::capture::Source::Portal(selection), args, framerate).await
     }
     #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
     {
