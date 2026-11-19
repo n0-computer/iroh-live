@@ -105,6 +105,10 @@ Each presented picture's `FrameTiming` (`arrived`, `decoded`, `presented`)
 goes into a log of the last 512, which `Player::video_timing(timestamp)` searches.
 `Player::take_latest_video()` pairs the two for a consumer that samples at
 its own rate: the newest picture since its last call, with its timing.
+`Player::video_history(capacity)` returns a `VideoHistory` that the video task
+hands every presented picture with its timing. Its `take()` returns all of
+them since the last take, each once and in order, for a consumer that runs on
+its own tick over the recent pictures.
 `arrived` comes from the decoder, which reports when the access unit behind
 each picture landed on this node.
 

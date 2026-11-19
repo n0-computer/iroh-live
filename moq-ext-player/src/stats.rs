@@ -117,8 +117,9 @@ pub enum MediaKind {
 ///
 /// Read with [`Player::timeline`](crate::Player::timeline) for a timeline view
 /// of playback, [`Player::video_timing`](crate::Player::video_timing) for one
-/// picture, or [`Player::take_latest_video`](crate::Player::take_latest_video)
-/// with the newest picture. From `arrived` to `decoded` is the time in the
+/// picture, [`Player::take_latest_video`](crate::Player::take_latest_video)
+/// with the newest picture, or [`VideoHistory::take`](crate::VideoHistory::take)
+/// with every picture. From `arrived` to `decoded` is the time in the
 /// decoder, and from `decoded` to `presented` the time the playout clock held
 /// the frame. Pictures and audio with the same timestamp should be presented
 /// together.
