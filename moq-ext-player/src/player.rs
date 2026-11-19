@@ -28,14 +28,18 @@ use crate::{
 };
 
 mod audio;
+mod backlog;
 mod clock;
 mod select;
 mod video_task;
 
 pub use moq_ext_adaptive::{Adaptation, RenditionMode};
 
-pub use self::audio::{AudioFrame, AudioFrames};
-pub(crate) use self::clock::PlayoutClock;
+pub use self::{
+    audio::{AudioFrame, AudioFrames},
+    backlog::VideoBacklog,
+};
+pub(crate) use self::{backlog::VideoBacklogs, clock::PlayoutClock};
 
 /// The latency of [`PlayerConfig::default`]: held for at least 100 ms, and skipped past 150 ms.
 pub const DEFAULT_LATENCY: Delay = Delay {
@@ -231,6 +235,8 @@ pub(crate) struct PlaybackRecorder {
     pub(crate) audio: SharedCell<Option<AudioPlaybackStats>>,
     /// Written by the video task as it presents pictures.
     pub(crate) video_log: FrameLog,
+    /// Handed every picture the video task presents.
+    pub(crate) video_backlogs: VideoBacklogs,
     /// Written by the audio task as it writes to the output.
     pub(crate) audio_log: FrameLog,
 }
@@ -540,6 +546,36 @@ impl Player {
         self.stats.video_log.find(pts)
     }
 
+    /// Returns a queue of every picture presented from now on, with its timing.
+    ///
+    /// Unlike [`video_frames`](Self::video_frames), which skips pictures a
+    /// slow reader missed, [`VideoBacklog::take`] returns each picture once.
+    /// The backlog holds at most `capacity` pictures, at least one, and drops
+    /// the oldest beyond it.
+    ///
+    /// A held picture keeps its decoded buffer alive, which may come from a
+    /// hardware decoder's fixed pool, so a large capacity or a backlog no
+    /// longer taken can stall hardware decoding. Drop it when you stop taking.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run(player: moq_ext_player::Player) {
+    /// let backlog = player.video_backlog(16);
+    /// let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+    /// loop {
+    ///     tick.tick().await;
+    ///     for (frame, timing) in backlog.take() {
+    ///         println!("{:?}: in the decoder for {:?}", frame.timestamp, timing.decode_time());
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn video_backlog(&self, capacity: usize) -> VideoBacklog {
+        self.stats.video_backlogs.open(capacity)
+    }
+
     /// Returns the newest presented picture since the last call, with its timing.
     ///
     /// For a consumer that samples the video at its own rate, such as an
@@ -547,8 +583,8 @@ impl Player {
     /// [`video_frames`](Self::video_frames). Pictures presented between two
     /// calls are skipped. Returns `None` if nothing was presented since the
     /// last call. The player keeps one cursor for this method, so two callers
-    /// take turns at the same pictures. Give each reader its own
-    /// [`VideoFrames`] handle instead.
+    /// take turns at the same pictures. A reader that needs its own cursor
+    /// can use a [`video_backlog`](Self::video_backlog) of capacity 1.
     ///
     /// [`FrameTiming::arrived`] tells the time on the network from the time
     /// in the decoder. It is `None` for a picture the decoder could not match

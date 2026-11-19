@@ -263,14 +263,19 @@ fn show(delivery: Delivery, frames: &FrameSlot, stats: &PlaybackRecorder) {
         decoded,
         ..
     } = delivery;
-    stats.video_log.push(FrameTiming {
+    let timing = FrameTiming {
         kind: MediaKind::Video,
         pts: crate::duration(frame.timestamp),
         arrived,
         decoded,
         presented: Instant::now(),
-    });
-    frames.send(Arc::new(frame));
+    };
+    let frame = Arc::new(frame);
+    // The timing goes into the log before the picture is handed out, so a
+    // reader of the frames finds it.
+    stats.video_log.push(timing);
+    stats.video_backlogs.record(&frame, timing);
+    frames.send(frame);
 }
 
 /// Feeds a decoder event to the switcher, and starts pacing a picture to show.
