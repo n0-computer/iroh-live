@@ -35,6 +35,7 @@ mod file;
 mod generator;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 mod rpicam;
+mod scaled;
 mod sender;
 mod switch;
 
@@ -77,6 +78,11 @@ enum Driver {
     Camera(capture::Camera),
     /// Nothing: the application pushes.
     Pushed,
+    /// A task that derives frames from another source, which it keeps running.
+    Derived {
+        input: VideoSource,
+        _task: n0_future::task::AbortOnDropHandle<()>,
+    },
 }
 
 /// The shared half of a [`VideoSource`].
@@ -134,12 +140,24 @@ impl VideoSource {
         stop: CancellationToken,
         driver: Driver,
     ) -> Self {
+        Self::with_demand(label, format, frames, stop, driver, Demand::default())
+    }
+
+    /// As [`new`](Self::new), with a demand its driver already watches.
+    fn with_demand(
+        label: impl Into<String>,
+        format: VideoFormat,
+        frames: FrameReader,
+        stop: CancellationToken,
+        driver: Driver,
+        demand: Demand,
+    ) -> Self {
         Self {
             inner: Arc::new(VideoInner {
                 label: label.into(),
                 format,
                 frames,
-                demand: Demand::default(),
+                demand,
                 stop,
                 driver,
             }),
@@ -450,6 +468,7 @@ impl VideoSource {
             Driver::Local(task) => task.released().cancelled_owned(),
             #[cfg(feature = "capture")]
             Driver::Camera(camera) => camera.released().cancelled_owned(),
+            Driver::Derived { input, .. } => input.released(),
             Driver::Thread | Driver::Pushed => {
                 let released = CancellationToken::new();
                 released.cancel();
