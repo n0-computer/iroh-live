@@ -283,8 +283,7 @@ impl VideoSource {
 
     /// Returns a bouncing square on a drifting hue at `size` and `rate`.
     ///
-    /// Draws [`BouncePattern`](crate::BouncePattern) at each frame's media
-    /// time. A consumer that picks its own instants draws the pattern itself.
+    /// Draws [`BouncePattern`](crate::BouncePattern) at each frame's media time.
     ///
     /// # Errors
     ///

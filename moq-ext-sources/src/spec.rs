@@ -166,7 +166,7 @@ pub enum TestPattern {
     Gradient,
     /// A white square bouncing left and right on a background that drifts through the hues.
     ///
-    /// Moves at a constant speed with media time. See [`BouncePattern`](crate::BouncePattern).
+    /// See [`BouncePattern`](crate::BouncePattern).
     Bounce,
 }
 

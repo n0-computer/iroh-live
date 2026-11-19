@@ -1,11 +1,4 @@
-//! A test picture drawn for any instant: a bouncing square on a drifting hue.
-//!
-//! The background drifts through the hues once every [`HUE_PERIOD`], so the
-//! average colour of the picture changes. A white square runs left and right
-//! at a constant speed, one edge to the other in [`CROSSING`], and turns at the
-//! edges. Both follow the time elapsed since the picture started, not a frame
-//! count, so the motion stays smooth and comparable whichever instants a
-//! consumer draws it at.
+//! A bouncing-square test picture that can be drawn for any instant.
 
 use std::{f64::consts::TAU, time::Duration};
 
@@ -34,20 +27,13 @@ const NEUTRAL: u8 = 128;
 /// How far the background's chroma swings from [`NEUTRAL`].
 const SATURATION: f64 = 50.0;
 
-/// A bouncing square on a background that drifts through the hues.
+/// A white square bouncing left and right on a background that drifts through the hues.
 ///
-/// This is the test pattern for drawing on demand. The timing pattern and the
-/// gradient are drawn from a frame count inside a
-/// [`VideoSource`](crate::VideoSource); this one is drawn from elapsed time
-/// alone, so it has a type of its own that a consumer can hold and draw from.
-///
-/// [`draw`](Self::draw) returns the picture for any elapsed time, so a
-/// consumer that decides itself when to send a frame can draw it at exactly
-/// that instant. [`VideoSource::test_bounce`](crate::VideoSource::test_bounce)
-/// draws it at a fixed rate instead.
-///
-/// The square is two ninths of the height, 80 pixels at 640x360, and sits in
-/// the middle row. The pictures are I420.
+/// Motion follows elapsed time rather than a frame count, so
+/// [`draw`](Self::draw) returns a consistent picture for any instant. The
+/// square crosses the picture in 1.5 s, the hue cycles every 12 s, and the
+/// pictures are I420. [`VideoSource::test_bounce`](crate::VideoSource::test_bounce)
+/// draws it at a fixed rate.
 ///
 /// # Examples
 ///
@@ -116,7 +102,7 @@ impl BouncePattern {
             .ok()
             .and_then(|micros| Timestamp::from_micros(micros).ok())
             .ok_or_else(|| Error::invalid(format!("{elapsed:?} is beyond a timestamp")))?;
-        // Unreachable: `new` checked the size, and only the size can make the planes not fit.
+        // Unreachable, since `new` checked the size.
         let surface = self
             .surface(elapsed)
             .map_err(|err| Error::invalid(err.to_string()))?;
