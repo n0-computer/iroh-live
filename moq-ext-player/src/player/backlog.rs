@@ -1,4 +1,4 @@
-//! Every presented picture with its timing, queued for a reader that drains them at its own pace.
+//! A queue of every presented picture with its timing.
 
 use std::{
     collections::VecDeque,
@@ -46,8 +46,7 @@ impl VideoBacklogs {
             capacity,
         }));
         let mut backlogs = self.0.lock().expect("poisoned");
-        // Without presented pictures `record` never runs, so the dropped
-        // handles are forgotten here as well.
+        // `record` only prunes while pictures are presented.
         backlogs.retain(|ring| ring.strong_count() > 0);
         backlogs.push(Arc::downgrade(&ring));
         VideoBacklog { ring }
@@ -69,29 +68,16 @@ impl VideoBacklogs {
     }
 }
 
-/// A queue of the pictures a [`Player`](crate::Player) presents, with their timing, until they are taken.
+/// A queue of the pictures a [`Player`](crate::Player) presents, with their timing.
 ///
-/// Returned by [`Player::video_backlog`](crate::Player::video_backlog). For a
-/// consumer that runs on its own tick over the recent pictures, such as an
-/// analysis of each frame since its last tick. Unlike
-/// [`VideoFrames`](crate::VideoFrames), it does not coalesce: each presented
-/// picture is queued until [`take`](Self::take) hands it out, however late
-/// that is. It holds at most its capacity, and drops the oldest beyond it.
+/// Returned by [`Player::video_backlog`](crate::Player::video_backlog). Unlike
+/// [`VideoFrames`](crate::VideoFrames), it does not coalesce: each picture is
+/// queued until [`take`](Self::take) hands it out, up to the capacity. Each
+/// handle records from its creation on, and dropping it stops the recording.
 ///
-/// [`take`](Self::take) drains the queue: the backlog does not keep a picture
-/// it handed out, so a consumer that looks at overlapping windows keeps its
-/// own copy of the pictures it still needs.
-///
-/// It records from its creation on. Each handle keeps its own pictures, and
-/// dropping it stops the recording. A held picture keeps its decoded buffer
-/// alive, which may belong to a hardware decoder's pool of a fixed size, so a
-/// backlog that is kept but no longer taken can stall or slow down hardware
-/// decoding. Drop the handle when you stop taking.
-///
-/// The backlog does not tell when playback ends: after the player stops or
-/// the broadcast ends, [`take`](Self::take) returns an empty list, as it does
-/// when the video stalls. Watch [`Player::status`](crate::Player::status) for
-/// the end.
+/// The backlog does not signal the end of playback, where [`take`](Self::take)
+/// returns an empty list as during a stall. Watch
+/// [`Player::status`](crate::Player::status) for it.
 pub struct VideoBacklog {
     ring: Arc<Mutex<Ring>>,
 }
@@ -109,13 +95,10 @@ impl fmt::Debug for VideoBacklog {
 impl VideoBacklog {
     /// Takes every picture presented since the last take, oldest first, with its timing.
     ///
-    /// The pictures come in the order the player presented them, each once,
-    /// and the backlog is empty afterwards. Returns an empty list if nothing
-    /// was presented since the last take.
+    /// The backlog is empty afterwards.
     #[must_use]
     pub fn take(&self) -> Vec<(Arc<moq_video::Frame>, FrameTiming)> {
-        // Moves the queue out, so the copy into the list happens outside the
-        // lock the video task needs to present.
+        // Moves the queue out so the copy happens outside the lock.
         let pictures = std::mem::take(&mut self.ring.lock().expect("poisoned").pictures);
         pictures.into()
     }

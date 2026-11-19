@@ -546,24 +546,16 @@ impl Player {
         self.stats.video_log.find(pts)
     }
 
-    /// Returns a queue that collects every picture presented from now on, with its timing, until it is taken.
+    /// Returns a queue of every picture presented from now on, with its timing.
     ///
-    /// For a consumer that runs on its own tick over the recent pictures,
-    /// such as an analysis of each frame since its last tick.
-    /// [`video_frames`](Self::video_frames) skips pictures a slow reader
-    /// missed, and [`take_latest_video`](Self::take_latest_video) returns only
-    /// the newest. [`VideoBacklog::take`] returns all of them, each once, and
-    /// empties the backlog.
-    ///
+    /// Unlike [`video_frames`](Self::video_frames), which skips pictures a
+    /// slow reader missed, [`VideoBacklog::take`] returns each picture once.
     /// The backlog holds at most `capacity` pictures, at least one, and drops
-    /// the oldest beyond it. Size it for the longest gap between two takes:
-    /// 16 covers half a second at 30 fps. A held picture keeps its decoded
-    /// buffer alive, which may come from a hardware decoder's pool of a fixed
-    /// size, so a large capacity, or a backlog that is kept but no longer
-    /// taken, can stall hardware decoding. Drop it when you stop taking. Each
-    /// backlog keeps its own pictures, and dropping it stops the recording.
-    /// The backlog does not signal the end of playback, so watch
-    /// [`status`](Self::status) for it.
+    /// the oldest beyond it.
+    ///
+    /// A held picture keeps its decoded buffer alive, which may come from a
+    /// hardware decoder's fixed pool, so a large capacity or a backlog no
+    /// longer taken can stall hardware decoding. Drop it when you stop taking.
     ///
     /// # Examples
     ///
@@ -592,9 +584,7 @@ impl Player {
     /// calls are skipped. Returns `None` if nothing was presented since the
     /// last call. The player keeps one cursor for this method, so two callers
     /// take turns at the same pictures. A reader that needs its own cursor
-    /// opens a [`video_backlog`](Self::video_backlog) with a capacity of 1:
-    /// `backlog.take().pop()` is then the newest picture since its own last
-    /// take, with its timing.
+    /// can use a [`video_backlog`](Self::video_backlog) of capacity 1.
     ///
     /// [`FrameTiming::arrived`] tells the time on the network from the time
     /// in the decoder. It is `None` for a picture the decoder could not match

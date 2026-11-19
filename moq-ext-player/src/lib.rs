@@ -28,8 +28,7 @@
 //!   [`RemoteBroadcast::play`] starts a [`Player`].
 //! - [`Player`]: decodes the chosen rendition and keeps audio and video in step.
 //! - [`VideoFrames`]: the frame stream every renderer reads.
-//! - [`VideoBacklog`]: a queue of every presented picture with its timing,
-//!   for a reader on its own tick.
+//! - [`VideoBacklog`]: a queue of every presented picture with its timing.
 //! - [`AudioFrames`]: the decoded audio, for analysis or a custom output.
 //! - [`RenditionMode`]: how the video rendition is chosen, re-exported from
 //!   `moq_ext_adaptive`.
