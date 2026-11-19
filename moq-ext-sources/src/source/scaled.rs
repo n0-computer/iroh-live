@@ -20,11 +20,37 @@ impl VideoSource {
     /// Each frame is scaled as it arrives, on Tokio's blocking pool, so a
     /// reader of the returned source gets a CPU picture of `size` without
     /// doing the work itself. Use it for a capture that delivers large frames,
-    /// such as a screen's DMA-BUF frames, to a reader that sends the newest
-    /// frame at fixed instants. Frames that arrive while one is scaled
-    /// coalesce, so only the newest is scaled next. A frame already in I420 at
-    /// `size` passes through unchanged. A frame that fails to scale is
-    /// skipped.
+    /// such as a screen's DMA-BUF frames, to a reader that takes the newest
+    /// frame at fixed instants, such as an inference loop or a sender of
+    /// still pictures. Frames that arrive while one is scaled coalesce, so
+    /// only the newest is scaled next. A frame already in I420 at `size`
+    /// passes through unchanged.
+    ///
+    /// The picture is stretched to exactly `size`, without keeping the
+    /// input's aspect ratio, so pick `size` from the input's aspect. Output
+    /// is always I420 in CPU memory. A GPU frame is scaled on its device where
+    /// the build and driver allow it, and only the small picture is
+    /// downloaded; otherwise the full frame is downloaded and scaled on the
+    /// CPU.
+    ///
+    /// The work follows the input's rate, not the reader's: a 60 fps input
+    /// read at 5 fps is scaled 60 times a second. Nothing is scaled while
+    /// nothing reads the returned source.
+    ///
+    /// This is not the way to publish a smaller picture. A broadcast
+    /// rendition's own size (`VideoRendition::with_size` in
+    /// `moq-ext-publisher`) scales on the encoder's thread and keeps a GPU
+    /// frame on the GPU for a hardware encoder, where a scaled source would
+    /// download it to I420 and upload it again, and would upscale any
+    /// rendition larger than `size`. It also complements
+    /// [`VideoOpenOptions::with_size`](crate::spec::VideoOpenOptions::with_size):
+    /// that asks a device for a size, which the device may ignore (a portal
+    /// screen picks its own), while this guarantees the size of every frame.
+    ///
+    /// A frame that fails to scale is skipped. A frame that can never be
+    /// scaled, such as an external Vulkan surface, or a DMA-BUF that this
+    /// build cannot read, ends the source, and [`failure`](Self::failure)
+    /// returns why.
     ///
     /// A frame keeps the timestamp and the [`sent_at`](crate::VideoFrames::sent_at)
     /// instant of the input frame it came from, so a latency measured from
@@ -66,7 +92,7 @@ impl VideoSource {
             _task: task,
         };
         Ok(Self::with_demand(
-            "scaled",
+            format!("{}-scaled", self.label()),
             format,
             reader,
             Default::default(),
@@ -78,8 +104,8 @@ impl VideoSource {
 
 /// Scales the frames of `input` to `size` into `slot` while `demand` wants them.
 ///
-/// Returns once `input` ends. Records the input's failure, or its own, in
-/// `slot`.
+/// Returns once `input` ends, or once a frame can never be scaled. Records
+/// the input's failure, or its own, in `slot`.
 async fn run(input: VideoSource, size: video::Size, slot: FrameSlot, demand: Demand) {
     // Observed, so the input is wanted only while the scaled source is.
     let mut frames = input.observe();
@@ -111,6 +137,11 @@ async fn run(input: VideoSource, size: video::Size, slot: FrameSlot, demand: Dem
                 failing = false;
                 slot.send_at(frame, at);
             }
+            Ok(Err(err)) if is_permanent(&err) => {
+                warn!(error = format_args!("{err:#}"), "cannot scale this input");
+                slot.fail(Arc::new(Error::device(err)));
+                return;
+            }
             Ok(Err(err)) if !failing => {
                 failing = true;
                 warn!(
@@ -131,6 +162,14 @@ async fn run(input: VideoSource, size: video::Size, slot: FrameSlot, demand: Dem
     }
 }
 
+/// Returns whether `err` fails every later frame of the same input too.
+///
+/// An input delivers one kind of surface, so a surface this build or platform
+/// cannot scale at all will not scale on the next frame either.
+fn is_permanent(err: &video::Error) -> bool {
+    matches!(err, video::Error::Unsupported(_))
+}
+
 /// Returns `frame` scaled to `size` in I420, or `frame` itself if it already is.
 fn to_i420(frame: Arc<video::Frame>, size: video::Size) -> Result<Arc<video::Frame>, video::Error> {
     if frame.size() == size && matches!(frame.surface, video::Surface::I420(_)) {
@@ -139,12 +178,12 @@ fn to_i420(frame: Arc<video::Frame>, size: video::Size) -> Result<Arc<video::Fra
     let image = if frame.size() == size {
         frame.surface.to_i420()?.into_owned()
     } else {
-        match frame.surface.resize(size, &Default::default())? {
-            video::Surface::I420(image) => image,
-            // A GPU surface scales on its device, and only the small picture
-            // is downloaded.
-            surface => surface.to_i420()?.into_owned(),
-        }
+        // A GPU surface scales on its device, and only the small picture is
+        // downloaded.
+        frame
+            .surface
+            .resize(size, &Default::default())?
+            .into_i420()?
     };
     Ok(Arc::new(video::Frame::new(
         video::Surface::I420(image),
@@ -215,6 +254,21 @@ mod tests {
             .expect("open");
         let pushed = next(&mut input).await;
         assert!(Arc::ptr_eq(&pushed, &next(&mut frames).await));
+    }
+
+    #[test]
+    fn only_an_unsupported_surface_fails_the_source() {
+        assert!(is_permanent(&video::Error::Unsupported(
+            "an external Vulkan surface".into()
+        )));
+        assert!(!is_permanent(&video::Error::CodecGone("reset".into())));
+    }
+
+    #[tokio::test]
+    async fn the_label_names_the_input() {
+        let (_sender, source) = VideoSource::push(format(video::Size::new(4, 4)));
+        let scaled = source.scaled(video::Size::new(2, 2)).expect("a valid size");
+        assert_eq!(scaled.label(), format!("{}-scaled", source.label()));
     }
 
     #[test]
