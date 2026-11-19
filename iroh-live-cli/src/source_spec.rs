@@ -8,5 +8,5 @@
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub(crate) use iroh_live::media::spec::RpicamMode;
 pub(crate) use iroh_live::media::spec::{
-    AudioSourceSpec, PORTAL, TestPattern, TestTone, VideoOpenOptions, VideoSourceSpec,
+    AudioSourceSpec, TestPattern, TestTone, VideoOpenOptions, VideoSourceSpec,
 };

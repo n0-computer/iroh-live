@@ -134,6 +134,8 @@ pub mod media {
         AudioEncodeStats, EncodeStats, LocalBroadcast, PublishStats, PublishStatus, RenditionState,
         VideoEncoding, VideoRendition, audio_encoding,
     };
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    pub use moq_ext_sources::PortalGrant;
     #[cfg(feature = "capture")]
     pub use moq_ext_sources::screen_source;
     pub use moq_ext_sources::{

@@ -19,7 +19,7 @@ No feature is on by default.
 | `file` | `AudioSource::file`, WAV and MP3 files | `media` | all |
 | `sound-server` | Audio devices through PipeWire or PulseAudio, not only ALSA | `media` | Linux |
 | `aec` | Echo cancellation for the microphone | `capture`, and the player's speaker output | all |
-| `pipewire` | PipeWire's shared camera as the default camera, and the desktop portal's screen picker. Links `libpipewire-0.3` | `media`, and capture in the media crates | Linux |
+| `pipewire` | PipeWire's shared camera as the default camera, and the desktop portal's screen picker with `PortalGrant`, which keeps its grant across runs. Links `libpipewire-0.3` | `media`, and capture in the media crates | Linux |
 | `rpicam` | The Raspberry Pi camera through `rpicam-vid` | `media` | Linux |
 | `vaapi` | VA-API hardware encode and decode, Intel and AMD | `media` | Linux |
 | `nvidia` | NVENC and NVDEC | `media` | Linux |

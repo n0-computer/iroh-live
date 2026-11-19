@@ -69,8 +69,10 @@ Any other `--audio` value is taken as a device name, so an ALSA name such as
 On Linux with the `pipewire` feature, `cam` opens PipeWire's default camera,
 which other applications can share. `screen` opens the desktop portal's
 picker, the only screen capture that works on Wayland. The CLI stores the
-portal's grant, so on a compositor that keeps grants the next run shares the
-same screen without asking. When PipeWire's camera does not open, `cam` falls
+portal's grant in `iroh-live/portal/` under `$XDG_CONFIG_HOME`, or
+`~/.config` without it, so on a compositor that keeps grants the next run
+shares the same screen without asking. Stopping the share from the desktop
+deletes the grant. When PipeWire's camera does not open, `cam` falls
 back to `/dev/video0`. On X11, `screen` falls back to the X11 display unless
 the user declined the picker.
 
