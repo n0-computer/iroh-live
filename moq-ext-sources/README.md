@@ -23,7 +23,9 @@ let audio = AudioSource::test_pattern(layout)?;
 `VideoSource::push` and `AudioSource::push` take frames the application
 makes. `VideoSource::switchable` returns a `VideoSwitch` and the source it
 feeds, and the switch swaps or opens what feeds the source while a broadcast
-encodes it. `AudioSource::file(path, FileEnd)` plays a WAV or MP3 file and
+encodes it. `VideoSource::scaled` returns a source of another's frames, scaled
+to a fixed size in I420 as each arrives, so a reader that takes the newest
+frame at fixed instants does not pay for the scaling then. `AudioSource::file(path, FileEnd)` plays a WAV or MP3 file and
 stops or restarts at its end. `rpicam_h264` returns the Annex-B H.264 that
 `rpicam-vid` encoded, for `LocalBroadcast::set_encoded_video`. The crate docs
 list every constructor.
