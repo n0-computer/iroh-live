@@ -201,9 +201,16 @@ impl Session {
 
     /// Returns the open network paths of the session's connection, the selected one first.
     ///
-    /// Each [`NetworkPath`] holds the path's kind and remote address, its
+    /// Each [`NetworkPath`] holds the path's id and remote address, its
     /// round trip, its congestion window and bandwidth estimate, and the
-    /// byte and packet counters to compute rates and loss from.
+    /// byte and packet counters to compute rates and loss from. Pair two
+    /// readings by [`NetworkPath::id`] to get the rates of one path.
+    ///
+    /// The figures are per path and run from each path's start. They differ
+    /// from [`sample`](Self::sample), which reads windowed rates of the
+    /// whole connection: its packet counts are UDP datagrams and its loss
+    /// includes path MTU probes, while a [`NetworkPath`] counts QUIC packets
+    /// and leaves the probes out.
     ///
     /// # Examples
     ///
@@ -212,7 +219,10 @@ impl Session {
     /// for path in session.network_paths() {
     ///     println!(
     ///         "{} {} selected={} rtt={:?}",
-    ///         path.kind, path.addr, path.selected, path.rtt
+    ///         path.kind(),
+    ///         path.addr(),
+    ///         path.selected,
+    ///         path.rtt
     ///     );
     /// }
     /// # }
@@ -224,7 +234,14 @@ impl Session {
             .connection
             .paths()
             .iter()
-            .map(|path| NetworkPath::new(path.remote_addr(), path.is_selected(), &path.stats()))
+            .map(|path| {
+                NetworkPath::new(
+                    path.id(),
+                    path.remote_addr(),
+                    path.is_selected(),
+                    &path.stats(),
+                )
+            })
             .collect();
         paths.sort_by_key(|path| !path.selected);
         paths

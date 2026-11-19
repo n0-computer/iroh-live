@@ -160,9 +160,10 @@ the serving link too. The monitor logs every sample at TRACE as `link sample`.
 The node keeps no list of paths of its own: `Session::connection()` is the iroh
 connection, and its `paths()` and `paths_stream()` give each path's remote
 address, selection and RTT. `Session::network_paths()` sums up each open path
-as a `NetworkPath`, the selected one first: its kind, remote address, RTT,
+as a `NetworkPath`, the selected one first: its id, remote address, RTT,
 congestion window, bandwidth estimate, and the byte and packet counters, with
-the path MTU probes left out of the packets.
+the path MTU probes left out of the packets. The id pairs two readings of one
+path, and `kind()` and `addr()` give the address kind and a form to show.
 
 ## Relay links
 

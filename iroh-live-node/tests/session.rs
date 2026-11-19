@@ -109,6 +109,11 @@ async fn a_session_connection_lists_its_paths() {
         1,
         "not exactly one path is selected"
     );
+    let mut ids: Vec<_> = summary.iter().map(|path| path.id).collect();
+    let mut expected: Vec<_> = paths.iter().map(|path| path.id()).collect();
+    ids.sort();
+    expected.sort();
+    assert_eq!(ids, expected, "the summaries are not of the open paths");
 
     alice.shutdown().await;
     bob.shutdown().await;
