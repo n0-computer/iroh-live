@@ -31,7 +31,7 @@ lto = "thin"
 [workspace.dependencies]
 # External
 iroh = { version = "1.4.1", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
-iroh-gossip = "0.101.0"
+iroh-gossip = "0.102.0"
 noq-proto = { version = "1.4", default-features = false }
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
