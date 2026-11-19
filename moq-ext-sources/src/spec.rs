@@ -125,9 +125,10 @@ impl FromStr for VideoSourceSpec {
             "test" => match rest.map(str::to_lowercase).as_deref() {
                 None | Some("timing") => Ok(Self::Test(TestPattern::Timing)),
                 Some("gradient") => Ok(Self::Test(TestPattern::Gradient)),
+                Some("bounce") => Ok(Self::Test(TestPattern::Bounce)),
                 Some(other) => Err(format!(
-                    "test: the patterns are 'timing' (the default) and \
-                     'gradient'; got '{other}'"
+                    "test: the patterns are 'timing' (the default), \
+                     'gradient' and 'bounce'; got '{other}'"
                 )
                 .into()),
             },
@@ -151,6 +152,7 @@ impl FromStr for VideoSourceSpec {
 
 /// The generated picture `test` and `test:<name>` publish.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TestPattern {
     /// A sweeping bar, a frame counter, a clock, and a flashing marker.
     ///
@@ -162,6 +164,10 @@ pub enum TestPattern {
     Timing,
     /// A moving gradient. Cheap, and different in every frame.
     Gradient,
+    /// A white square bouncing left and right on a background that drifts through the hues.
+    ///
+    /// Moves at a constant speed with media time. See [`BouncePattern`](crate::BouncePattern).
+    Bounce,
 }
 
 /// What `rpicam-vid` hands over: `rpicam` or `rpicam:raw`.
@@ -280,6 +286,7 @@ impl fmt::Display for VideoSourceSpec {
             Self::Rpicam(RpicamMode::Raw) => f.write_str("rpicam:raw"),
             Self::Test(TestPattern::Timing) => f.write_str("test"),
             Self::Test(TestPattern::Gradient) => f.write_str("test:gradient"),
+            Self::Test(TestPattern::Bounce) => f.write_str("test:bounce"),
             Self::File { path, looping } => file(f, path, *looping),
             Self::None => f.write_str("none"),
         }
@@ -656,6 +663,7 @@ fn test_pattern(pattern: TestPattern, options: &VideoOpenOptions) -> Result<Vide
     match pattern {
         TestPattern::Timing => VideoSource::test_pattern(size, rate),
         TestPattern::Gradient => VideoSource::test_gradient(size, rate),
+        TestPattern::Bounce => VideoSource::test_bounce(size, rate),
     }
 }
 
@@ -761,6 +769,24 @@ mod tests {
         assert_eq!(source.format().size, video::Size::new(320, 240));
     }
 
+    /// `test:bounce` runs as a clocked source of I420 pictures at the size asked for.
+    #[cfg(feature = "pattern")]
+    #[tokio::test]
+    async fn the_bounce_pattern_runs_as_a_source() {
+        let spec: VideoSourceSpec = "test:bounce".parse().unwrap();
+        let options = VideoOpenOptions {
+            width: Some(320),
+            height: Some(180),
+            ..Default::default()
+        };
+        let source = spec.open(&options).await.unwrap().expect("a source");
+        let frame = source.frames().next().await.expect("a frame");
+        let video::Surface::I420(image) = &frame.surface else {
+            panic!("not I420");
+        };
+        assert_eq!(image.size(), video::Size::new(320, 180));
+    }
+
     /// `none` opens nothing, and a file is encoded video with no raw source.
     #[tokio::test]
     async fn none_and_files_open_no_raw_video() {
@@ -820,6 +846,10 @@ mod tests {
         assert_eq!(
             "test:GRADIENT".parse::<VideoSourceSpec>().unwrap(),
             VideoSourceSpec::Test(TestPattern::Gradient)
+        );
+        assert_eq!(
+            "test:bounce".parse::<VideoSourceSpec>().unwrap(),
+            VideoSourceSpec::Test(TestPattern::Bounce)
         );
         let err = "test:bars".parse::<VideoSourceSpec>().unwrap_err();
         assert!(err.to_string().contains("timing"), "{err}");
@@ -926,6 +956,7 @@ mod tests {
             "app:com.apple.Safari",
             "test",
             "test:gradient",
+            "test:bounce",
             "file:C:/clips/demo.mp4:loop",
             "none",
         ] {

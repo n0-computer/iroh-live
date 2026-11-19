@@ -18,6 +18,7 @@
 //! |---|---|---|
 //! | Test picture | [`VideoSource::test_pattern`], [`AudioSource::test_pattern`] | `pattern` |
 //! | Moving gradient | [`VideoSource::test_gradient`] | `pattern` |
+//! | Bouncing square, also drawn on demand | [`VideoSource::test_bounce`], [`BouncePattern`] | `pattern` for the source |
 //! | Sine tone | [`AudioSource::tone`] | `pattern` |
 //! | WAV and MP3 file | [`AudioSource::file`] | `file` |
 //! | Camera, display, window | [`VideoSource::capture`], [`VideoSource::camera`], [`VideoSource::screen`] | `capture` |
@@ -75,6 +76,7 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod bounce;
 mod error;
 pub mod frames;
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
@@ -97,6 +99,7 @@ pub use self::source::screen_source;
 pub use self::source::{RpicamConfig, rpicam_h264};
 pub use self::{
     backend::{Backend, UnknownBackend},
+    bounce::BouncePattern,
     error::{Error, SourceClosed},
     frames::VideoFrames,
     source::{

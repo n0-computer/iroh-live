@@ -275,20 +275,13 @@ impl VideoSource {
     /// Fails if the thread that draws the pattern cannot be started.
     #[cfg(feature = "pattern")]
     pub fn test_pattern(size: video::Size, rate: video::FrameRate) -> Result<Self, Error> {
-        let slot = FrameSlot::new();
-        let reader = slot.reader();
-        let stop = CancellationToken::new();
-        let token = stop.clone();
-        std::thread::Builder::new()
-            .name("test-pattern".into())
-            .spawn(move || generator::run_pattern(size, rate, slot, token))?;
-        Ok(Self::new(
+        Self::spawn_generator(
             "test-pattern",
             VideoFormat { size, rate },
-            reader,
-            stop,
-            Driver::Thread,
-        ))
+            move |slot, stop| {
+                generator::run_pattern(size, rate, slot, stop);
+            },
+        )
     }
 
     /// Returns a diagonal gradient at `size` and `rate` that shifts every frame.
@@ -302,20 +295,57 @@ impl VideoSource {
     /// Fails if the thread that draws the gradient cannot be started.
     #[cfg(feature = "pattern")]
     pub fn test_gradient(size: video::Size, rate: video::FrameRate) -> Result<Self, Error> {
+        Self::spawn_generator(
+            "test-gradient",
+            VideoFormat { size, rate },
+            move |slot, stop| {
+                generator::run_gradient(size, rate, slot, stop);
+            },
+        )
+    }
+
+    /// Returns a bouncing square on a drifting hue at `size` and `rate`.
+    ///
+    /// Draws [`BouncePattern`](crate::BouncePattern) at each frame's media
+    /// time. A consumer that picks its own instants draws the pattern itself.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::InvalidConfig`] if a dimension of `size` is zero or
+    /// odd, and if the thread that draws the pattern cannot be started.
+    #[cfg(feature = "pattern")]
+    pub fn test_bounce(size: video::Size, rate: video::FrameRate) -> Result<Self, Error> {
+        let pattern = crate::BouncePattern::new(size)?;
+        Self::spawn_generator(
+            "test-bounce",
+            VideoFormat { size, rate },
+            move |slot, stop| {
+                generator::run_bounce(&pattern, rate, slot, stop);
+            },
+        )
+    }
+
+    /// Returns a source whose pictures `run` draws into a slot on a thread named `name`.
+    ///
+    /// `run` returns once its token is cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the thread cannot be started.
+    #[cfg(feature = "pattern")]
+    fn spawn_generator(
+        name: &'static str,
+        format: VideoFormat,
+        run: impl FnOnce(FrameSlot, CancellationToken) + Send + 'static,
+    ) -> Result<Self, Error> {
         let slot = FrameSlot::new();
         let reader = slot.reader();
         let stop = CancellationToken::new();
         let token = stop.clone();
         std::thread::Builder::new()
-            .name("test-gradient".into())
-            .spawn(move || generator::run_gradient(size, rate, slot, token))?;
-        Ok(Self::new(
-            "test-gradient",
-            VideoFormat { size, rate },
-            reader,
-            stop,
-            Driver::Thread,
-        ))
+            .name(name.into())
+            .spawn(move || run(slot, token))?;
+        Ok(Self::new(name, format, reader, stop, Driver::Thread))
     }
 
     /// Returns a source fed by the returned sender.
