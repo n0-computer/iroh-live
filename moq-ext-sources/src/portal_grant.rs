@@ -10,33 +10,20 @@ use tracing::{debug, warn};
 
 /// A desktop portal grant kept in a file, so a later run can skip the picker.
 ///
-/// The portal returns a restore token with each grant. A run that passes the
-/// token back reuses the grant without showing the picker, on a compositor
-/// that keeps grants. [`PortalGrant::selection`] seeds a [`Selection`] with
-/// the stored token and stores each new token the portal grants.
+/// [`PortalGrant::selection`] seeds a [`Selection`] with the stored restore
+/// token and stores each new token the portal grants. On a compositor that
+/// keeps grants, the next run then shares the same screen or window without
+/// asking.
 ///
-/// The file follows the selection's token, as [`Selection::restore_token`]
-/// asks, with one exception. An open takes the token before it asks the
-/// portal, so the selection holds none while the stored grant is in use. A
-/// `None` before the selection's first new grant therefore keeps the file:
-/// deleting it then would lose the grant to a run killed during the open, or
-/// to an open the compositor refuses (GNOME does while the screen is locked),
-/// and the next unattended run would wait on the picker. Once the portal has
-/// granted a token, `None` means the stream ended, for example because the
-/// user stopped sharing, and deletes the file, so the next run asks again.
+/// The file survives an open that is killed or refused, since the open takes
+/// the token before asking the portal. Once the portal has granted a new
+/// token, the end of the stream (for example the user stopped sharing)
+/// deletes the file, so the next run asks again, unless
+/// [`keep_after_end`](Self::keep_after_end) is set.
 ///
-/// [`PortalGrant::keep_after_end`] keeps the file when the stream ends too,
-/// until a new grant replaces it. This suits a program that reopens the
-/// screen unattended, across restarts and switches between sources: a token
-/// the compositor no longer honors costs nothing, as the portal then asks.
-///
-/// The file holds the token as text, readable only by its owner. Two live
-/// selections of the same grant both write the file, in the order their
-/// tokens change, so the file follows whichever changed last.
-///
+/// The file holds the token as text, readable only by its owner.
 /// [`VideoOpenOptions::with_portal_grants`](crate::spec::VideoOpenOptions::with_portal_grants)
-/// keeps grants for the sources a [`VideoSourceSpec`](crate::spec::VideoSourceSpec)
-/// opens. [`VideoSource::screen`](crate::VideoSource::screen) keeps none.
+/// keeps grants for sources opened from a specifier.
 ///
 /// # Examples
 ///
@@ -72,9 +59,8 @@ impl PortalGrant {
 
     /// Keeps the stored grant when the stream ends, until a new one replaces it.
     ///
-    /// By default the end of the stream deletes the file, so the next run
-    /// asks. With this, the next run tries the stored token first, and the
-    /// portal asks only if the compositor no longer honors it.
+    /// The next run then tries the stored token, and the portal asks only if
+    /// the compositor no longer honors it.
     #[must_use]
     pub fn keep_after_end(mut self) -> Self {
         self.keep_after_end = true;
@@ -83,10 +69,9 @@ impl PortalGrant {
 
     /// Creates a grant of `kind` stored in the user's config directory.
     ///
-    /// The file is `<app>/portal/screen.token` or `<app>/portal/window.token`
-    /// under `$XDG_CONFIG_HOME`, or under `~/.config` when that is unset or
-    /// not absolute. Returns `None` without either, or when `app` is not a
-    /// single file name, such as an empty name, `..` or a path.
+    /// The file is `<app>/portal/{screen,window}.token` under
+    /// `$XDG_CONFIG_HOME`, or `~/.config` when that is unset or not absolute.
+    /// Returns `None` without either, or when `app` is not a single file name.
     pub fn in_config_dir(kind: Kind, app: &str) -> Option<Self> {
         if app.is_empty() || Path::new(app).file_name() != Some(app.as_ref()) {
             warn!(app, "the portal grant's app name is not a file name");
@@ -120,12 +105,9 @@ impl PortalGrant {
 
     /// Returns a selection seeded with the stored token, which stores each new one.
     ///
-    /// A task watches the selection's token and updates the file as the type
-    /// docs describe. It does not keep the selection alive, and ends once
-    /// every clone of the selection is dropped. A missing or unreadable file
-    /// gives a selection without a token, so the portal asks. Outside a tokio
-    /// runtime there is no task: the selection is seeded, and logs a warning
-    /// that its new grants are not stored.
+    /// A missing or unreadable file gives a selection without a token, so the
+    /// portal asks. New tokens are stored by a task that ends with the last
+    /// clone of the selection; outside a tokio runtime they are not stored.
     pub fn selection(&self) -> Selection {
         let mut selection = Selection::new(self.kind);
         if let Some(token) = self.load() {
@@ -178,10 +160,8 @@ enum Update<'a> {
 
 /// Decides what a change of the token to `token` does to the file.
 ///
-/// `granted` says whether the selection has reported a token since it was
-/// created, and is set by the first one. A `None` before that is an open
-/// taking the stored token and keeps the file. A `None` after it is the end
-/// of the stream and deletes the file, unless `keep_after_end` keeps it.
+/// `granted` is set by the first token. A `None` before it is an open taking
+/// the stored token; a `None` after it is the end of the stream.
 fn update<'a>(
     granted: &mut bool,
     keep_after_end: bool,
@@ -215,11 +195,7 @@ fn apply(path: &Path, update: Update<'_>) {
     }
 }
 
-/// Writes `contents` to `path` with mode 0600, creating its directory.
-///
-/// Writes a temporary file next to `path` and renames it over `path`, so a
-/// reader sees the old or the new contents, and an existing file with wider
-/// permissions is replaced.
+/// Writes `contents` to `path` with mode 0600 through a renamed temporary file.
 fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 

@@ -447,14 +447,11 @@ impl VideoOpenOptions {
 
     /// Keeps the desktop portal's grants in `app`'s config directory.
     ///
-    /// A source that opens through the portal, `screen:portal`,
-    /// `window:portal` or the default display on Wayland, then uses the grant
-    /// stored there and stores the one it gets, as
-    /// `PortalGrant::in_config_dir` does, so a later run
-    /// skips the picker on a compositor that keeps grants. Without this, each
-    /// open asks. Has no effect off Linux or without the `pipewire` feature,
-    /// which have no portal. A name that is not a single file name keeps no
-    /// grant.
+    /// Sources opened through the portal (`screen:portal`, `window:portal`,
+    /// or the default display on Wayland) reuse and store their grant as
+    /// `PortalGrant::in_config_dir` does, so a later run can skip the picker.
+    /// Has no effect without a portal, or when `app` is not a single file
+    /// name.
     #[must_use]
     pub fn with_portal_grants(mut self, app: impl Into<String>) -> Self {
         self.portal_grants = Some(app.into());
@@ -463,10 +460,6 @@ impl VideoOpenOptions {
 
     /// Keeps the grants [`with_portal_grants`](Self::with_portal_grants)
     /// stores when the stream ends, as `PortalGrant::keep_after_end` does.
-    ///
-    /// A later open then tries the last grant first, and the portal asks only
-    /// if the compositor no longer honors it. Has no effect without
-    /// [`with_portal_grants`](Self::with_portal_grants).
     #[must_use]
     pub fn keep_portal_grants_after_end(mut self) -> Self {
         self.portal_grants_kept_after_end = true;
@@ -495,11 +488,9 @@ impl VideoSourceSpec {
     /// A camera, display, window or app opens through
     /// [`VideoSource::capture`], so the default camera follows its rules. The
     /// default display is [`screen_source`](crate::screen_source), the
-    /// desktop portal on Wayland with the `pipewire` feature. `screen:portal`
-    /// and `window:portal` always ask the portal. The portal shows its picker
-    /// on each open unless the options keep grants with
-    /// [`VideoOpenOptions::with_portal_grants`]. A test pattern defaults to
-    /// 1280x720 at 30 fps.
+    /// desktop portal on Wayland with the `pipewire` feature. The portal asks
+    /// on each open unless [`VideoOpenOptions::with_portal_grants`] keeps its
+    /// grants. A test pattern defaults to 1280x720 at 30 fps.
     ///
     /// Cancellation safe, as [`VideoSource::capture`] is.
     ///
