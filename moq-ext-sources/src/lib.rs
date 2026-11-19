@@ -28,7 +28,7 @@
 //! | Any of the above, switched while published | [`VideoSource::switchable`] | always |
 //!
 //! [`VideoSource::scaled`] scales any of them to a fixed size as CPU I420,
-//! for readers that need CPU pixels rather than for publishing.
+//! not for publishing.
 //!
 //! [`PortalGrant`] keeps the desktop portal's grant in a file, so a later run
 //! can skip the picker (Linux, `pipewire` feature).

@@ -11,39 +11,21 @@ use crate::{Error, frames::FrameSlot, video};
 impl VideoSource {
     /// Returns a source of this source's frames scaled to `size`, as I420 in CPU memory.
     ///
-    /// The output is always CPU I420, for readers that need CPU pixels, such
-    /// as an inference loop or a sender of still pictures. It is not meant
-    /// for publishing: for a hardware encoder it would download each GPU
-    /// frame and upload it again, while `VideoRendition::with_size` in
-    /// `moq-ext-publisher` keeps GPU frames on the GPU. Unlike
-    /// [`VideoOpenOptions::with_size`](crate::spec::VideoOpenOptions::with_size),
-    /// which a device may ignore, this guarantees the size of every frame.
+    /// The output is always CPU I420, so this is not meant for publishing:
+    /// a GPU frame would be downloaded and uploaded again for a hardware
+    /// encoder. Use `VideoRendition::with_size` in `moq-ext-publisher`
+    /// instead, which keeps GPU frames on the GPU.
     ///
-    /// A GPU frame is scaled on its device where supported, and only the
-    /// small picture is downloaded; otherwise the full frame is downloaded.
-    /// The picture is stretched to exactly `size`, without keeping the
-    /// input's aspect ratio. A frame already in I420 at `size` passes
-    /// through unchanged.
+    /// GPU frames are scaled on their device where supported. The picture is
+    /// stretched to exactly `size`, and only the newest frame is scaled.
     ///
-    /// Frames are scaled on Tokio's blocking pool at the input's rate, not
-    /// the reader's. Frames that arrive during a scale coalesce, so only the
-    /// newest is scaled next, and nothing is scaled while nothing reads the
-    /// returned source.
-    ///
-    /// A frame that fails to scale is skipped. A frame that can never be
-    /// scaled, such as an external Vulkan surface or a DMA-BUF this build
-    /// cannot read, ends the source, and [`failure`](Self::failure) returns
-    /// why. Over a [`switchable`](Self::switchable) input this ends the
-    /// scaled source even if the switch later moves to a scalable input, so
-    /// scale each input before the switch instead.
-    ///
-    /// The returned source keeps this source running while it exists, and
-    /// ends with it.
+    /// A frame that can never be scaled ends the source, even over a
+    /// [`switchable`](Self::switchable) input that later moves on, and
+    /// [`failure`](Self::failure) returns why.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidConfig`] if `size` is not even and non-zero,
-    /// which I420 needs.
+    /// Returns [`Error::InvalidConfig`] if `size` is zero or odd.
     ///
     /// # Panics
     ///

@@ -24,11 +24,10 @@ let audio = AudioSource::test_pattern(layout)?;
 `VideoSource::switchable` returns a `VideoSwitch` and the source it feeds, and
 the switch swaps or opens what feeds the source while a broadcast encodes it.
 `VideoSource::scaled` returns a source of another's frames scaled to a fixed
-size as CPU I420, for readers that need CPU pixels rather than for publishing.
-`AudioSource::file(path, FileEnd)` plays a WAV or MP3 file and stops or
-restarts at its end. `rpicam_h264` returns the Annex-B H.264 that `rpicam-vid`
-encoded, for `LocalBroadcast::set_encoded_video`. The crate docs list every
-constructor.
+size as CPU I420, not for publishing. `AudioSource::file(path, FileEnd)` plays
+a WAV or MP3 file and stops or restarts at its end. `rpicam_h264` returns the
+Annex-B H.264 that `rpicam-vid` encoded, for
+`LocalBroadcast::set_encoded_video`. The crate docs list every constructor.
 
 `VideoSource::capture` waits up to three seconds for a camera dropped before
 it to release the device, so a switch back to the same camera does not fail as
