@@ -112,7 +112,8 @@ pub struct VideoSource {
 /// desktop portal's screen picker. Elsewhere it is the main display, which
 /// [`VideoSource::capture`] still tries through the portal first on an X11
 /// session with that feature. Use it to set a size or a rate on the capture
-/// config of a screen.
+/// config of a screen. The portal's selection keeps no grant across runs;
+/// use a `PortalGrant`'s selection for that.
 #[cfg(feature = "capture")]
 #[must_use]
 pub fn screen_source() -> video::capture::Source {
@@ -219,7 +220,10 @@ impl VideoSource {
     ///
     /// Opens [`screen_source`]: on Wayland in a build with the `pipewire`
     /// feature, the user picks the screen in the desktop portal's dialog,
-    /// since Wayland refuses a direct display capture.
+    /// since Wayland refuses a direct display capture. The portal asks on
+    /// each call; see
+    /// [`VideoOpenOptions::with_portal_grants`](crate::spec::VideoOpenOptions::with_portal_grants)
+    /// to keep the grant.
     ///
     /// # Errors
     ///
