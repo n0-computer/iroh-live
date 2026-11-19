@@ -1,10 +1,4 @@
-//! A video source that scales another source's frames as they arrive.
-//!
-//! [`VideoSource::scaled`] returns a source over a latest-wins slot. A task
-//! reads the input's newest frame, scales it and converts it to I420 on the
-//! blocking pool, and sends it on. A consumer that takes the newest frame at
-//! fixed instants then only copies a small picture there, and does not pay
-//! for the scaling at that instant.
+//! A video source that scales another source's frames to I420 as they arrive.
 
 use std::{sync::Arc, time::Instant};
 
@@ -15,48 +9,36 @@ use super::{Demand, Driver, VideoFormat, VideoSource};
 use crate::{Error, frames::FrameSlot, video};
 
 impl VideoSource {
-    /// Returns a source of this source's frames, scaled to `size` and converted to I420.
+    /// Returns a source of this source's frames scaled to `size`, as I420 in CPU memory.
     ///
-    /// Each frame is scaled as it arrives, on Tokio's blocking pool, so a
-    /// reader of the returned source gets a CPU picture of `size` without
-    /// doing the work itself. Use it for a capture that delivers large frames,
-    /// such as a screen's DMA-BUF frames, to a reader that takes the newest
-    /// frame at fixed instants, such as an inference loop or a sender of
-    /// still pictures. Frames that arrive while one is scaled coalesce, so
-    /// only the newest is scaled next. A frame already in I420 at `size`
-    /// passes through unchanged.
+    /// The output is always CPU I420, for readers that need CPU pixels, such
+    /// as an inference loop or a sender of still pictures. It is not meant
+    /// for publishing: for a hardware encoder it would download each GPU
+    /// frame and upload it again, while `VideoRendition::with_size` in
+    /// `moq-ext-publisher` keeps GPU frames on the GPU. Unlike
+    /// [`VideoOpenOptions::with_size`](crate::spec::VideoOpenOptions::with_size),
+    /// which a device may ignore, this guarantees the size of every frame.
     ///
+    /// A GPU frame is scaled on its device where supported, and only the
+    /// small picture is downloaded; otherwise the full frame is downloaded.
     /// The picture is stretched to exactly `size`, without keeping the
-    /// input's aspect ratio, so pick `size` from the input's aspect. Output
-    /// is always I420 in CPU memory. A GPU frame is scaled on its device where
-    /// the build and driver allow it, and only the small picture is
-    /// downloaded; otherwise the full frame is downloaded and scaled on the
-    /// CPU.
+    /// input's aspect ratio. A frame already in I420 at `size` passes
+    /// through unchanged.
     ///
-    /// The work follows the input's rate, not the reader's: a 60 fps input
-    /// read at 5 fps is scaled 60 times a second. Nothing is scaled while
-    /// nothing reads the returned source.
-    ///
-    /// This is not the way to publish a smaller picture. A broadcast
-    /// rendition's own size (`VideoRendition::with_size` in
-    /// `moq-ext-publisher`) scales on the encoder's thread and keeps a GPU
-    /// frame on the GPU for a hardware encoder, where a scaled source would
-    /// download it to I420 and upload it again, and would upscale any
-    /// rendition larger than `size`. It also complements
-    /// [`VideoOpenOptions::with_size`](crate::spec::VideoOpenOptions::with_size):
-    /// that asks a device for a size, which the device may ignore (a portal
-    /// screen picks its own), while this guarantees the size of every frame.
+    /// Frames are scaled on Tokio's blocking pool at the input's rate, not
+    /// the reader's. Frames that arrive during a scale coalesce, so only the
+    /// newest is scaled next, and nothing is scaled while nothing reads the
+    /// returned source.
     ///
     /// A frame that fails to scale is skipped. A frame that can never be
-    /// scaled, such as an external Vulkan surface, or a DMA-BUF that this
-    /// build cannot read, ends the source, and [`failure`](Self::failure)
-    /// returns why.
+    /// scaled, such as an external Vulkan surface or a DMA-BUF this build
+    /// cannot read, ends the source, and [`failure`](Self::failure) returns
+    /// why. Over a [`switchable`](Self::switchable) input this ends the
+    /// scaled source even if the switch later moves to a scalable input, so
+    /// scale each input before the switch instead.
     ///
-    /// A frame keeps the timestamp and the [`sent_at`](crate::VideoFrames::sent_at)
-    /// instant of the input frame it came from, so a latency measured from
-    /// `sent_at` includes the scaling. The returned source has this source's
-    /// rate, and wants this source's frames only while something wants its
-    /// own. It keeps this source running while it exists, and ends with it.
+    /// The returned source keeps this source running while it exists, and
+    /// ends with it.
     ///
     /// # Errors
     ///

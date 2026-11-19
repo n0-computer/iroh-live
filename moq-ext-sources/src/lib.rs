@@ -27,9 +27,8 @@
 //! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
 //! | Any of the above, switched while published | [`VideoSource::switchable`] | always |
 //!
-//! [`VideoSource::scaled`] scales any of them to a fixed size in I420 as
-//! each frame arrives, for a reader that should not pay for the scaling when
-//! it takes a frame.
+//! [`VideoSource::scaled`] scales any of them to a fixed size as CPU I420,
+//! for readers that need CPU pixels rather than for publishing.
 //!
 //! [`PortalGrant`] keeps the desktop portal's grant in a file, so a later run
 //! can skip the picker (Linux, `pipewire` feature).
