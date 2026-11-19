@@ -31,8 +31,17 @@ received a record that exceeded the maximum permissible length".
 
 A relay reachable by others should not use `--open-pulls`, since it lets
 anyone make the relay dial any endpoint. Start it with `--auth-key` instead,
-and give viewers a JWT that grants reading the ticket's path, in the URL as
-`?jwt=<token>`. See [Run the iroh-live relay](run-relay.md).
+which makes it private, and give viewers a JWT that grants reading the
+ticket's path, in the URL's fragment:
+
+```text
+http://relay.example:4443/?name=<TICKET>#jwt=<TOKEN>
+```
+
+The viewer removes the token from the address bar and sends it only to the
+relay that served the page. Browsers present JWTs only: rcan chains are for
+iroh clients. See [Run the iroh-live relay](run-relay.md) and
+[Use tokens](tokens.md#on-the-iroh-live-relay).
 
 ## Push instead of pull
 

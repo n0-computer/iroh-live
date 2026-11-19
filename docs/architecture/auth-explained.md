@@ -497,30 +497,42 @@ on every dial. `RelayLink::tokens()` returns moq-net's `auth::Tokens`, whose
 
 **`iroh-live-relay` itself.** It has two doors.
 
+The relay is open without auth flags, and private with any `--auth-*` or
+`--rcan-*` flag. `Config::policies()` builds both doors' rules from the
+flags, for `run` and the tests alike.
+
 - *iroh clients* come in through `IrohSessions`, which knows their endpoint
-  id. It decides each session with a policy, by default `relay_policy()`:
-  read the whole relay, and publish under `live/<id>/` and
-  `rooms/*/<id>/`. With `--auth-key`, the policy becomes a `Verify` over the key file,
-`KeyFile`, with `relay_policy()` as its fallback. `KeyFile` reads the file
-again when its modification time or size changes, as moq-auth's reference
-policy does for browsers. The
-  relay decides a client once. When the authorization expires, it closes the
-  session, and the client's relay link redials with the tokens set on it last.
-- *Browsers* come in through moq-relay's server. Without auth flags, the relay
+  id. On an open relay it decides each session with `relay_policy()`: read
+  the whole relay, and publish under `live/<id>/` and `rooms/*/<id>/`. On a
+  private relay the policy is a `Verify` over `IrohTokens`, with the public
+  patterns as its fallback, or a refusal without them. `IrohTokens` sends a
+  JWT to `KeyFile` and an `rcan1:` chain to the principal whose key issued
+  its first link. `KeyFile` reads the file again when its modification time
+  or size changes, and the relay then decides every live token session
+  again. A session lasts at most `--max-session`. At that bound, and after a
+  key change that changes the grant of a token that still verifies, the
+  relay sends a GOAWAY: the client's relay link dials a new session while
+  the old one serves, and reports no refusal. When the token itself expires, the relay closes the
+  session as expired, and the link redials with the tokens set on it last.
+- *Browsers* come in through moq-relay's server. On an open relay, the relay
   answers each admission with `browser_grant(path)`: read anything, and
   publish a name of one segment below the dialed path. One segment keeps a
   browser out of `live/` and `rooms/`, whose paths name an iroh publisher.
-  With `--auth-key`, moq-auth's reference policy (`moq_auth::serve::Policy`)
-  decides them, with the same public rule for a session without a token. A
-  valid JWT grants what its claims say, and the policy reads the key file
-  again when it changes, so a rotated key takes effect without a restart. With
-  `--auth-url` or `--auth-public`, moq-relay's own auth decides.
+  On a private relay, moq-auth's reference policy (`moq_auth::serve::Policy`)
+  decides them, with `--auth-key` and the public patterns. A valid JWT grants
+  what its claims say, and the policy reads the key file again when it
+  changes. With `--auth-url`, moq-relay's own auth decides browsers.
+- A browser cannot present an rcan chain. A chain's last link must name the
+  key that presents it, and only iroh's handshake proves which key a client
+  holds. A browser reaches the relay over WebTransport, with no client key,
+  so a chain from a browser would be a bearer token with extra steps.
 
 When a session names a broadcast ticket, the relay *pulls* the broadcast,
 but only if the session may. A browser's JWT, checked with the `--auth-key`
 keys and no public rule, or an iroh client's token, checked by a `Verify`
 with no fallback, has to grant reading the ticket's path. `--open-pulls`
-lets any session pull, and a relay with neither pulls nothing. The relay's
+lets any session pull that the relay admits to read the ticket's path, and a
+relay with neither pulls nothing. The relay's
 pull node runs with `Open(Grant::nothing())`, so no publisher may announce
 anything by default. Each pull holds a `PathClaim` for the ticket's path, and
 the node's layout, `(LiveLayout, RoomsLayout)`, checks that the ticket's peer
@@ -540,7 +552,9 @@ set, and end-to-end encryption.
 **Revocation of rcan chains.** A chain stays valid until its earliest link
 expires. Nothing revokes a link early. A policy can keep its own deny list
 around `Verify`, with `.filter`, and call `Node::reauthorize` when the list
-changes. Short-lived links bound the damage meanwhile.
+changes. Short-lived links bound the damage meanwhile. On the iroh-live
+relay, removing a `--rcan-principal` and restarting invalidates every chain
+the principal issued, and `--max-session` bounds every token session.
 
 ## Cheat sheet
 

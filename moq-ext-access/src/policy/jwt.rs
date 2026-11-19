@@ -14,6 +14,10 @@ use crate::{Grant, PeerId};
 /// authorization's expiry. A token whose root does not overlap the requested
 /// path is a rejection.
 ///
+/// A token that caps a rate, publishing or receiving, is a rejection too. A
+/// node does not enforce such caps, and dropping one would grant more than
+/// the token states. moq-auth refuses an unknown claim for the same reason.
+///
 /// A JWT is a bearer token: whoever holds it may use it. When the peer has
 /// an iroh key, prefer a capability chain bound to that key, which a thief
 /// cannot use.
@@ -51,8 +55,8 @@ impl JwtVerifier {
 
     /// Verifies `token` and returns what it grants at `path`, as moq-relay reads it.
     ///
-    /// The grant's patterns are relative to `path`, and it expires with the
-    /// token.
+    /// The grant's patterns are relative to `path`, it carries the token's
+    /// rate caps, and it expires with the token.
     ///
     /// # Errors
     ///
@@ -66,6 +70,8 @@ impl JwtVerifier {
         let claims = self.keys.verify(token)?;
         let permissions = claims.authorize(path)?;
         let mut grant = moq_auth::Grant::new(permissions.publish, permissions.subscribe);
+        grant.publish.rate = claims.publish.rate;
+        grant.subscribe.rate = claims.subscribe.rate;
         grant.expires = claims.expires;
         Ok(grant)
     }
@@ -75,6 +81,11 @@ impl<P: PeerId> TokenVerifier<P> for JwtVerifier {
     fn verify(&self, token: &str, request: &PeerRequest<P>) -> Decision {
         let path = request.path();
         let grant = self.verify_grant(token, path).map_err(rejection)?;
+        if grant.publish.rate.is_some() || grant.subscribe.rate.is_some() {
+            return Err(Rejection::new(
+                "the token caps a rate, which this node cannot enforce",
+            ));
+        }
         // The patterns are relative to the requested path, and a grant names
         // absolute paths.
         let absolute = |patterns: moq_auth::Patterns| {
@@ -215,6 +226,29 @@ mod tests {
             assert!(
                 rejection.reason().starts_with("invalid token"),
                 "{rejection}"
+            );
+        }
+    }
+
+    /// A cap the node cannot enforce is refused rather than dropped, as moq-auth refuses an unknown claim.
+    #[test]
+    fn a_token_with_a_rate_cap_rejects() {
+        let keys = keys();
+        let verifier = JwtVerifier::new(keys.clone());
+        let rate = moq_auth::Rate::from_bps(1_000_000).expect("a rate");
+        for claims in [
+            claims().with_publish_rate(rate),
+            claims().with_subscribe_rate(rate),
+        ] {
+            let token = sign(&keys, &claims);
+            let rejection = verify(&verifier, &token, "/").expect_err("rejected");
+            assert!(matches!(rejection.code(), moq_net::Error::Unauthorized));
+            assert!(rejection.reason().contains("rate"), "{rejection}");
+            let grant = verifier.verify_grant(&token, "/").expect("verified");
+            assert_eq!(
+                grant.publish.rate.or(grant.subscribe.rate),
+                Some(rate),
+                "verify_grant reports the cap"
             );
         }
     }

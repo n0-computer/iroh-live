@@ -28,11 +28,13 @@ and iroh clients through `IrohSessions` (`src/iroh_sessions.rs`).
 
 `IrohSessions` accepts iroh sessions itself, so iroh has authenticated each
 client's endpoint id. It decides each client with a policy, as a node does,
-after the client's MoQ SETUP. The default, `relay_policy()`, lets a client
-read the whole cluster and publish only at paths that name it. With
-`--auth-key`, a client that presents a valid JWT gets what the token grants
-instead. The relay decides a client once, and closes its session when the
-authorization expires, so the client redials with a fresh token. Browsers go
+after the client's MoQ SETUP. On an open relay, `relay_policy()` lets a
+client read the whole cluster and publish only at paths that name it. A
+private relay, with any `--auth-*` or `--rcan-*` flag, gives a client with a
+valid JWT or rcan chain what the token grants, and a client without one the
+public patterns or nothing. The relay closes a session when its authorization
+expires, and decides token sessions again when the key file changes, so the
+client redials with a fresh token. Browsers go
 through moq-relay's admissions, which the relay answers with
 `browser_grant` or the browser's JWT. The [relay reference](../reference/relay.md)
 lists the flags, and [Run the iroh-live relay](../how-to/run-relay.md) covers
@@ -41,8 +43,9 @@ deployment.
 ## Pull on demand
 
 The relay does not need to know a publisher in advance. When a session asks for
-a name that parses as a `BroadcastTicket`, and its token allows the pull or the
-relay runs with `--open-pulls`, the relay subscribes to the ticket's broadcast
+a name that parses as a `BroadcastTicket`, and its token allows the pull, or the
+relay runs with `--open-pulls` and admits the session to read the path, the
+relay subscribes to the ticket's broadcast
 through a node of its own (`src/pull.rs`). `pull::Limits` caps the pulls in
 total and per client, and rate-limits each client's new dials. That node uses the
 cluster origin as its route table (`NodeConfig::table`), so the publisher's

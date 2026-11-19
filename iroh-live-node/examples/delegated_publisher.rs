@@ -19,9 +19,8 @@ use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live_node::{
     Audience, ConnectOptions, Grant, MoqPreset, Node, NodeConfig, Reach,
     moq_net::Pattern,
-    policy::{MoqCapability, Open, RcanVerifier, Verify, encode_chain},
+    policy::{Chain, Expires, MoqCapability, Open, RcanVerifier, Verify},
 };
-use rcan::{Expires, Rcan};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,20 +47,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // for a day, and bob's account delegates that to the device for an hour.
     // The patterns are relative to the capability's root.
     let capability = MoqCapability::new("spaces/alice").with_publish("bob/**".parse::<Pattern>()?);
-    let issued = Rcan::issuing_builder(
+    let to_bob = Chain::issue(
         alice_account.as_signing_key(),
         bob_account.public().as_verifying_key(),
-        capability.clone(),
-    )
-    .sign(Expires::valid_for(Duration::from_secs(24 * 3600)));
-    let delegated = Rcan::delegating_builder(
+        capability,
+        Expires::valid_for(Duration::from_secs(24 * 3600)),
+    );
+    let to_device = to_bob.delegate(
         bob_account.as_signing_key(),
         device.id().as_verifying_key(),
-        alice_account.public().as_verifying_key(),
-        capability,
-    )
-    .sign(Expires::valid_for(Duration::from_secs(3600)));
-    let token = encode_chain(&[issued, delegated]);
+        None,
+        Expires::valid_for(Duration::from_secs(3600)),
+    )?;
+    let token = to_device.to_token();
 
     // The device publishes in alice's space and dials alice with the chain.
     let publication = device.publish("spaces/alice/bob/cam", Audience::Granted)?;

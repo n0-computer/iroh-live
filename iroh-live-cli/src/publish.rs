@@ -13,7 +13,7 @@ use crate::{
     shutdown::Teardown,
     source,
     source_spec::VideoSourceSpec,
-    transport::{self, SharedNode, bind_node},
+    transport::{self, SharedNode},
 };
 
 /// Runs the `publish` command.
@@ -43,7 +43,7 @@ pub(crate) fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
 
 /// Opens the devices, publishes them, and prints the ticket.
 async fn setup_capture(args: &PublishArgs) -> Result<(SharedNode, LocalBroadcast, String)> {
-    let node = bind_node(args.transport.inbound()).await?;
+    let node = transport::bind_transport(&args.transport).await?;
     let (node, (broadcast, ticket)) = transport::with_node(node, async |node| {
         let broadcast: LocalBroadcast =
             LiveLayout::default().publish(node, &args.transport.name)?;
@@ -89,7 +89,7 @@ fn publish_file(source: FileSource, args: &PublishArgs, rt: &tokio::runtime::Run
 
 /// Publishes the file and holds it open until end of input or an interrupt.
 async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
-    let node = bind_node(args.transport.inbound()).await?;
+    let node = transport::bind_transport(&args.transport).await?;
     let result = publish_import(&node, source, args).await;
     Teardown::new(node).run().await;
     result

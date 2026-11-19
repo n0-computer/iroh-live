@@ -4,11 +4,13 @@ use std::{ops::Deref, sync::Arc, time::Duration};
 
 use iroh::{EndpointId, protocol::Router};
 use iroh_live::{
-    BroadcastTicket, EndpointConfig, Mdns, Node, RelayConfig, RelayLink, Subscription,
+    BroadcastTicket, EndpointConfig, Mdns, Node, RelayConfig, RelayLink, RelayStatus, Subscription,
     layout::LiveLayout,
     media::{RemoteBroadcast, SubscriptionExt},
+    node::Refusal,
 };
 use n0_error::Result;
+use n0_watcher::Watcher;
 use tracing::{info, warn};
 
 use crate::args::TransportArgs;
@@ -93,6 +95,17 @@ pub(crate) enum Inbound {
 /// Binds an endpoint and starts the MoQ transport on it.
 pub(crate) async fn bind_node(inbound: Inbound) -> Result<SharedNode> {
     bind_node_with(EndpointConfig::from_env()?, inbound).await
+}
+
+/// Binds an endpoint for `args`, with the stored key `--key` names if set.
+pub(crate) async fn bind_transport(args: &TransportArgs) -> Result<SharedNode> {
+    let config = match &args.key {
+        Some(name) => {
+            EndpointConfig::default().with_secret_key(crate::keys::stored_secret_key(name)?)
+        }
+        None => EndpointConfig::from_env()?,
+    };
+    bind_node_with(config, args.inbound()).await
 }
 
 /// Binds an endpoint with `config` and starts the MoQ transport on it.
@@ -223,18 +236,35 @@ pub(crate) fn advertise(node: &Node, args: &TransportArgs) -> Result<String> {
         }
     }
 
-    if let Some(relay) = args.relay {
-        attach_relay(node, relay, &args.name)?;
+    let token = args.relay_token()?;
+    match args.relay {
+        Some(relay) => {
+            let link = attach_relay(node, relay, &args.name, token)?;
+            exit_on_refusal(link, relay);
+        }
+        None if token.is_some() => {
+            warn!("ignoring the relay token: no --relay to present it to");
+        }
+        None => {}
     }
     Ok(ticket)
 }
 
-/// Attaches to `relay`, redialing it if the session drops.
+/// Attaches to `relay`, presenting `token` if set, and redialing it if the session drops.
 ///
 /// The relay receives every public broadcast of this node. The link does not
 /// consume, or it would mirror the relay's whole namespace into the route table.
-fn attach_relay(node: &Node, relay: EndpointId, name: &str) -> Result<RelayLink> {
-    let link = node.attach_relay(RelayConfig::iroh(relay).with_consume(false))?;
+fn attach_relay(
+    node: &Node,
+    relay: EndpointId,
+    name: &str,
+    token: Option<moq_net::auth::Token>,
+) -> Result<RelayLink> {
+    let mut config = RelayConfig::iroh(relay).with_consume(false);
+    if let Some(token) = token {
+        config = config.with_token(token);
+    }
+    let link = node.attach_relay(config)?;
     let path = LiveLayout::default()
         .ticket(node.id(), name)?
         .path()
@@ -242,6 +272,33 @@ fn attach_relay(node: &Node, relay: EndpointId, name: &str) -> Result<RelayLink>
     info!(relay = %relay.fmt_short(), %path, "pushing to relay");
     println!("pushing to relay {relay}: viewers find the broadcast there at {path}");
     Ok(link)
+}
+
+/// Ends the process with an error once `relay` refuses the link's token.
+///
+/// A refused link would otherwise redial in silence, which looks like a
+/// relay that is down.
+fn exit_on_refusal(link: RelayLink, relay: EndpointId) {
+    tokio::spawn(async move {
+        let mut status = link.status();
+        loop {
+            if let RelayStatus::Refused(refusal) = status.get() {
+                let why = match refusal {
+                    Refusal::Expired => "the token expired; sign a fresh one",
+                    _ => {
+                        "it admits only token holders, and does not accept this token, or \
+                         there is none; pass one with --relay-token-file"
+                    }
+                };
+                warn!(relay = %relay.fmt_short(), ?refusal, "the relay refused the token");
+                eprintln!("error: relay {relay} refused this node: {why}");
+                crate::shutdown::exit_at_once(1);
+            }
+            if status.updated().await.is_err() {
+                return;
+            }
+        }
+    });
 }
 
 /// Prints a QR code of `ticket`, unless `no_qr` suppresses it.

@@ -1,5 +1,7 @@
 import MoqWatch from "@moq/watch/element";
 
+import { relayUrl, takeToken } from "./token";
+
 export { MoqWatch };
 
 const landing = document.getElementById("landing")!;
@@ -12,20 +14,27 @@ const watch = document.getElementById("watch") as MoqWatch;
 
 const params = new URLSearchParams(window.location.search);
 const baseUrl = params.get("url") ?? `${window.location.origin}/`;
+// Read before anything rewrites the address bar, which this also cleans.
+const token = takeToken();
 
 function startWatch(name: string) {
   const trimmed = name.trim();
   if (!trimmed) return;
 
-  console.log("watch", { url: baseUrl, name: trimmed });
-  watch.url = baseUrl + trimmed;
+  // Logs the relay and the name, never the URL with the token.
+  console.log("watch", { url: baseUrl, name: trimmed, token: token !== undefined });
+  const relay = relayUrl(baseUrl, trimmed, token);
+  if (relay.withheld) console.warn("not sending the token to a relay on another origin");
+  watch.url = relay.url;
   watch.name = "";
 
-  nowWatching.textContent = trimmed;
+  nowWatching.textContent = relay.withheld
+    ? `${trimmed} (token not sent: the relay is on another origin)`
+    : trimmed;
   landing.style.display = "none";
   player.classList.add("active");
 
-  // Update URL bar so the link is shareable.
+  // Update URL bar so the link is shareable. It never holds the token.
   const u = new URL(window.location.href);
   u.searchParams.set("name", trimmed);
   history.replaceState(null, "", u.toString());

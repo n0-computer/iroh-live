@@ -12,6 +12,7 @@ use n0_error::{AnyError, stack_error};
 /// same failure. The node's errors sit in a [`Box`], since they are large.
 #[stack_error(derive, add_meta)]
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum Error {
     /// The ticket's peer may not publish the ticket's path.
     ///
@@ -40,10 +41,10 @@ pub enum Error {
     /// The publisher did not announce the path in time.
     #[error("the publisher did not announce {path} within {timeout:?}")]
     Timeout { path: Path, timeout: Duration },
-    /// The session may not pull: it has no token that grants reading the ticket's path.
+    /// The session may not pull: it may not read the ticket's path, or has no token that does.
     ///
-    /// See [`Access`](crate::pull::Access).
-    #[error("pulling a ticket through this relay needs a token that grants reading {path}")]
+    /// See [`Pulls::with_open_pulls`](crate::pull::Pulls::with_open_pulls).
+    #[error("pulling a ticket through this relay needs the right to read {path}")]
     PullDenied { path: Path },
     /// The relay already holds as many pulls as its limits allow.
     #[error("the relay already holds its limit of {limit} pulls")]
@@ -84,6 +85,11 @@ pub enum Error {
         #[error(source, std_err)]
         source: Arc<moq_auth::Error>,
     },
+    /// The access configuration contradicts itself, or would admit nobody.
+    ///
+    /// The message names the setting and the fix.
+    #[error("{message}")]
+    AccessConfig { message: String },
     /// The moq relay failed to start or stopped with an error.
     #[error("the moq relay failed")]
     Relay {

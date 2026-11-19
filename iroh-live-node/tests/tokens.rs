@@ -17,10 +17,9 @@ use iroh_live_node::{
     Audience, ConnectOptions, Error, Grant, Node, NodeConfig, Reach,
     policy::{Authorization, Decision, Open, PeerRequest, Policy},
 };
-use moq_ext_access::policy::{MoqCapability, RcanVerifier, Verify, encode_chain};
+use moq_ext_access::policy::{Chain, Expires, MoqCapability, RcanVerifier, Verify};
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
-use rcan::{Expires, Rcan};
 
 /// Returns the key of the account whose space alice's node shares.
 fn alice_account() -> SigningKey {
@@ -45,20 +44,20 @@ fn alice_config() -> NodeConfig {
 fn chain_to(device: &Peer, valid: Duration) -> String {
     let capability = MoqCapability::new("spaces/alice")
         .with_publish("**".parse::<moq_net::Pattern>().expect("a pattern"));
-    let issued = Rcan::issuing_builder(
+    Chain::issue(
         &alice_account(),
         bob_account().verifying_key(),
-        capability.clone(),
+        capability,
+        Expires::valid_for(Duration::from_secs(3600)),
     )
-    .sign(Expires::valid_for(Duration::from_secs(3600)));
-    let delegated = Rcan::delegating_builder(
+    .delegate(
         &bob_account(),
         device.id().as_verifying_key(),
-        alice_account().verifying_key(),
-        capability,
+        None,
+        Expires::valid_for(valid),
     )
-    .sign(Expires::valid_for(valid));
-    encode_chain(&[issued, delegated])
+    .expect("bob holds the chain")
+    .to_token()
 }
 
 /// Connects `from` to `to` presenting `token`.

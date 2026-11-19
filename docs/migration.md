@@ -159,7 +159,8 @@ Names from development versions between the two releases:
   `encode::Config`, and `set_audio` takes moq-audio's `encode::Config`.
 - **The relay.** It pulls tickets only for sessions whose token allows it, or
   with `--open-pulls`. Under `--auth-key`, browsers are decided by moq-auth's
-  reference policy. See the [relay reference](reference/relay.md).
+  reference policy. See the [relay reference](reference/relay.md) and
+  [Relay access modes](#relay-access-modes) below.
 - **Value tracks.** `Node::publish_value` and `LocalBroadcast::value_track`
   return a `ValueWriter<T>`. `update(&value)` stamps the value with the time
   it is made and keeps the stamps increasing, so remove any
@@ -174,3 +175,45 @@ Names from development versions between the two releases:
   `RelayConfig`, `PlayerConfig`, `VideoEncoding`, `VideoRendition` and
   `Adaptation` are `#[non_exhaustive]`. Build them from `Default` or a
   constructor, then use the `with_*` builders or set fields.
+
+## Relay access modes
+
+The relay is open without auth flags, and private with any `--auth-*` or
+`--rcan-*` flag. A private relay gives sessions without a token only the
+`--auth-public*` patterns, or refuses them. See the
+[relay reference](reference/relay.md#access).
+
+| Before | Now |
+|---|---|
+| `--auth-key` alone: anonymous sessions read everything, tokens add rights | Anonymous sessions are refused. For the old rules, add `--auth-public-subscribe '**' --auth-public-publish '*' --auth-public-own-paths` |
+| `--auth-public*` without a key bound browsers only, and iroh clients read everything | The patterns bind browsers and iroh clients alike |
+| `--auth-url` alone: anonymous iroh clients read everything | They are refused. Add `--auth-key` or `--rcan-principal` to admit iroh clients with tokens |
+| `--auth-key` with `--auth-url` or `--auth-public*` was a parse error | It works: the key verifies tokens, and the patterns are the public area |
+| A verified iroh token's claims replaced the client's own paths | Unchanged by default. `--auth-own-paths` adds them |
+| Tokens without `exp` were accepted | A private relay refuses them, unless `--allow-unexpiring-tokens` |
+| A token session lasted until its token expired | It lasts at most `--max-session` (24 hours). At that bound the relay sends a GOAWAY, and the client dials a new session with the same token. It closes when the key file stops verifying its token |
+| `--open-pulls` let any session pull | Only a session the relay admits to read the ticket's path. On an open relay that is still every session |
+| An iroh session that named a ticket was decided at the ticket's string | It reads the ticket if its token reads the ticket's path |
+| The viewer ignored `?jwt=` | It reads `#jwt=`, and `?jwt=` for older links, and sends the token only to its own origin |
+
+For embedders and node code:
+
+- `iroh_live_relay::Config` is `#[non_exhaustive]` and implements `Default`.
+  Build it with `Config::default()` and set fields. A config that sets
+  `iroh_policy` without auth settings needs `Config::access`.
+- `pull::Access` is gone. `Pulls::with_open_pulls(true)` replaces
+  `with_access(Access::Open)`, and the default stays the old
+  `Access::Authorized`. `Pulls::open_pulls` replaces `Pulls::access`. The
+  relay's mode is `AccessMode`, `AccessMode::Open` or `AccessMode::Private`,
+  set through `Config::access`.
+- `IrohSessions::new` refuses every session until it gets a policy.
+  `admit` takes a `BrowserPolicy`, from `Config::policies()`.
+- `RelayStatus` is `#[non_exhaustive]` and has `Refused(Refusal)`. A match
+  over it needs a wildcard arm.
+- A relay handshake refused with `Expired` is no longer retried as a failed
+  dial.
+- `encode_chain` is gone from `policy`. Build a chain with `Chain::issue` and
+  `Chain::delegate`, and encode it with `Chain::to_token`. Parse a token with
+  `str::parse::<Chain>`, which fails with a `ChainError`. `policy::Expires`
+  re-exports rcan's expiry, so the `rcan` crate is no longer a dependency of
+  your code.

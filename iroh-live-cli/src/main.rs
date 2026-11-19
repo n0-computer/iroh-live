@@ -7,10 +7,12 @@ mod backend;
 mod call;
 mod devices;
 mod import;
+mod keys;
 mod playback;
 #[cfg(all(target_os = "linux", feature = "pipewire"))]
 mod portal_grant;
 mod publish;
+mod rcan;
 mod record;
 mod rendition;
 mod room;
@@ -38,8 +40,13 @@ enum Command {
     Call(Box<args::CallArgs>),
     /// List cameras, displays, and audio devices.
     Devices,
+    /// Print the public key of a stored key, creating the key on first use.
+    Key(args::KeyArgs),
     /// Publish a capture device or a media file.
     Publish(Box<args::PublishArgs>),
+    /// Sign or show rcan capability chains, the tokens a relay's principals issue.
+    #[command(subcommand)]
+    Rcan(args::RcanCommand),
     /// Record a remote broadcast to a file, without a window.
     Record(Box<args::RecordArgs>),
     /// Join a room: publish, and watch everyone else.
@@ -53,7 +60,12 @@ enum Command {
 
 /// Parses the command line and runs the chosen command.
 fn main() -> n0_error::Result {
-    tracing_subscriber::fmt::init();
+    // Logs go to stderr: stdout carries what scripts read, such as the key
+    // `irl key` prints and the token `irl rcan sign` prints.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
     let cli = Cli::parse();
 
     // Windowed commands set up inside `block_on`, then hand the main thread to
@@ -65,7 +77,9 @@ fn main() -> n0_error::Result {
     let result = match cli.command {
         Command::Call(args) => call::run(*args, &rt),
         Command::Devices => devices::run(&rt),
+        Command::Key(args) => keys::run(&args),
         Command::Publish(args) => publish::run(*args, &rt),
+        Command::Rcan(command) => rcan::run(&command),
         Command::Record(args) => record::run(*args, &rt),
         Command::Room(args) => room::run(*args, &rt),
         Command::Run(args) => run::run(args, &rt),
@@ -133,6 +147,91 @@ mod tests {
             err.to_string().contains("--endpoint-id"),
             "unexpected: {err}"
         );
+    }
+
+    #[test]
+    fn a_relay_token_file_needs_a_relay() {
+        Cli::try_parse_from(["irl", "publish", "--relay-token-file", "token.jwt"])
+            .expect_err("a token file without --relay");
+        let relay = iroh::SecretKey::generate().public().to_string();
+        let cli = Cli::try_parse_from([
+            "irl",
+            "publish",
+            "--relay",
+            &relay,
+            "--relay-token-file",
+            "token.jwt",
+            "--key",
+            "camera",
+        ])
+        .expect("a relay, a token file and a key");
+        let Command::Publish(args) = cli.command else {
+            panic!("expected publish");
+        };
+        assert_eq!(args.transport.key.as_deref(), Some("camera"));
+        Cli::try_parse_from([
+            "irl",
+            "publish",
+            "--relay",
+            &relay,
+            "--relay-token-file",
+            "token.jwt",
+            "--relay-token",
+            "inline",
+        ])
+        .expect_err("two token sources");
+    }
+
+    /// `IRL_RELAY_TOKEN` yields to either flag, and counts only with `--relay`.
+    #[test]
+    fn the_relay_token_variable_yields_to_the_flags() {
+        let token = |args: &[&str], var: &str| {
+            let cli = Cli::try_parse_from(args).expect("clap accepts the flags");
+            let Command::Publish(args) = cli.command else {
+                panic!("expected publish");
+            };
+            args.transport
+                .relay_token_from(Some(var.to_owned()))
+                .expect("a valid token")
+                .map(|token| token.as_str().to_owned())
+        };
+        let relay = iroh::SecretKey::generate().public().to_string();
+        let file = std::env::temp_dir().join(format!("irl-token-{relay}.jwt"));
+        std::fs::write(&file, "from-file\n").expect("writes the token");
+        let file_arg = file.to_str().expect("a UTF-8 temp path");
+
+        let with_file = [
+            "irl",
+            "publish",
+            "--relay",
+            &relay,
+            "--relay-token-file",
+            file_arg,
+        ];
+        assert_eq!(token(&with_file, "from-var").as_deref(), Some("from-file"));
+        let inline = [
+            "irl",
+            "publish",
+            "--relay",
+            &relay,
+            "--relay-token",
+            "inline",
+        ];
+        assert_eq!(token(&inline, "from-var").as_deref(), Some("inline"));
+        let var_only = ["irl", "publish", "--relay", &relay];
+        assert_eq!(token(&var_only, "from-var").as_deref(), Some("from-var"));
+        assert_eq!(token(&["irl", "publish"], "from-var"), None);
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn the_relay_token_is_redacted_in_debug() {
+        let cli = Cli::try_parse_from(["irl", "publish", "--relay-token", "secret-jwt"])
+            .expect("clap accepts the flag");
+        let Command::Publish(args) = cli.command else {
+            panic!("expected publish");
+        };
+        assert!(!format!("{:?}", args.transport).contains("secret-jwt"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from "child_process";
 import { appendFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { AuthKey, writeAuthKey } from "./auth";
 import { findBinary } from "./bin";
 
 export interface RelayInfo {
@@ -9,6 +10,13 @@ export interface RelayInfo {
   httpPort: number;
   irohAddr: string;
   dataDir: string;
+  /** Everything the relay printed so far, on stdout and stderr. */
+  output: { text: string };
+}
+
+/** A private relay, and the key its tokens are signed with. */
+export interface PrivateRelayInfo extends RelayInfo {
+  key: AuthKey;
 }
 
 /**
@@ -16,27 +24,70 @@ export interface RelayInfo {
  * tests never collide with running services.
  *
  * Parses startup output to extract the actual bound ports and iroh endpoint ID.
+ * The relay is open and pulls for anyone, since the tests pull tickets
+ * without a token.
  */
 export async function startRelay(): Promise<RelayInfo> {
   const dataDir = mkdtempSync(join(tmpdir(), "iroh-live-relay-test-"));
+  return spawnRelay(dataDir, ["--open-pulls"]);
+}
 
+/**
+ * Starts a private relay that verifies JWTs with a fresh key and has no
+ * public area, so a session without a token is refused.
+ *
+ * The key lives in the relay's data directory, which `stopRelay` removes.
+ */
+export async function startPrivateRelay(): Promise<PrivateRelayInfo> {
+  const dataDir = mkdtempSync(join(tmpdir(), "iroh-live-relay-test-"));
+  const key = writeAuthKey(dataDir);
+  const relay = await spawnRelay(dataDir, ["--auth-key", key.path]);
+  return { ...relay, key };
+}
+
+/**
+ * Waits until the relay prints a line matching `pattern` after `from`, an
+ * offset into its output.
+ */
+export async function waitForRelayOutput(
+  relay: RelayInfo,
+  pattern: RegExp,
+  from: number,
+  timeoutMs = 15_000
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const line = relay.output.text
+      .slice(from)
+      .split("\n")
+      .find((line) => pattern.test(line));
+    if (line) return line;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `Relay did not print ${pattern} within ${timeoutMs}ms. Output since then:\n` +
+      relay.output.text.slice(from)
+  );
+}
+
+async function spawnRelay(dataDir: string, access: string[]): Promise<RelayInfo> {
   // Use the pre-built binary directly to avoid cargo recompilation during tests.
   const relayBin = findBinary("iroh-live-relay");
 
   const proc = spawn(
     relayBin,
     // No `--http-bind`: HTTP then shares the QUIC port, which the page connects to.
-    // `--open-pulls`, since the tests pull tickets without a token.
-    ["--bind", "[::]:0", "--open-pulls"],
+    ["--bind", "[::]:0", ...access],
     {
       env: { ...process.env, IROH_LIVE_RELAY_DATA: dataDir },
       stdio: ["pipe", "pipe", "pipe"],
     }
   );
 
-  const { httpPort, irohAddr } = await parseStartupOutput(proc);
+  const output = { text: "" };
+  const { httpPort, irohAddr } = await parseStartupOutput(proc, output);
 
-  return { process: proc, httpPort, irohAddr, dataDir };
+  return { process: proc, httpPort, irohAddr, dataDir, output };
 }
 
 export async function stopRelay(relay: RelayInfo) {
@@ -63,7 +114,8 @@ export async function stopRelay(relay: RelayInfo) {
  * - Iroh endpoint ID from "iroh endpoint bound" log
  */
 function parseStartupOutput(
-  proc: ChildProcess
+  proc: ChildProcess,
+  all: { text: string }
 ): Promise<{ httpPort: number; irohAddr: string }> {
   return new Promise((resolve, reject) => {
     let httpPort: number | null = null;
@@ -107,6 +159,7 @@ function parseStartupOutput(
     for (const stream of [proc.stdout, proc.stderr]) {
       stream?.on("data", (data: Buffer) => {
         const text = data.toString();
+        all.text += text;
         // `RELAY_LOG=/path npx playwright test` keeps the relay's own output.
         // Without it the harness reads these streams for the startup ports and
         // then discards everything, so a relay-side failure is invisible from
