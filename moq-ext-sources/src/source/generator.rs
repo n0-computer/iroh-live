@@ -29,7 +29,7 @@ use tracing::{debug, warn};
 
 use super::{AudioFormat, sender::PcmFanout};
 use crate::{
-    audio,
+    BouncePattern, audio,
     frames::FrameSlot,
     video::{self, Size, Surface},
 };
@@ -177,6 +177,17 @@ pub(crate) fn run_gradient(
         Surface::rgba(&rgba, size)
     });
     debug!("gradient stopped");
+}
+
+/// Draws `pattern` into `slot` at every frame of `rate` until `stop` is cancelled.
+pub(crate) fn run_bounce(
+    pattern: &BouncePattern,
+    rate: video::FrameRate,
+    slot: FrameSlot,
+    stop: CancellationToken,
+) {
+    run_frames(rate, &slot, &stop, |_, media| pattern.surface(media));
+    debug!("bounce pattern stopped");
 }
 
 /// Sends a picture from `paint` into `slot` at every frame of `rate`, until `stop` is cancelled.

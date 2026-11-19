@@ -295,6 +295,34 @@ impl VideoSource {
         ))
     }
 
+    /// Returns a bouncing square on a drifting hue at `size` and `rate`.
+    ///
+    /// Draws [`BouncePattern`](crate::BouncePattern) at each frame's media
+    /// time. A consumer that picks its own instants draws the pattern itself.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::InvalidConfig`] if a dimension of `size` is zero or
+    /// odd, and if the thread that draws the pattern cannot be started.
+    #[cfg(feature = "pattern")]
+    pub fn test_bounce(size: video::Size, rate: video::FrameRate) -> Result<Self, Error> {
+        let pattern = crate::BouncePattern::new(size)?;
+        let slot = FrameSlot::new();
+        let reader = slot.reader();
+        let stop = CancellationToken::new();
+        let token = stop.clone();
+        std::thread::Builder::new()
+            .name("test-bounce".into())
+            .spawn(move || generator::run_bounce(&pattern, rate, slot, token))?;
+        Ok(Self::new(
+            "test-bounce",
+            VideoFormat { size, rate },
+            reader,
+            stop,
+            Driver::Thread,
+        ))
+    }
+
     /// Returns a source fed by the returned sender.
     ///
     /// The source ends when every sender is dropped. `format` describes what
