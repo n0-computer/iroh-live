@@ -7,45 +7,36 @@ use iroh::{
     endpoint::{PathId, PathStats},
 };
 
-/// One open network path of a [`Session`](crate::Session), as
-/// [`Session::network_paths`](crate::Session::network_paths) reads it.
+/// One open network path of a [`Session`](crate::Session), as returned by
+/// [`Session::network_paths`](crate::Session::network_paths).
 ///
-/// The counters run from the path's start. The rates and the loss over an
-/// interval are the differences between two readings with the same
-/// [`id`](Self::id). A path that iroh closes and opens again to the same
-/// address gets a new id, and its counters start from zero.
+/// The counters run from the path's start, so rates and loss are the
+/// difference between two readings with the same [`id`](Self::id). A path
+/// that is closed and reopened gets a new id.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NetworkPath {
-    /// The path's id within the connection, which stays the same for as long
-    /// as the path is open.
+    /// The path's id within the connection, stable while the path is open.
     pub id: PathId,
     /// The remote address as iroh holds it.
     pub remote: TransportAddr,
     /// Whether application data goes over this path.
     pub selected: bool,
-    /// The path's round trip estimate.
+    /// The round trip time estimate.
     pub rtt: Duration,
-    /// The UDP payload bytes sent on the path.
-    ///
-    /// They include path MTU probes and packets that carry only
-    /// acknowledgements, so dividing them by
-    /// [`sent_packets`](Self::sent_packets) does not give a packet size.
+    /// The UDP payload bytes sent on the path, including path MTU probes
+    /// and acknowledgement-only packets.
     pub sent_bytes: u64,
     /// The UDP payload bytes received on the path.
     pub received_bytes: u64,
     /// The QUIC packets sent on the path, without path MTU probes.
     pub sent_packets: u64,
     /// The QUIC packets lost on the path, without path MTU probes.
-    ///
-    /// The probes are left out because an oversized probe is expected to be
-    /// lost.
     pub lost_packets: u64,
     /// The congestion window, in bytes.
     pub cwnd: u64,
-    /// The congestion controller's estimate of what the path carries, in bits per second.
-    ///
-    /// `None` for a controller that makes no estimate.
+    /// The congestion controller's bandwidth estimate in bits per second,
+    /// if it makes one.
     pub bandwidth: Option<u64>,
 }
 
@@ -82,11 +73,11 @@ impl NetworkPath {
         }
     }
 
-    /// Returns the remote address in a form to show: `ip:port`, or the host
-    /// of an iroh relay.
+    /// Returns the remote address for display: `ip:port`, or the host of an
+    /// iroh relay.
     ///
-    /// The form is meant for people to read and may change. Match on
-    /// [`remote`](Self::remote) to act on the address.
+    /// The format may change; use [`remote`](Self::remote) to act on the
+    /// address.
     #[must_use]
     pub fn addr(&self) -> impl fmt::Display + '_ {
         DisplayAddr(&self.remote)
