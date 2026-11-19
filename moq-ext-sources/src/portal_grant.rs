@@ -25,6 +25,11 @@ use tracing::{debug, warn};
 /// granted a token, `None` means the stream ended, for example because the
 /// user stopped sharing, and deletes the file, so the next run asks again.
 ///
+/// [`PortalGrant::keep_after_end`] keeps the file when the stream ends too,
+/// until a new grant replaces it. This suits a program that reopens the
+/// screen unattended, across restarts and switches between sources: a token
+/// the compositor no longer honors costs nothing, as the portal then asks.
+///
 /// The file holds the token as text, readable only by its owner. Two live
 /// selections of the same grant both write the file, in the order their
 /// tokens change, so the file follows whichever changed last.
@@ -52,6 +57,7 @@ use tracing::{debug, warn};
 pub struct PortalGrant {
     kind: Kind,
     path: PathBuf,
+    keep_after_end: bool,
 }
 
 impl PortalGrant {
@@ -60,7 +66,19 @@ impl PortalGrant {
         Self {
             kind,
             path: path.into(),
+            keep_after_end: false,
         }
+    }
+
+    /// Keeps the stored grant when the stream ends, until a new one replaces it.
+    ///
+    /// By default the end of the stream deletes the file, so the next run
+    /// asks. With this, the next run tries the stored token first, and the
+    /// portal asks only if the compositor no longer honors it.
+    #[must_use]
+    pub fn keep_after_end(mut self) -> Self {
+        self.keep_after_end = true;
+        self
     }
 
     /// Creates a grant of `kind` stored in the user's config directory.
@@ -122,11 +140,12 @@ impl PortalGrant {
             return selection;
         };
         let path = self.path.clone();
+        let keep_after_end = self.keep_after_end;
         let mut tokens = selection.restore_token();
         runtime.spawn(async move {
             let mut granted = false;
             while let Some(token) = tokens.changed().await {
-                apply(&path, update(&mut granted, token.as_ref()));
+                apply(&path, update(&mut granted, keep_after_end, token.as_ref()));
             }
         });
         selection
@@ -162,14 +181,18 @@ enum Update<'a> {
 /// `granted` says whether the selection has reported a token since it was
 /// created, and is set by the first one. A `None` before that is an open
 /// taking the stored token and keeps the file. A `None` after it is the end
-/// of the stream and deletes the file.
-fn update<'a>(granted: &mut bool, token: Option<&'a RestoreToken>) -> Update<'a> {
+/// of the stream and deletes the file, unless `keep_after_end` keeps it.
+fn update<'a>(
+    granted: &mut bool,
+    keep_after_end: bool,
+    token: Option<&'a RestoreToken>,
+) -> Update<'a> {
     match token {
         Some(token) => {
             *granted = true;
             Update::Store(token)
         }
-        None if *granted => Update::Delete,
+        None if *granted && !keep_after_end => Update::Delete,
         None => Update::Keep,
     }
 }
@@ -182,7 +205,7 @@ fn apply(path: &Path, update: Update<'_>) {
             Err(err) => warn!(path = %path.display(), %err, "cannot store the portal grant"),
         },
         Update::Keep => {
-            debug!(path = %path.display(), "the open took the stored portal grant, keeping it");
+            debug!(path = %path.display(), "the portal grant has no new token, keeping the stored one");
         }
         Update::Delete => match std::fs::remove_file(path) {
             Ok(()) => debug!(path = %path.display(), "portal grant ended, deleted"),
@@ -251,13 +274,45 @@ mod tests {
         let token = RestoreToken::new("grant");
         let mut granted = false;
         // The open takes the stored token, or the compositor refuses it.
-        assert_eq!(update(&mut granted, None), Update::Keep);
-        assert_eq!(update(&mut granted, None), Update::Keep);
+        assert_eq!(update(&mut granted, false, None), Update::Keep);
+        assert_eq!(update(&mut granted, false, None), Update::Keep);
         // The portal grants a token, and later the user stops sharing.
-        assert_eq!(update(&mut granted, Some(&token)), Update::Store(&token));
-        assert_eq!(update(&mut granted, None), Update::Delete);
+        assert_eq!(
+            update(&mut granted, false, Some(&token)),
+            Update::Store(&token)
+        );
+        assert_eq!(update(&mut granted, false, None), Update::Delete);
         // A reopen takes and replaces the token again.
-        assert_eq!(update(&mut granted, Some(&token)), Update::Store(&token));
+        assert_eq!(
+            update(&mut granted, false, Some(&token)),
+            Update::Store(&token)
+        );
+    }
+
+    #[test]
+    fn keep_after_end_keeps_the_file_on_every_none() {
+        let token = RestoreToken::new("grant");
+        let mut granted = false;
+        assert_eq!(update(&mut granted, true, None), Update::Keep);
+        assert_eq!(
+            update(&mut granted, true, Some(&token)),
+            Update::Store(&token)
+        );
+        // The stream ends: the file stays until a new grant replaces it.
+        assert_eq!(update(&mut granted, true, None), Update::Keep);
+        assert_eq!(update(&mut granted, true, None), Update::Keep);
+        let next = RestoreToken::new("next");
+        assert_eq!(
+            update(&mut granted, true, Some(&next)),
+            Update::Store(&next)
+        );
+    }
+
+    #[test]
+    fn keep_after_end_is_off_by_default() {
+        let grant = PortalGrant::new(Kind::Screen, "/tmp/screen.token");
+        assert!(!grant.keep_after_end);
+        assert!(grant.keep_after_end().keep_after_end);
     }
 
     #[test]

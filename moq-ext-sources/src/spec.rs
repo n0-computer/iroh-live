@@ -419,6 +419,8 @@ pub struct VideoOpenOptions {
     pub cursor: bool,
     /// The app whose config directory keeps the desktop portal's grants.
     portal_grants: Option<String>,
+    /// Whether the grants stay stored when the stream ends.
+    portal_grants_kept_after_end: bool,
 }
 
 impl Default for VideoOpenOptions {
@@ -429,6 +431,7 @@ impl Default for VideoOpenOptions {
             framerate: None,
             cursor: true,
             portal_grants: None,
+            portal_grants_kept_after_end: false,
         }
     }
 }
@@ -462,6 +465,18 @@ impl VideoOpenOptions {
     #[must_use]
     pub fn with_portal_grants(mut self, app: impl Into<String>) -> Self {
         self.portal_grants = Some(app.into());
+        self
+    }
+
+    /// Keeps the grants [`with_portal_grants`](Self::with_portal_grants)
+    /// stores when the stream ends, as `PortalGrant::keep_after_end` does.
+    ///
+    /// A later open then tries the last grant first, and the portal asks only
+    /// if the compositor no longer honors it. Has no effect without
+    /// [`with_portal_grants`](Self::with_portal_grants).
+    #[must_use]
+    pub fn keep_portal_grants_after_end(mut self) -> Self {
+        self.portal_grants_kept_after_end = true;
         self
     }
 
@@ -636,7 +651,14 @@ fn portal_selection(kind: PortalKind, options: &VideoOpenOptions) -> video::capt
     let grant = options
         .portal_grants
         .as_deref()
-        .and_then(|app| crate::PortalGrant::in_config_dir(kind, app));
+        .and_then(|app| crate::PortalGrant::in_config_dir(kind, app))
+        .map(|grant| {
+            if options.portal_grants_kept_after_end {
+                grant.keep_after_end()
+            } else {
+                grant
+            }
+        });
     let selection = match grant {
         Some(grant) => grant.selection(),
         None => Selection::new(kind),
