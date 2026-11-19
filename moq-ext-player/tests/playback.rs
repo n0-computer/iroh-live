@@ -10,7 +10,7 @@ use std::{
 };
 
 use moq_ext_player::{
-    AudioMode, DEFAULT_LATENCY, Delay, Error, IMMEDIATE_LATENCY, NetworkSample, Player,
+    AudioMode, DEFAULT_LATENCY, Delay, Error, IMMEDIATE_LATENCY, MediaKind, NetworkSample, Player,
     PlayerConfig, RemoteBroadcast, RenditionMode, SlotState,
 };
 use moq_ext_publisher::{LocalBroadcast, VideoEncoding, VideoRendition, audio_encoding};
@@ -1247,6 +1247,60 @@ async fn take_latest_video_hands_out_the_newest_picture_once() {
         arrived |= timing.arrived.is_some();
     }
     assert!(arrived, "no picture knew when its data arrived");
+    drop(player);
+    feeder.abort();
+}
+
+/// A reader on its own tick takes every picture presented between two takes, once and in order.
+#[tokio::test]
+async fn a_video_backlog_hands_out_every_presented_picture_once() {
+    let format = VideoFormat {
+        size: moq_video::Size::new(64, 48),
+        rate: fps(30),
+    };
+    let (sender, source) = VideoSource::push(format);
+    let feeder = tokio::spawn(push_frames(sender, format));
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            software(VideoEncoding::single(VideoRendition::new("video"))),
+        )
+        .expect("valid");
+    let player = local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let backlog = player.video_backlog(64);
+    let mut taken = Vec::new();
+    tokio::time::timeout(TIMEOUT, async {
+        // A tick far slower than the frames, so the frames handle would coalesce.
+        while taken.len() < 20 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            taken.extend(backlog.take());
+        }
+    })
+    .await
+    .expect("pictures are presented");
+    for (frame, timing) in &taken {
+        assert_eq!(Ok(timing.pts), Duration::try_from(frame.timestamp));
+        assert_eq!(player.video_timing(frame.timestamp), Some(*timing));
+    }
+    let pts: Vec<Duration> = taken.iter().map(|(_, timing)| timing.pts).collect();
+    assert!(
+        pts.windows(2).all(|pair| pair[0] < pair[1]),
+        "out of order or twice: {pts:?}"
+    );
+    // The timeline logs every presented picture: none between the first and
+    // the last taken is missing.
+    let (first, last) = (pts[0], pts[pts.len() - 1]);
+    let presented: Vec<Duration> = player
+        .timeline()
+        .into_iter()
+        .filter(|timing| timing.kind == MediaKind::Video)
+        .map(|timing| timing.pts)
+        .filter(|pts| (first..=last).contains(pts))
+        .collect();
+    assert_eq!(pts, presented);
     drop(player);
     feeder.abort();
 }

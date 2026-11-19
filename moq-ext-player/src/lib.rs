@@ -28,6 +28,8 @@
 //!   [`RemoteBroadcast::play`] starts a [`Player`].
 //! - [`Player`]: decodes the chosen rendition and keeps audio and video in step.
 //! - [`VideoFrames`]: the frame stream every renderer reads.
+//! - [`VideoBacklog`]: a queue of every presented picture with its timing,
+//!   for a reader on its own tick.
 //! - [`AudioFrames`]: the decoded audio, for analysis or a custom output.
 //! - [`RenditionMode`]: how the video rendition is chosen, re-exported from
 //!   `moq_ext_adaptive`.
@@ -79,7 +81,7 @@ pub use self::{
     network::NetworkSample,
     player::{
         Adaptation, AudioFrame, AudioFrames, AudioMode, DEFAULT_LATENCY, IMMEDIATE_LATENCY, Player,
-        PlayerConfig, PlayerStatus, RenditionMode,
+        PlayerConfig, PlayerStatus, RenditionMode, VideoBacklog,
     },
     remote::RemoteBroadcast,
     stats::{AudioPlaybackStats, FrameTiming, MediaKind, PlaybackStats, VideoPlaybackStats},
