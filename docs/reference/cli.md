@@ -52,6 +52,7 @@ kind. The platform picks the capture backend.
 | `file:<path>[:loop]` | A media file, republished without encoding |
 | `test`, `test:timing` | The timing pattern: a sweeping bar, stripes, a frame counter, a clock, and a marker that flashes with the test tone's beep |
 | `test:gradient` | A moving gradient |
+| `test:bounce` | A white square bouncing left and right on a background that drifts through the hues |
 | `none` | No video |
 
 | `--audio` | Meaning |
