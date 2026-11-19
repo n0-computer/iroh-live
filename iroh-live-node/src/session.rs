@@ -11,8 +11,8 @@ use n0_error::e;
 use tracing::info;
 
 use crate::{
-    Direction, Error, Grant, LinkId, NetworkSample, SessionRequest, Subscription, handshake::Hop,
-    link::LatestSample, node::Shared, route,
+    Direction, Error, Grant, LinkId, NetworkPath, NetworkSample, SessionRequest, Subscription,
+    handshake::Hop, link::LatestSample, node::Shared, route,
 };
 
 /// A direct session with a peer.
@@ -177,7 +177,8 @@ impl Session {
     /// each one's remote address, whether it is selected, and its RTT, and
     /// [`Connection::paths_stream`] yields the list again whenever it
     /// changes. [`Connection::stats`] holds the counters of the whole
-    /// connection.
+    /// connection. [`network_paths`](Self::network_paths) sums each path up
+    /// for display.
     ///
     /// # Examples
     ///
@@ -196,6 +197,54 @@ impl Session {
     #[must_use]
     pub fn connection(&self) -> &Connection {
         &self.inner.connection
+    }
+
+    /// Returns the open network paths of the session's connection, the selected one first.
+    ///
+    /// Each [`NetworkPath`] holds the path's id and remote address, its
+    /// round trip, its congestion window and bandwidth estimate, and the
+    /// byte and packet counters to compute rates and loss from. Pair two
+    /// readings by [`NetworkPath::id`] to get the rates of one path.
+    ///
+    /// The figures are per path and run from each path's start. They differ
+    /// from [`sample`](Self::sample), which reads windowed rates of the
+    /// whole connection: its packet counts are UDP datagrams and its loss
+    /// includes path MTU probes, while a [`NetworkPath`] counts QUIC packets
+    /// and leaves the probes out.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn run(session: iroh_live_node::Session) {
+    /// for path in session.network_paths() {
+    ///     println!(
+    ///         "{} {} selected={} rtt={:?}",
+    ///         path.kind(),
+    ///         path.addr(),
+    ///         path.selected,
+    ///         path.rtt
+    ///     );
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn network_paths(&self) -> Vec<NetworkPath> {
+        let mut paths: Vec<NetworkPath> = self
+            .inner
+            .connection
+            .paths()
+            .iter()
+            .map(|path| {
+                NetworkPath::new(
+                    path.id(),
+                    path.remote_addr(),
+                    path.is_selected(),
+                    &path.stats(),
+                )
+            })
+            .collect();
+        paths.sort_by_key(|path| !path.selected);
+        paths
     }
 
     /// Returns the latest reading of the session's link.
