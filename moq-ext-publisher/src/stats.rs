@@ -16,6 +16,9 @@ use moq_net::bandwidth::Rate;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PublishStats {
     /// Frames per second arriving from the video source, shared by every rendition.
+    ///
+    /// `None` before the first second of frames, once the source ends, and
+    /// within two seconds of the last frame of a source that stalls.
     pub source_fps: Option<f32>,
     /// Each video rendition's encoder, by rendition name.
     pub renditions: BTreeMap<String, EncodeStats>,
@@ -36,8 +39,13 @@ pub struct EncodeStats {
     /// The encoded picture size.
     pub size: Option<moq_video::Size>,
     /// Frames encoded per second, over the last second.
+    ///
+    /// `None` before the first second of frames, once the encoder stops, and
+    /// within two seconds of the last frame of an encoder that stalls.
     pub fps: Option<f32>,
     /// Bits published per second, over the last second.
+    ///
+    /// `None` whenever [`fps`](Self::fps) is.
     pub bitrate: Option<Rate>,
     /// How long one encode takes, smoothed.
     pub encode_time: Option<Duration>,
@@ -60,12 +68,37 @@ pub struct EncodeStats {
     pub track: String,
 }
 
-impl EncodeStats {
-    /// Stores the rates of a meter that counts frames and their bytes.
+/// One rendition's figures as its encoder writes them.
+///
+/// The rates are kept apart, so a snapshot can drop them once they are stale.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RenditionEntry {
+    /// Every figure but the rates.
+    pub(crate) stats: EncodeStats,
+    /// The last rates of the meter that counts frames and their bytes.
+    rates: Option<Rates>,
+}
+
+impl RenditionEntry {
+    /// Stores the rates of a meter that counts frames and their bytes, if it reported.
     pub(crate) fn record(&mut self, rates: Option<Rates>) {
-        if let Some(rates) = rates {
-            self.fps = Some(rates.events as f32);
-            self.bitrate = Some(Rate::from_bps((rates.amount * 8.0) as u64));
+        if rates.is_some() {
+            self.rates = rates;
+        }
+    }
+
+    /// Forgets the rates, when the encoder stops.
+    pub(crate) fn stopped(&mut self) {
+        self.rates = None;
+    }
+
+    /// Returns the figures, with rates only while they are current.
+    fn snapshot(&self) -> EncodeStats {
+        let rates = self.rates.filter(Rates::is_current);
+        EncodeStats {
+            fps: rates.map(|rates| rates.events as f32),
+            bitrate: rates.map(|rates| Rate::from_bps((rates.amount * 8.0) as u64)),
+            ..self.stats.clone()
         }
     }
 }
@@ -126,8 +159,8 @@ pub struct AudioEncodeStats {
 /// The writers behind [`PublishStats`], one per figure.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PublishRecorder {
-    source_fps: SharedCell<Option<f32>>,
-    renditions: SharedCell<BTreeMap<String, SharedCell<EncodeStats>>>,
+    source_fps: SharedCell<Option<Rates>>,
+    renditions: SharedCell<BTreeMap<String, SharedCell<RenditionEntry>>>,
     audio: SharedCell<Option<SharedCell<AudioEncodeStats>>>,
 }
 
@@ -135,12 +168,16 @@ impl PublishRecorder {
     /// Returns the snapshot, with `sent` from the catalog.
     pub(crate) fn snapshot(&self, sent: BTreeMap<String, hang::stats::Rendition>) -> PublishStats {
         PublishStats {
-            source_fps: self.source_fps.get(),
+            source_fps: self
+                .source_fps
+                .get()
+                .filter(Rates::is_current)
+                .map(|rates| rates.events as f32),
             renditions: self
                 .renditions
                 .get()
                 .into_iter()
-                .map(|(name, writer)| (name, writer.get()))
+                .map(|(name, writer)| (name, writer.get().snapshot()))
                 .collect(),
             sent,
             audio: self.audio.get().map(|cell| cell.get()),
@@ -148,16 +185,18 @@ impl PublishRecorder {
     }
 
     /// Returns the writer of the source frame rate.
-    pub(crate) fn source_fps(&self) -> SharedCell<Option<f32>> {
+    ///
+    /// A snapshot reads the rate as `None` once it is stale.
+    pub(crate) fn source_fps(&self) -> SharedCell<Option<Rates>> {
         self.source_fps.clone()
     }
 
     /// Starts an entry for rendition `name` and returns its writer.
     ///
     /// The entry names the track `name` until the encoder reports another.
-    pub(crate) fn rendition(&self, name: &str) -> SharedCell<EncodeStats> {
-        let writer = SharedCell::<EncodeStats>::default();
-        writer.update(|stats| stats.track = name.to_string());
+    pub(crate) fn rendition(&self, name: &str) -> SharedCell<RenditionEntry> {
+        let writer = SharedCell::<RenditionEntry>::default();
+        writer.update(|entry| entry.stats.track = name.to_string());
         self.renditions
             .update(|renditions| drop(renditions.insert(name.to_string(), writer.clone())));
         writer
@@ -184,6 +223,8 @@ impl PublishRecorder {
 
 #[cfg(test)]
 mod tests {
+    use moq_ext_sources::stats::RateMeter;
+
     use super::*;
 
     /// Each rendition names the track it writes, and a cleared video drops the entries.
@@ -196,13 +237,64 @@ mod tests {
         assert_eq!(snapshot.renditions["high"].track, "high");
         assert_eq!(snapshot.renditions["low"].track, "low");
         // A rendition moved to a new track names that track.
-        high.update(|stats| stats.track = "high.1".to_string());
+        high.update(|entry| entry.stats.track = "high.1".to_string());
         assert_eq!(
             recorder.snapshot(BTreeMap::new()).renditions["high"].track,
             "high.1"
         );
         recorder.clear_video();
         assert!(recorder.snapshot(BTreeMap::new()).renditions.is_empty());
+    }
+
+    /// Counts `frames` at 20 per second, writing the rates as the encoder and the source reader do.
+    async fn run_at_20fps(
+        recorder: &PublishRecorder,
+        entry: &SharedCell<RenditionEntry>,
+        frames: u32,
+    ) {
+        let source_fps = recorder.source_fps();
+        let mut source = RateMeter::default();
+        let mut encoded = RateMeter::default();
+        for _ in 0..frames {
+            tokio::time::advance(Duration::from_millis(50)).await;
+            if let Some(rates) = source.tick(0) {
+                source_fps.update(|value| *value = Some(rates));
+            }
+            let rates = encoded.tick(1000);
+            entry.update(|entry| entry.record(rates));
+        }
+    }
+
+    /// The rates read right while frames arrive, and `None` once they stop or the source ends.
+    #[tokio::test(start_paused = true)]
+    async fn rates_go_away_once_frames_stop() {
+        let recorder = PublishRecorder::default();
+        let entry = recorder.rendition("high");
+        run_at_20fps(&recorder, &entry, 30).await;
+        let running = recorder.snapshot(BTreeMap::new());
+        let fps = running.source_fps.expect("a running source has a rate");
+        assert!((19.0..21.0).contains(&fps), "{fps}");
+        let rendition = &running.renditions["high"];
+        let fps = rendition.fps.expect("a running encoder has a rate");
+        assert!((19.0..21.0).contains(&fps), "{fps}");
+        let bitrate = rendition.bitrate.expect("a bitrate").as_bps();
+        assert!((152_000..168_000).contains(&bitrate), "{bitrate}");
+
+        // The source stalls.
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let stalled = recorder.snapshot(BTreeMap::new());
+        assert_eq!(stalled.source_fps, None);
+        assert_eq!(stalled.renditions["high"].fps, None);
+        assert_eq!(stalled.renditions["high"].bitrate, None);
+
+        // It runs again, then ends.
+        run_at_20fps(&recorder, &entry, 30).await;
+        assert!(recorder.snapshot(BTreeMap::new()).source_fps.is_some());
+        recorder.source_fps().update(|value| *value = None);
+        entry.update(RenditionEntry::stopped);
+        let ended = recorder.snapshot(BTreeMap::new());
+        assert_eq!(ended.source_fps, None);
+        assert_eq!(ended.renditions["high"].fps, None);
     }
 
     /// Keyframes and delta frames are sized apart, and keyframes are spaced by their timestamps.
