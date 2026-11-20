@@ -228,6 +228,7 @@ fn apply_desired(
         *switcher = VideoSwitcher::new(SWITCH_DEADLINE);
         *delivery = None;
         out.stats.video.update(|video| *video = None);
+        out.stats.video_rate.update(|rate| *rate = None);
         send_if_changed(out.status, |status| {
             // The selector sets Off. Anything else means the catalog has no
             // video left.
@@ -473,6 +474,7 @@ fn report(
         }
         Outcome::Ended => {
             out.stats.video.update(|video| *video = None);
+            out.stats.video_rate.update(|rate| *rate = None);
             match ends.incumbent {
                 // The reader gave up on its track. Report it like a failed
                 // switch, so the selector backs off and tries another
@@ -567,14 +569,13 @@ fn pace(
 ) -> Delivery {
     let timestamp = frame.timestamp;
     let size = frame.size();
-    let rate = shown.tick(0);
+    if let Some(rate) = shown.tick(0) {
+        stats.video_rate.update(|value| *value = Some(rate));
+    }
     stats.video.update(|video| {
         let video = video.get_or_insert_with(VideoPlaybackStats::default);
         video.frames += 1;
         video.size = Some(size);
-        if let Some(rate) = rate {
-            video.fps = Some(rate.events.round() as u32);
-        }
     });
     let paced = super::paced(&controls.latency.borrow());
     let due = if paced {

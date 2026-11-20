@@ -42,7 +42,7 @@ use super::{
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
-use crate::stats::{EncodeStats, FrameSizes, PublishRecorder};
+use crate::stats::{FrameSizes, PublishRecorder, RenditionEntry};
 
 /// The name of the one rendition a pre-encoded source publishes.
 pub(super) const ENCODED_RENDITION: &str = "video";
@@ -305,7 +305,8 @@ async fn supervise(
     let mut failed = 0;
 
     // The source frame rate is measured here, the one place that reads every
-    // frame.
+    // frame. A snapshot drops it once no frame came for a while, and it goes
+    // as soon as this stops reading.
     let source_fps = stats.source_fps();
     let mut meter = RateMeter::default();
     loop {
@@ -313,7 +314,7 @@ async fn supervise(
             frame = frames.next() => match frame {
                 Some(_) => {
                     if let Some(rates) = meter.tick(0) {
-                        source_fps.update(|value| *value = Some(rates.events as f32));
+                        source_fps.update(|value| *value = Some(rates));
                     }
                 }
                 None => break,
@@ -326,6 +327,7 @@ async fn supervise(
                 // Every encoder failed while the source runs on. Nothing is
                 // published, and the slot must say so.
                 if failed == spawned {
+                    source_fps.update(|value| *value = None);
                     let failure = last_failure.clone().expect("counted above");
                     warn!(error = format_args!("{failure:#}"), "no rendition can encode");
                     reporter.slot(SlotState::Failed(failure.into()));
@@ -335,6 +337,7 @@ async fn supervise(
             () = stop.cancelled() => break,
         }
     }
+    source_fps.update(|value| *value = None);
     // The encoders see the same end or the same stop, and finish their tracks.
     while let Some(joined) = encoders.join_next().await {
         encoder_failure(joined);
@@ -447,7 +450,7 @@ struct Encoder {
     /// The gap between kept frames, for a rendition slower than its source.
     interval: Option<Duration>,
     reporter: Reporter,
-    stats: moq_ext_sources::stats::SharedCell<EncodeStats>,
+    stats: moq_ext_sources::stats::SharedCell<RenditionEntry>,
     stop: CancellationToken,
 }
 
@@ -533,7 +536,7 @@ impl Encoder {
     /// Returns how the encoder stopped without failing.
     async fn encode(&mut self) -> Result<Stopped, Error> {
         let target = self.config.size();
-        self.stats.update(|stats| stats.size = Some(target));
+        self.stats.update(|entry| entry.stats.size = Some(target));
 
         loop {
             let mut demand = self.producer.demand();
@@ -582,6 +585,7 @@ impl Encoder {
                             return Ok(Stopped::Done);
                         }
                         self.producer.discontinuity().map_err(Error::broadcast)?;
+                        self.stats.update(RenditionEntry::stopped);
                         self.reporter.rendition(&self.name, RenditionState::Idle);
                         break;
                     }
@@ -594,6 +598,7 @@ impl Encoder {
                 let frame = match next {
                     Next::Frame(frame) => frame,
                     Next::Ended | Next::Stopped => {
+                        self.stats.update(RenditionEntry::stopped);
                         encoder.flush().await.map_err(Error::encoder)?;
                         let mut tail = received(&mut encoder).map_err(Error::encoder)?;
                         self.restamp(&mut tail);
@@ -688,11 +693,16 @@ impl Encoder {
                 let bytes: usize = encoded.iter().map(|packet| packet.payload.len()).sum();
                 let rates = meter.tick(bytes as u64);
                 let smoothed = timing.record(took);
-                self.stats.update(|stats| {
-                    stats.record(rates);
-                    stats.encode_time = Some(smoothed);
+                self.stats.update(|entry| {
+                    entry.record(rates);
+                    entry.stats.encode_time = Some(smoothed);
                     for unit in &encoded {
-                        sizes.record(stats, unit.payload.len(), unit.keyframe, unit.timestamp);
+                        sizes.record(
+                            &mut entry.stats,
+                            unit.payload.len(),
+                            unit.keyframe,
+                            unit.timestamp,
+                        );
                     }
                 });
                 for unit in &encoded {
@@ -712,9 +722,9 @@ impl Encoder {
                 }
                 demand = moved;
                 let track = demand.name();
-                self.stats.update(|stats| {
-                    if stats.track != track {
-                        stats.track = track.to_string();
+                self.stats.update(|entry| {
+                    if entry.stats.track != track {
+                        entry.stats.track = track.to_string();
                     }
                 });
             }
@@ -809,17 +819,18 @@ pub(super) async fn run_encoded(
             }
             for frame in &frames {
                 let rates = meter.tick(frame.payload.len() as u64);
-                entry.update(|stats| stats.record(rates));
+                entry.update(|entry| entry.record(rates));
             }
             units += frames.len() as u64;
             import.decode(frames).map_err(Error::decoder)?;
             let track = import.track().name();
-            entry.update(|stats| {
-                if stats.track != track {
-                    stats.track = track.to_string();
+            entry.update(|entry| {
+                if entry.stats.track != track {
+                    entry.stats.track = track.to_string();
                 }
             });
         }
+        entry.update(RenditionEntry::stopped);
         // The splitter holds the final access unit until the next start code,
         // so the end of the stream has to flush it explicitly.
         let tail = split.flush(None).map_err(Error::decoder)?;
