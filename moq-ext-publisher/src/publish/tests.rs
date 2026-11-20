@@ -248,6 +248,54 @@ async fn a_rendition_smaller_than_its_source_encodes_scaled_frames() {
     pushing.abort();
 }
 
+/// A source whose frames change size mid-stream, as a reopened capture's do, keeps encoding at the track's size.
+#[tokio::test]
+async fn a_source_that_changes_size_keeps_encoding() {
+    let opened = moq_video::Size::new(320, 180);
+    let resized = moq_video::Size::new(400, 300);
+    let rate = moq_video::FrameRate::new(30, 1).expect("a valid rate");
+    let (sender, source) = VideoSource::push(moq_ext_sources::VideoFormat { size: opened, rate });
+    let (resize, mut resizing) = tokio::sync::watch::channel(false);
+    let pushing = tokio::spawn(async move {
+        let clock = moq_mux::Clock::new();
+        let mut tick = tokio::time::interval(Duration::from_millis(33));
+        loop {
+            tick.tick().await;
+            let size = if *resizing.borrow_and_update() {
+                resized
+            } else {
+                opened
+            };
+            let pixels = vec![0x80; moq_video::I420::len(size).expect("a valid size")];
+            let picture = moq_video::I420::new(size, pixels).expect("a whole picture");
+            let frame = moq_video::Frame::new(moq_video::Surface::I420(picture), clock.now());
+            if sender.push(frame).is_err() {
+                return;
+            }
+        }
+    });
+    let (broadcast, name, _subscribing) =
+        watch_until_sent(source, crate::VideoRendition::new("180p")).await;
+    resize.send_replace(true);
+    let before = sent(&broadcast, &name).frames;
+    tokio::time::timeout(TIMEOUT, async {
+        while sent(&broadcast, &name).frames < before + 10 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the rendition goes on after the resize");
+    assert_eq!(broadcast.stats().renditions[&name].size, Some(opened));
+    assert!(
+        matches!(
+            broadcast.status().borrow().renditions.get(&name),
+            Some(crate::RenditionState::Encoding { .. })
+        ),
+        "the rendition encodes"
+    );
+    pushing.abort();
+}
+
 /// A value track carries its newest value to a reader, and refuses a taken name and a closed broadcast.
 #[tokio::test]
 async fn a_value_track_reaches_a_reader_of_the_broadcast() {
