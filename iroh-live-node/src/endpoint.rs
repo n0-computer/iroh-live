@@ -3,6 +3,7 @@
 use std::{io::Write, path::Path};
 
 use iroh::{Endpoint, SecretKey, endpoint::Builder};
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 use n0_error::{e, stack_error};
 use tracing::{debug, info, warn};
 
@@ -105,19 +106,23 @@ impl EndpointConfig {
     /// # }
     /// ```
     pub async fn apply(self, builder: Builder) -> Builder {
-        let mut builder = builder.preset(MoqPreset);
-        if let Some(key) = self.secret_key {
-            builder = builder.secret_key(key);
-        }
+        let builder = builder.preset(MoqPreset);
         let announce = match self.mdns {
             Mdns::Announce => true,
             Mdns::Lookup => false,
-            Mdns::Off => return builder,
+            Mdns::Off => {
+                return match self.secret_key {
+                    Some(key) => builder.secret_key(key),
+                    None => builder,
+                };
+            }
         };
-        let options = iroh_mdns_peer_lookup::Options::new()
-            .announce(announce)
-            .build();
-        match iroh_mdns_peer_lookup::lookup(options).await {
+        // The mDNS lookup is keyed by the endpoint id, so fix the key here (an
+        // ephemeral one when none is configured) rather than at bind.
+        let key = self.secret_key.unwrap_or_else(SecretKey::generate);
+        let id = key.public();
+        let builder = builder.secret_key(key);
+        match MdnsAddressLookup::builder().advertise(announce).build(id) {
             Ok(lookup) => {
                 debug!(announce, "mDNS address lookup ready");
                 builder.address_lookup(lookup)
