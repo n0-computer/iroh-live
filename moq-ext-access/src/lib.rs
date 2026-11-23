@@ -98,16 +98,16 @@ impl Grant {
         }
     }
 
-    /// Returns this grant with `path` and every path beneath it added to what
-    /// the peer may publish.
+    /// Returns this grant with the prefix `text` added to what the peer may
+    /// publish: the path it names and every path beneath it.
     ///
     /// # Errors
     ///
-    /// Fails with [`InvalidPath`] if `path` is not a valid prefix: it holds
+    /// Fails with [`InvalidPath`] if `text` is not a valid prefix: it holds
     /// `*`, has an empty segment, or has too many segments.
-    pub fn with_publish_path(mut self, path: &str) -> Result<Self, InvalidPath> {
-        let prefix = path.parse::<Prefix>().map_err(|source| InvalidPath {
-            path: path.to_owned(),
+    pub fn with_publish_prefix(mut self, text: &str) -> Result<Self, InvalidPath> {
+        let prefix = text.parse::<Prefix>().map_err(|source| InvalidPath {
+            path: text.to_owned(),
             source,
         })?;
         self.publish.insert(prefix);
@@ -355,7 +355,14 @@ pub enum Viewer<'a, P: PeerId> {
 /// A path convention: where each peer publishes, and which peer owns a path.
 ///
 /// The two halves agree: [`owner`](Self::owner) of a path that
-/// [`scope`](Self::scope) gives a peer names that peer.
+/// [`scope`](Self::scope) gives a peer names that peer or no one.
+///
+/// Ownership must carry down to sub-paths: every path beneath a path a peer
+/// owns is owned by that peer or by no one. A grant is a set of prefixes,
+/// so a peer that may publish at a path it owns, such as through a ticket
+/// claim, may publish beneath it too. A layout whose owner is a later
+/// segment, such as `<name>/<peer>`, breaks this: a claim on `cam/<bob>`
+/// would let Bob publish `cam/<bob>/<carol>`, which names Carol.
 ///
 /// A pair `(A, B)` is the union of two layouts.
 pub trait Layout<P: PeerId>: Debug + Send + Sync + 'static {
@@ -536,10 +543,10 @@ mod tests {
     }
 
     #[test]
-    fn a_publish_path_that_is_not_a_prefix_is_an_error() {
+    fn a_publish_prefix_that_is_not_valid_is_an_error() {
         for path in ["a/*/b", "a/**", "a/b*c", "a//b", "/a"] {
             let err = Grant::nothing()
-                .with_publish_path(path)
+                .with_publish_prefix(path)
                 .expect_err("a path with a wildcard");
             assert_eq!(err.path, path);
         }
@@ -550,7 +557,7 @@ mod tests {
         let nothing = Grant::nothing();
         assert!(!nothing.allows_publish("a/b") && !nothing.allows_subscribe("a/b"));
         let one = Grant::nothing()
-            .with_publish_path("a/b")
+            .with_publish_prefix("a/b")
             .expect("a literal path");
         assert!(one.allows_publish("a/b") && one.allows_publish("a/b/c"));
         assert!(!one.allows_publish("a/bc") && !one.allows_publish("a"));

@@ -33,7 +33,11 @@ The node itself takes any path. `Node::publish(path, audience)` and
 `Node::subscribe(path, reach)` apply no layout. A layout of your own
 implements the `Layout` trait: `scope` returns the prefixes a peer may
 publish under, and `owner` returns the peer that owns a path. The two must
-agree: the owner of any path in `scope(peer)` is `peer`.
+agree: the owner of any path in `scope(peer)` is `peer` or no one. Ownership
+must also carry down: every path beneath one that a peer owns is owned by
+that peer or by no one. A grant covers a whole subtree, so a peer allowed to
+publish at its own path may publish beneath it too. Keep the owner in a
+leading segment, as `live/<peer>/...` does, not a trailing one.
 [Publish at your own path](../how-to/custom-paths.md) is a complete program.
 
 A grant is a set of path prefixes. A prefix such as `stage/<id>` covers its

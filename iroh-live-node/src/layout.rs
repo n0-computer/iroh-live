@@ -8,7 +8,7 @@
 
 use iroh::EndpointId;
 pub use moq_ext_access::Layout;
-use moq_net::{Path, Pattern, Prefix, Prefixes, broadcast};
+use moq_net::{Path, Prefix, Prefixes, broadcast};
 use n0_error::e;
 
 use crate::{
@@ -58,7 +58,7 @@ impl LiveLayout {
     pub fn new(root: impl Into<String>) -> Self {
         let root = root.into();
         assert!(
-            !root.is_empty() && !root.contains('/') && Pattern::literal(&root).is_ok(),
+            !root.is_empty() && !root.contains('/') && root.parse::<Prefix>().is_ok(),
             "the root of a layout is one valid path segment, not {root:?}"
         );
         Self { root }
@@ -86,7 +86,7 @@ impl LiveLayout {
             return Err(invalid());
         }
         let path = format!("{}/{peer}/{name}", self.root);
-        Pattern::literal(&path).map_err(|_| invalid())?;
+        path.parse::<Prefix>().map_err(|_| invalid())?;
         Path::new(&path).map_err(|_| invalid())
     }
 

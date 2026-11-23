@@ -386,6 +386,13 @@ impl Node {
     /// bound how many publications one peer can see, as
     /// [`moq_ext_access::visible_paths`] describes.
     ///
+    /// A link sees a path through a grant prefix, which covers every path
+    /// beneath it. A publication beneath another with a narrower audience
+    /// therefore hides the upper one from every link outside its own
+    /// audience, relays included when the lower one is
+    /// [`Audience::Peers`]. The node logs a warning when that happens.
+    /// Publish a private broadcast beside a public one, not beneath it.
+    ///
     /// # Errors
     ///
     /// Fails with [`Error::Duplicate`] if another publication has the path,
