@@ -186,6 +186,13 @@ impl VideoSource {
     /// the portal is unavailable. On Wayland there is no fallback, because X11
     /// capture there sees only XWayland's windows.
     ///
+    /// A window or display that settles at a new size, or a device that
+    /// changes its format, is reopened behind the same source, so its frames
+    /// go on at the new size while [`format`](Self::format) keeps the size it
+    /// opened at. The source fails if the reopen does not succeed after a few
+    /// attempts, and ends when the user stops sharing, the window closes or
+    /// the device goes away.
+    ///
     /// Cancellation safe: dropping the future stops the thread and releases
     /// the device.
     ///
@@ -454,7 +461,9 @@ impl VideoSource {
 
     /// Returns the format the source opened at.
     ///
-    /// It may differ from what the config asked for.
+    /// It may differ from what the config asked for. Frames can come at
+    /// another size later, such as from a captured window that was resized,
+    /// so a consumer that cares takes the size from each frame.
     #[must_use]
     pub fn format(&self) -> VideoFormat {
         self.inner.format

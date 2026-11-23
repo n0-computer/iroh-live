@@ -35,6 +35,18 @@ const CAMERA_FIRST_FRAME_PATIENCE: Duration = Duration::from_secs(10);
 /// stuck in a read, and waiting longer would not help.
 const RELEASE_PATIENCE: Duration = Duration::from_secs(3);
 
+/// How many times in a row a capture may fail to reopen before its source ends.
+///
+/// An attempt fails when the open fails or the reopened stream ends again
+/// before its first frame.
+const MAX_REOPENS: u32 = 5;
+
+/// The wait before the second reopen attempt, which doubles for each later one.
+///
+/// The first attempt goes ahead at once, because the picture is frozen until
+/// it succeeds.
+const REOPEN_BACKOFF: Duration = Duration::from_millis(250);
+
 /// The camera captures of this process that were dropped but may still hold a device.
 ///
 /// moq-video's capture stream closes its device when it drops, which happens
@@ -271,25 +283,13 @@ pub(super) async fn open(
             return;
         }
 
-        loop {
-            let frame = tokio::select! {
-                read = stream.read() => read,
-                () = stop.cancelled() => break,
-            };
-            match frame {
-                Ok(Some(frame)) => slot.send(Arc::new(frame)),
-                Ok(None) => {
-                    debug!("video capture ended");
-                    return;
-                }
-                Err(err) => {
-                    warn!(error = %err, "video capture failed");
-                    slot.fail(Arc::new(Error::device(err)));
-                    return;
-                }
-            }
-        }
-        debug!("video capture stopped");
+        feed(
+            stream,
+            async || video::capture::open(&config).await,
+            &slot,
+            &stop,
+        )
+        .await;
     })?;
     let driver = if camera {
         Driver::Camera(Camera {
@@ -309,14 +309,117 @@ pub(super) async fn open(
     }
 }
 
+/// A capture stream, as [`feed`] reads it.
+trait Capture {
+    /// Returns the next frame, `None` once the stream ended for a reopen, or the error that ended it.
+    async fn read(&mut self) -> Result<Option<video::Frame>, video::Error>;
+}
+
+impl Capture for video::capture::Stream {
+    async fn read(&mut self) -> Result<Option<video::Frame>, video::Error> {
+        Self::read(self).await
+    }
+}
+
+/// Reads `stream` into `slot` until `stop`, reopening it whenever it ends without an error.
+///
+/// moq-video ends a stream without an error when its source changed in a way
+/// the stream cannot follow, such as a window or display that settled at a
+/// new size or a camera that renegotiated its format, and expects the caller
+/// to reopen the same config. A source the user stopped sharing, a closed
+/// window or an unplugged device ends with an error instead, which fails the
+/// slot. The reopened frames go into the same slot, so readers carry on and
+/// see frames of the new size.
+///
+/// A reopen that fails, or a reopened stream that ends again before its first
+/// frame, is retried with [`REOPEN_BACKOFF`] doubling, at most [`MAX_REOPENS`]
+/// times in a row before the slot fails. An open that fails because the
+/// source is gone or was refused is not retried, so a declined permission
+/// dialog does not come back.
+async fn feed<S: Capture>(
+    mut stream: S,
+    mut open: impl AsyncFnMut() -> Result<S, video::Error>,
+    slot: &FrameSlot,
+    stop: &CancellationToken,
+) {
+    // Reopen attempts since the last frame.
+    let mut attempts = 0u32;
+    loop {
+        loop {
+            let read = tokio::select! {
+                read = stream.read() => read,
+                () = stop.cancelled() => {
+                    debug!("video capture stopped");
+                    return;
+                }
+            };
+            match read {
+                Ok(Some(frame)) => {
+                    if attempts > 0 {
+                        info!(size = %frame.size(), attempts, "video capture reopened");
+                        attempts = 0;
+                    }
+                    slot.send(Arc::new(frame));
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(error = %err, "video capture failed");
+                    slot.fail(Arc::new(Error::device(err)));
+                    return;
+                }
+            }
+        }
+        // Released before the reopen: a V4L2 camera opens only once at a time.
+        drop(stream);
+        stream = loop {
+            if attempts == MAX_REOPENS {
+                warn!(attempts, "video capture did not reopen, ending it");
+                slot.fail(Arc::new(Error::device_msg(format!(
+                    "the capture ended and did not reopen in {attempts} attempts"
+                ))));
+                return;
+            }
+            let delay = match attempts {
+                0 => Duration::ZERO,
+                n => REOPEN_BACKOFF * 2u32.pow(n - 1),
+            };
+            attempts += 1;
+            debug!(attempt = attempts, ?delay, "video capture ended, reopening");
+            let opened = tokio::select! {
+                opened = async {
+                    tokio::time::sleep(delay).await;
+                    open().await
+                } => opened,
+                () = stop.cancelled() => {
+                    debug!("video capture stopped");
+                    return;
+                }
+            };
+            match opened {
+                Ok(stream) => break stream,
+                Err(
+                    err @ (video::Error::PermissionDenied(_)
+                    | video::Error::SourceUnavailable(_)
+                    | video::Error::Unsupported(_)),
+                ) => {
+                    warn!(error = %err, "video capture cannot reopen");
+                    slot.fail(Arc::new(Error::device(err)));
+                    return;
+                }
+                Err(err) => warn!(error = %err, attempt = attempts, "video capture did not reopen"),
+            }
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use tokio_util::sync::CancellationToken;
 
-    use super::{Camera, Releases};
-    use crate::local_task;
+    use super::{Camera, Capture, MAX_REOPENS, Releases, feed};
+    use crate::{frames::FrameSlot, local_task, video};
 
     /// Starts a capture thread that holds its device until the returned sender is used or dropped.
     fn holding(name: &str) -> (local_task::LocalTask, std::sync::mpsc::SyncSender<()>) {
@@ -402,5 +505,114 @@ mod tests {
             "a forgotten capture delays no later open"
         );
         let _ = unstick.send(());
+    }
+
+    /// A capture stream that yields its reads in order, a frame interval apart, then waits forever.
+    struct Fake(std::collections::VecDeque<Result<Option<video::Frame>, video::Error>>);
+
+    impl Capture for Fake {
+        async fn read(&mut self) -> Result<Option<video::Frame>, video::Error> {
+            // Lets a reader see each frame before the next replaces it.
+            tokio::time::sleep(Duration::from_millis(33)).await;
+            match self.0.pop_front() {
+                Some(read) => read,
+                None => std::future::pending().await,
+            }
+        }
+    }
+
+    /// Returns a frame of `width` by 2 pixels.
+    fn frame(width: u32) -> Option<video::Frame> {
+        let size = video::Size::new(width, 2);
+        let surface = video::Surface::rgba(&vec![0; width as usize * 8], size).expect("valid size");
+        Some(video::Frame::new(
+            surface,
+            moq_net::Timestamp::from_micros(0).expect("0"),
+        ))
+    }
+
+    /// Feeds `first` into a new slot, with `opens` as the results of each reopen.
+    ///
+    /// Returns the slot's reader, the stop token and the feeding future, which
+    /// owns the slot and so ends its frames once dropped.
+    fn start(
+        first: Fake,
+        opens: Vec<Result<Fake, video::Error>>,
+    ) -> (
+        crate::frames::FrameReader,
+        CancellationToken,
+        impl Future<Output = ()>,
+    ) {
+        let slot = FrameSlot::new();
+        let reader = slot.reader();
+        let stop = CancellationToken::new();
+        let feeding = {
+            let stop = stop.clone();
+            async move {
+                let mut opens = opens.into_iter();
+                let open = async || opens.next().expect("no more opens were expected");
+                feed(first, open, &slot, &stop).await;
+            }
+        };
+        (reader, stop, feeding)
+    }
+
+    /// A stream that ends for a reopen goes on in the same slot, at the new size.
+    #[tokio::test(start_paused = true)]
+    async fn a_resized_capture_reopens_into_the_same_frames() {
+        let first = Fake([Ok(frame(4)), Ok(None)].into());
+        let reopened = Fake([Ok(frame(8))].into());
+        let (reader, stop, feeding) = start(first, vec![Ok(reopened)]);
+        let mut frames = reader.frames();
+        let watching = async {
+            assert_eq!(frames.next().await.expect("a frame").size().width, 4);
+            assert_eq!(frames.next().await.expect("a frame").size().width, 8);
+            stop.cancel();
+        };
+        tokio::join!(feeding, watching);
+        assert!(frames.next().await.is_none());
+        assert!(reader.failure().is_none(), "a stopped capture did not fail");
+    }
+
+    /// A capture that keeps failing to reopen ends its source with a failure.
+    #[tokio::test(start_paused = true)]
+    async fn a_capture_that_does_not_reopen_fails() {
+        let first = Fake([Ok(frame(4)), Ok(None)].into());
+        let mut opens: Vec<_> = (0..MAX_REOPENS - 1)
+            .map(|_| Err(video::Error::CodecGone("busy".into())))
+            .collect();
+        // A reopened stream that ends before its first frame counts as a failure too.
+        opens.push(Ok(Fake([Ok(None)].into())));
+        let (reader, _stop, feeding) = start(first, opens);
+        feeding.await;
+        assert!(
+            reader.failure().is_some(),
+            "the source ended without a failure"
+        );
+    }
+
+    /// A source that is gone ends the capture, without a reopen.
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_source_ends_the_capture() {
+        let first = Fake(
+            [
+                Ok(frame(4)),
+                Err(video::Error::SourceUnavailable("window closed".into())),
+            ]
+            .into(),
+        );
+        let (reader, _stop, feeding) = start(first, Vec::new());
+        feeding.await;
+        assert!(reader.failure().is_some());
+    }
+
+    /// A reopen refused for good is not retried.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_reopen_ends_the_capture() {
+        let first = Fake([Ok(frame(4)), Ok(None)].into());
+        let opens = vec![Err(video::Error::PermissionDenied("declined".into()))];
+        let (reader, _stop, feeding) = start(first, opens);
+        feeding.await;
+        assert!(reader.failure().is_some());
     }
 }
