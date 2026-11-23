@@ -1066,6 +1066,59 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
     carol.shutdown().await;
 }
 
+/// A `Peers` publication beneath a visible one never reaches a peer outside its set.
+///
+/// Carol may see `cam`, and her grant's prefix for it covers `cam/private`
+/// too. The node narrows her grant before it announces the child, so the
+/// announcement never reaches her, however often the child comes and goes.
+#[tokio::test]
+#[traced_test]
+async fn a_hidden_child_is_never_announced_to_an_outsider() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
+
+    let public = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
+    let child = alice.path("cam/private");
+    let mut bob_table = bob.node.origin().announced();
+    let mut carol_table = carol.node.origin().announced();
+    step("bob connects", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    step("carol connects", carol.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    announced(&mut carol_table, public.path().as_str()).await;
+
+    for _ in 0..50 {
+        let private = publish(&alice.node, &child, Audience::peers([bob.id()])).expect("publish");
+        announced(&mut bob_table, &child).await;
+        private.unpublish();
+        retracted(&mut bob_table, &child).await;
+    }
+
+    // Carol's table has seen every announcement before this one.
+    let last = publish(&alice.node, alice.path("last"), Audience::Granted).expect("publish");
+    step("carol sees the last publication", async {
+        loop {
+            let event = carol_table.next().await.expect("origin closed");
+            let (announce, active) = common::announcement(&event);
+            assert!(
+                !(active && announce.prefix.as_str() == child),
+                "carol saw {child} announced"
+            );
+            if active && announce.prefix.as_str() == last.path().as_str() {
+                return;
+            }
+        }
+    })
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
 /// Changing a `Peers` set re-authorizes live sessions in both directions.
 ///
 /// A peer taken out loses the path, and what it reads there is reset with

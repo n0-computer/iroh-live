@@ -301,7 +301,8 @@ fn apply_peers(state: &mut State, id: u64, generation: u64, peers: BTreeSet<Endp
 ///
 /// Creates the broadcast and runs `fill` before taking the node's lock, so a
 /// fill that panics or calls back into the node cannot poison or deadlock
-/// it. The broadcast stays unannounced until the lock is held.
+/// it. The broadcast stays unannounced until, under the lock, every link
+/// is authorized for it.
 pub(crate) fn publish<T, E>(
     shared: &Arc<Shared>,
     path: Path,
@@ -329,16 +330,14 @@ where
     if let Err(err) = free_path(&mut state, &path) {
         return refuse(err);
     }
-    // Announced under the lock, before any link may see the path, so no peer
-    // learns of it before the table has it.
-    if let Err(source) = publication.announce() {
-        return refuse(e!(Error::Moq { source }));
-    }
     let broadcast = publication.broadcast().clone();
     let id = state.next_id();
     let closed_task = unpublish_when_closed(broadcast.consume(), weak.clone(), id, path.clone());
-    info!(%path, ?audience, "published");
     let withdrawn = CancellationToken::new();
+    // Every link is re-authorized for the publication before it is announced.
+    // A grant's prefix covers its subtree, so a link that sees a parent path
+    // would otherwise see a hidden child's announcement until its grant
+    // narrows. A grant that names a path not announced yet shows nothing.
     state.add_publication(
         id,
         PublicationEntry {
@@ -351,6 +350,14 @@ where
             withdrawn: withdrawn.clone(),
         },
     );
+    // Announced under the lock, so no link learns of the path before the
+    // table has it.
+    if let Err(source) = state.publications[&id].publication.announce() {
+        drop(state.remove_publication(id));
+        broadcast.close();
+        return Err(e!(Error::Moq { source }));
+    }
+    info!(%path, ?audience, "published");
     let publication = Publication {
         inner: Arc::new(PublicationInner {
             id,
