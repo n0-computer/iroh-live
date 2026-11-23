@@ -1406,7 +1406,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
 /// A browser that dials an iroh publisher's path cannot publish beneath it.
 ///
 /// A grant without a root is rooted at the dialed path, so the browser's
-/// one-segment rule must be reduced to that path, not granted as is.
+/// `anon` prefix must be reduced to that path, not granted as is.
 #[tokio::test]
 async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
     let _ = tracing_subscriber::fmt::try_init();

@@ -355,6 +355,49 @@ async fn room_broadcasts_are_private() {
     peer_b.shutdown().await;
 }
 
+/// Reports whether `peer` fails to resolve `path` from `publisher` within three seconds.
+async fn refused(peer: &Peer, path: &str, publisher: EndpointId) -> bool {
+    let subscribe = peer.node.subscribe(path, Reach::Direct(publisher));
+    tokio::time::timeout(Duration::from_secs(3), subscribe)
+        .await
+        .is_err()
+}
+
+/// A member in two rooms shows each room's broadcast to that room's members only.
+///
+/// Alice's paths in both rooms share the prefix `rooms/<alice>`, so the
+/// separation rests on each publication's audience.
+#[tokio::test]
+#[traced_test]
+async fn a_member_in_two_rooms_is_visible_per_topic() {
+    let (peer_a, room_x, peer_b, room_bx) = two_peers_in_room().await;
+    let room_y = peer_a.join(&RoomTicket::generate(), "alice").await;
+    let peer_c = Peer::spawn().await;
+    let room_cy = peer_c.join(&room_y.ticket(), "carol").await;
+    let _cam_x = publish_counter(&room_x, "cam").expect("publish");
+    let _cam_y = publish_counter(&room_y, "cam").expect("publish");
+    let a = peer_a.id();
+    let path_x = format!("rooms/{a}/{}/cam", room_x.ticket().topic_id());
+    let path_y = format!("rooms/{a}/{}/cam", room_y.ticket().topic_id());
+
+    wait_for_state(&room_bx, "bob sees a's cam", lists_cam(a)).await;
+    wait_for_state(&room_cy, "carol sees a's cam", lists_cam(a)).await;
+    room_bx.subscribe(a, "cam").await.expect("bob reads room x");
+    room_cy
+        .subscribe(a, "cam")
+        .await
+        .expect("carol reads room y");
+
+    let (bob_refused, carol_refused) =
+        tokio::join!(refused(&peer_b, &path_y, a), refused(&peer_c, &path_x, a));
+    assert!(bob_refused, "bob resolved alice's broadcast in room y");
+    assert!(carol_refused, "carol resolved alice's broadcast in room x");
+
+    peer_c.shutdown().await;
+    peer_a.shutdown().await;
+    peer_b.shutdown().await;
+}
+
 /// A broadcast name must be one path segment.
 #[tokio::test]
 #[traced_test]

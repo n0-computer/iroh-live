@@ -75,6 +75,44 @@ mod tests {
         assert!(cuts.due(true), "the next join");
     }
 
+    /// A track asks for its first group, and a live join after a delta asks
+    /// again until the next group lands.
+    #[tokio::test]
+    async fn asked_follows_the_tracks_requests() {
+        use std::time::Duration;
+
+        use moq_net::{
+            Timestamp,
+            track::{Info, Range, Refresh, Start, Subscription},
+        };
+
+        let at = |millis| Timestamp::from_millis(millis).expect("a timestamp");
+        let broadcast = moq_net::broadcast::Info::new().produce();
+        let info = Info::default().with_refresh(Refresh::default().with_ratio(0));
+        let track = broadcast
+            .create_track("video", Some(info))
+            .expect("a new track");
+        let demand = track.demand();
+        let _first = track.subscribe(None);
+        assert!(asked(&demand), "a track with no group asks for its first");
+
+        let mut group = track.append_group(at(0)).expect("a group");
+        group.write_frame(at(0), &b"key"[..]).expect("a frame");
+        assert!(!asked(&demand), "the first group answered it");
+        group.write_frame(at(40), &b"delta"[..]).expect("a frame");
+        assert!(!asked(&demand), "a delta asks nothing");
+
+        let live = Subscription::default().with_ranges([Range::from(Start::Live(Duration::ZERO))]);
+        let _late = track.subscribe(live);
+        assert!(asked(&demand), "a live join after a delta asks for a group");
+        group.finish().expect("finished");
+        assert!(asked(&demand), "the request holds until a group lands");
+
+        let mut next = track.append_group(at(80)).expect("a group");
+        next.write_frame(at(80), &b"key"[..]).expect("a frame");
+        assert!(!asked(&demand), "the next group answered it");
+    }
+
     /// A scheduled keyframe that answered a request leaves nothing to cut for it.
     #[test]
     fn a_served_request_does_not_cut() {

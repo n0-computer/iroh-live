@@ -115,6 +115,9 @@ pub struct Config {
     pub auth_url: Option<url::Url>,
 
     /// Lets every browser session publish and subscribe under these prefixes, as moq-relay does.
+    ///
+    /// A prefix covers its path and every path beneath it, and the empty
+    /// prefix `""` covers every path. A wildcard such as `anon/**` is refused.
     #[arg(long, value_name = "PREFIX", value_delimiter = ',')]
     pub auth_public: Vec<Prefix>,
 
@@ -616,6 +619,8 @@ mod tests {
             parse(&["--auth-public", "anon/**"]).is_err(),
             "a wildcard is no prefix"
         );
+        let config = parse(&["--auth-public", ""]).expect("the empty prefix");
+        assert_eq!(config.auth_public, [Prefix::all()]);
     }
 
     #[test]

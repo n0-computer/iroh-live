@@ -592,6 +592,34 @@ async fn subscribed_with(track: &moq_net::track::Producer, wanted: Delay) {
     });
 }
 
+/// Waits until the readers of `track` join at `wanted`'s minimum behind live.
+///
+/// A fresh subscription starts its range at the live edge less the minimum,
+/// so a player that stopped passing the minimum would join at the oldest group.
+async fn joined_with(track: &moq_net::track::Producer, wanted: Delay) {
+    use moq_net::track::Start;
+
+    let start = Start::Live(wanted.min.expect("a minimum"));
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if track
+                .subscription()
+                .is_some_and(|sub| sub.ranges.iter().any(|range| range.start == start))
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the subscription asks for {:?}, not a range from {start:?}",
+            track.subscription().map(|sub| sub.ranges)
+        )
+    });
+}
+
 /// Waits until the player's playout clock runs `delay` behind live.
 async fn clock_at(player: &Player, delay: Duration) {
     tokio::time::timeout(TIMEOUT, async {
@@ -637,6 +665,7 @@ async fn a_running_player_changes_its_latency() {
     let mut frames = player.video_frames();
     wait_for_size(&mut frames, size).await;
     subscribed_with(&track, DEFAULT_LATENCY).await;
+    joined_with(&track, DEFAULT_LATENCY).await;
     clock_at(&player, Duration::from_millis(100)).await;
     let (states, recorder) = record_states(&player);
 

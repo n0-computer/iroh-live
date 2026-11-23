@@ -403,6 +403,10 @@ mod tests {
         assert!(a_browser_may_publish("anon/hello"));
         assert!(a_browser_may_publish("anon/hello/cam"));
         assert!(!a_browser_may_publish("hello"));
+        assert!(
+            !a_browser_may_publish("anonx/cam"),
+            "a prefix ends at a segment"
+        );
         assert!(!a_browser_may_publish("live/someone/cam"));
         assert!(!a_browser_may_publish("rooms/someone/topic/cam"));
     }
@@ -427,6 +431,8 @@ mod tests {
         // A path under the anonymous prefix may be published at and beneath.
         let grant = browser_grant("/anon/hello").expect("a grant");
         assert!(grant.publish.path.matches(""));
+        assert!(grant.publish.path.matches("cam"));
+        let grant = browser_grant("/anon").expect("a grant");
         assert!(grant.publish.path.matches("cam"));
     }
 
