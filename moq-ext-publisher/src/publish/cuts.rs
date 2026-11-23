@@ -86,7 +86,8 @@ mod tests {
             track::{Info, Range, Refresh, Start, Subscription},
         };
 
-        let at = |millis| Timestamp::from_millis(millis).expect("a timestamp");
+        // A track without a timescale keys its groups by unscaled timestamps.
+        let at = Timestamp::unscaled;
         let broadcast = moq_net::broadcast::Info::new().produce();
         let info = Info::default().with_refresh(Refresh::default().with_ratio(0));
         let track = broadcast
@@ -99,7 +100,7 @@ mod tests {
         let mut group = track.append_group(at(0)).expect("a group");
         group.write_frame(at(0), &b"key"[..]).expect("a frame");
         assert!(!asked(&demand), "the first group answered it");
-        group.write_frame(at(40), &b"delta"[..]).expect("a frame");
+        group.write_frame(at(0), &b"delta"[..]).expect("a frame");
         assert!(!asked(&demand), "a delta asks nothing");
 
         let live = Subscription::default().with_ranges([Range::from(Start::Live(Duration::ZERO))]);
@@ -108,8 +109,8 @@ mod tests {
         group.finish().expect("finished");
         assert!(asked(&demand), "the request holds until a group lands");
 
-        let mut next = track.append_group(at(80)).expect("a group");
-        next.write_frame(at(80), &b"key"[..]).expect("a frame");
+        let mut next = track.append_group(at(1)).expect("a group");
+        next.write_frame(at(1), &b"key"[..]).expect("a frame");
         assert!(!asked(&demand), "the next group answered it");
     }
 
