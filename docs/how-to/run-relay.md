@@ -36,7 +36,7 @@ The defaults suit a relay on your own machine or a trusted network:
   pushes to it, and every broadcast it pulls, is visible to every browser and
   iroh client that connects.
 - An iroh client may publish only at paths that name its endpoint id. A
-  browser may publish names of one segment.
+  browser may publish only under `anon/`.
 - The relay pulls no tickets, so a browser cannot open a ticket until you
   pass `--open-pulls` or set up tokens.
 - TLS uses a self-signed certificate, made at every start. The web page pins

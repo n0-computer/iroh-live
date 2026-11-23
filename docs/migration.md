@@ -12,7 +12,7 @@ behavior.
   together.
 - **Paths.** Broadcasts move from bare names, such as `hello`, to
   `live/<endpoint id>/<name>`. Rooms publish at
-  `rooms/<topic>/<endpoint id>/<name>`.
+  `rooms/<endpoint id>/<topic>/<name>`.
 - **Tickets.** `LiveTicket` (`iroh-live:...`) becomes `BroadcastTicket`
   (`ilv1:...`), which holds a full path. Room tickets have the new kind
   `room2`. Old tickets do not parse.
@@ -152,9 +152,10 @@ Names from development versions between the two releases:
   stops this node from dialing it. See [Access control](concepts/access.md).
 - **Routes.** One route table takes every direct session and relay link. A
   subscription moves between a direct route and a relay route without ending.
-- **Latency.** `PlayerConfig::latency` takes moq-net's `Delay`, and its `min`
-  is now a floor. The playout delay follows the catalog's `delay` and the
-  measured audio jitter above it.
+- **Latency.** `PlayerConfig::latency` takes moq-mux's media `Delay`,
+  re-exported as `iroh_live::media::Delay`, and its `min` is now a floor.
+  The playout delay follows the catalog's `delay` and the measured audio
+  jitter above it.
 - **Upstream types.** A `VideoRendition` holds moq-video's
   `encode::Config`, and `set_audio` takes moq-audio's `encode::Config`.
 - **The relay.** It pulls tickets only for sessions whose token allows it, or
@@ -174,3 +175,34 @@ Names from development versions between the two releases:
   `RelayConfig`, `PlayerConfig`, `VideoEncoding`, `VideoRendition` and
   `Adaptation` are `#[non_exhaustive]`. Build them from `Default` or a
   constructor, then use the `with_*` builders or set fields.
+
+## Prefix grants
+
+A later moq update turned grants from path patterns into path prefixes. A
+prefix covers its path and every path beneath it. Nodes on either side of
+this change do not interoperate in rooms, and some tokens change meaning:
+
+- **Room paths.** A room broadcast moves from `rooms/<topic>/<member>/<name>`
+  to `rooms/<member>/<topic>/<name>`, so each member publishes under one
+  prefix. A room with members on both sides still lists them, but no
+  broadcast can be subscribed in either direction, and a relay of either
+  side refuses the other side's room publications. `live/<id>/...` paths do
+  not change.
+- **Room tickets on a relay.** A `BroadcastTicket` for an old room path fails
+  the relay's ownership check with `NotOwner`. Share a new ticket.
+- **Browsers without a token.** On the iroh-live relay they publish only under
+  `anon/`, at any depth. A one-segment name such as `?name=hello` is refused;
+  use `?name=anon/hello`.
+- **Relay flags.** `--auth-public`, `--auth-public-publish` and
+  `--auth-public-subscribe` take prefixes, and refuse a wildcard at startup.
+  Write `anon/**` as `anon`, and `**` as `""`.
+- **JWTs.** A claim that names a bare path, such as `bob/cam`, now covers
+  everything beneath it too. A claim with another wildcard, such as `*/cam`,
+  is refused. Tokens that moq-auth writes keep the `foo/**` spelling, so
+  older relays read them the same.
+- **rcan chains.** New chains spell their prefixes `foo/**` and `**`, which
+  older verifiers read the same. An older chain whose members are literal
+  paths no longer verifies. Issue such chains again.
+- **Nested audiences.** A publication beneath another with a narrower
+  audience hides the upper one from every link outside its own audience.
+  Publish a private broadcast beside a public one, not beneath it.

@@ -61,7 +61,7 @@ use iroh::{EndpointId, SecretKey, protocol::Router};
 use iroh_live_node::{BroadcastTicket, EndpointConfig, Mdns, policy::DynPolicy};
 use moq_auth::{KeySet, lease, serve};
 use moq_ext_access::policy::Verify;
-use moq_net::Pattern;
+use moq_net::Prefix;
 use moq_relay::auth::Admissions;
 use n0_error::{AnyError, e};
 use n0_future::task::{AbortOnDropHandle, JoinSet};
@@ -74,7 +74,7 @@ pub mod pull;
 
 pub use self::{
     error::Error,
-    iroh_sessions::{IrohSessions, browser_grant, relay_policy},
+    iroh_sessions::{ANON, IrohSessions, browser_grant, relay_policy},
     keys::KeyFile,
 };
 
@@ -98,7 +98,7 @@ pub struct Config {
     ///
     /// This does not restrict sessions without a token. They keep the public
     /// rules: browsers and iroh clients read every broadcast, browsers publish
-    /// names of one segment, and iroh clients publish at the paths that name
+    /// under `anon/`, and iroh clients publish at the paths that name
     /// their endpoint id. A valid token replaces those rules with its claims,
     /// and lets the session pull the tickets whose paths it may read.
     ///
@@ -114,17 +114,20 @@ pub struct Config {
     #[arg(long, value_name = "URL", conflicts_with_all = ["auth_public", "auth_public_publish", "auth_public_subscribe"])]
     pub auth_url: Option<url::Url>,
 
-    /// Lets every browser session publish and subscribe at these patterns, as moq-relay does.
-    #[arg(long, value_name = "PATTERN", value_delimiter = ',')]
-    pub auth_public: Vec<Pattern>,
+    /// Lets every browser session publish and subscribe under these prefixes, as moq-relay does.
+    ///
+    /// A prefix covers its path and every path beneath it, and the empty
+    /// prefix `""` covers every path. A wildcard such as `anon/**` is refused.
+    #[arg(long, value_name = "PREFIX", value_delimiter = ',')]
+    pub auth_public: Vec<Prefix>,
 
-    /// Lets every browser session publish at these patterns, as moq-relay does.
-    #[arg(long, value_name = "PATTERN", value_delimiter = ',')]
-    pub auth_public_publish: Vec<Pattern>,
+    /// Lets every browser session publish under these prefixes, as moq-relay does.
+    #[arg(long, value_name = "PREFIX", value_delimiter = ',')]
+    pub auth_public_publish: Vec<Prefix>,
 
-    /// Lets every browser session subscribe at these patterns, as moq-relay does.
-    #[arg(long, value_name = "PATTERN", value_delimiter = ',')]
-    pub auth_public_subscribe: Vec<Pattern>,
+    /// Lets every browser session subscribe under these prefixes, as moq-relay does.
+    #[arg(long, value_name = "PREFIX", value_delimiter = ',')]
+    pub auth_public_subscribe: Vec<Prefix>,
 
     /// Lets any session pull a ticket, with or without a token. Unsafe on a public relay.
     ///
@@ -610,20 +613,26 @@ mod tests {
             config.auth_key.as_deref(),
             Some(std::path::Path::new("keys.jwk"))
         );
-        let config = parse(&["--auth-public", "anon/**,demo/**"]).expect("patterns");
+        let config = parse(&["--auth-public", "anon,demo"]).expect("prefixes");
         assert_eq!(config.auth_public.len(), 2);
+        assert!(
+            parse(&["--auth-public", "anon/**"]).is_err(),
+            "a wildcard is no prefix"
+        );
+        let config = parse(&["--auth-public", ""]).expect("the empty prefix");
+        assert_eq!(config.auth_public, [Prefix::all()]);
     }
 
     #[test]
     fn a_key_and_another_auth_source_conflict() {
         assert!(parse(&["--auth-key", "k", "--auth-url", "https://auth.example"]).is_err());
-        assert!(parse(&["--auth-key", "k", "--auth-public", "anon/**"]).is_err());
+        assert!(parse(&["--auth-key", "k", "--auth-public", "anon"]).is_err());
         assert!(
             parse(&[
                 "--auth-url",
                 "https://auth.example",
                 "--auth-public",
-                "anon/**"
+                "anon"
             ])
             .is_err()
         );

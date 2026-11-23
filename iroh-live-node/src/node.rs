@@ -175,7 +175,7 @@ impl NodeConfig {
 ///
 /// let publication = node.publish("demo/camera", Audience::Granted)?;
 /// // write tracks into the broadcast in the route table:
-/// let _track = publication.broadcast().create_track("video", None)?;
+/// let _track = publication.broadcast().create_track("video", None).ok_or("the track exists")?;
 /// # Ok(())
 /// # }
 /// ```
@@ -386,6 +386,13 @@ impl Node {
     /// bound how many publications one peer can see, as
     /// [`moq_ext_access::visible_paths`] describes.
     ///
+    /// A link sees a path through a grant prefix, which covers every path
+    /// beneath it. A publication beneath another with a narrower audience
+    /// therefore hides the upper one from every link outside its own
+    /// audience, relays included when the lower one is
+    /// [`Audience::Peers`]. The node logs a warning when that happens.
+    /// Publish a private broadcast beside a public one, not beneath it.
+    ///
     /// # Errors
     ///
     /// Fails with [`Error::Duplicate`] if another publication has the path,
@@ -481,7 +488,9 @@ impl Node {
     ) -> Result<(Publication, ValueWriter<T>), Error> {
         self.publish_with(path, audience, |broadcast| {
             let info = track::Info::default().with_timescale(moq_net::Timescale::MILLI);
-            let track = broadcast.create_track(name, info)?;
+            let track = broadcast
+                .create_track(name, info)
+                .ok_or(moq_net::Error::Duplicate)?;
             Ok::<_, moq_net::Error>(ValueWriter::new(track, json::snapshot::Config::default()))
         })
     }

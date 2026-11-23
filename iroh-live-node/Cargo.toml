@@ -19,7 +19,11 @@ iroh = { workspace = true }
 iroh-mdns-peer-lookup = "0.1.2"
 # The clock and poll helpers that drive moq's connect policy for iroh relay links.
 kio = { workspace = true }
-moq-net = { workspace = true }
+# `test-support` for `RouteInfo::entered_from`, the one public read of the
+# session a route entered through, which attributes a route to its link.
+# moq marks it a test hook, not an API, so a moq bump may change or remove
+# it without notice; a public read of a route's entry hop would replace it.
+moq-net = { workspace = true, features = ["test-support"] }
 # Latest-value JSON tracks, for `Node::publish_value` and `Subscription::value_track`.
 moq-json = { workspace = true }
 moq-ext-access = { workspace = true }

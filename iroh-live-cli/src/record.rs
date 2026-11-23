@@ -202,7 +202,7 @@ pub(crate) async fn start(
             .map_err(|err| anyerr!("the catalog did not read: {err}"))?
             .select(selection);
     // How late a group may fall before the export skips it.
-    let delay = moq_net::track::Delay::default().with_max(options.max_age);
+    let delay = iroh_live::media::Delay::default().with_max(options.max_age);
     let export = match options.format {
         RecordFormat::Fmp4 => Export::Fmp4(Box::new(
             fmp4::Export::new(source, catalog).with_delay(delay),

@@ -18,7 +18,7 @@ use iroh_live_node::{
     Session,
     policy::{self, Event, PeerRequest, Queue, Rejection},
 };
-use moq_net::{Pattern, Patterns};
+use moq_net::{Prefix, Prefixes};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher};
@@ -523,10 +523,10 @@ fn answer_with_token(queue: &Queue, alice: iroh::EndpointId) -> AbortOnDropHandl
                 pending.reject(Rejection::new("no token"));
                 continue;
             }
-            let pattern: Pattern = format!("live/{alice}/public").parse().expect("pattern");
+            let prefix: Prefix = format!("live/{alice}/public").parse().expect("prefix");
             pending.admit(Grant {
-                subscribe: Patterns::from(pattern),
-                publish: Patterns::new(),
+                subscribe: Prefixes::from(prefix),
+                publish: Prefixes::new(),
             });
         }
     }))
@@ -866,7 +866,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     let allowed = publish(&bob.node, bob.path("allowed"), Audience::Granted).expect("publish");
     let other = publish(&bob.node, bob.path("other"), Audience::Granted).expect("publish");
 
-    let within: Pattern = allowed.path().as_str().parse().expect("pattern");
+    let within: Prefix = allowed.path().as_str().parse().expect("prefix");
     let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
         while let Some(pending) = queue.next().await {
             pending.admit(Grant::publish_under(within.clone()));
@@ -917,9 +917,12 @@ async fn a_dial_grant_holds_from_the_start_and_widens_on_reauthorize() {
     let wanted = publish(&bob.node, bob.path("wanted"), Audience::Granted).expect("publish");
     let other = publish(&bob.node, bob.path("other"), Audience::Granted).expect("publish");
     let narrow = Grant {
-        subscribe: Patterns::new(),
-        publish: Pattern::literal(wanted.path().as_str())
-            .expect("pattern")
+        subscribe: Prefixes::new(),
+        publish: wanted
+            .path()
+            .as_str()
+            .parse::<Prefix>()
+            .expect("prefix")
             .into(),
     };
     let current = Arc::new(Mutex::new(narrow.clone()));
@@ -1057,6 +1060,59 @@ async fn a_peers_audience_holds_on_a_dialed_session() {
     .await;
     let refused = carol.node.origin().request(publication.path(), None).await;
     assert!(refused.is_err(), "carol's table routes bob's path");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
+/// A `Peers` publication beneath a visible one never reaches a peer outside its set.
+///
+/// Carol may see `cam`, and her grant's prefix for it covers `cam/private`
+/// too. The node narrows her grant before it announces the child, so the
+/// announcement never reaches her, however often the child comes and goes.
+#[tokio::test]
+#[traced_test]
+async fn a_hidden_child_is_never_announced_to_an_outsider() {
+    let alice = Peer::spawn().await;
+    let bob = Peer::spawn().await;
+    let carol = Peer::spawn().await;
+
+    let public = publish(&alice.node, alice.path("cam"), Audience::Granted).expect("publish");
+    let child = alice.path("cam/private");
+    let mut bob_table = bob.node.origin().announced();
+    let mut carol_table = carol.node.origin().announced();
+    step("bob connects", bob.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    step("carol connects", carol.node.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    announced(&mut carol_table, public.path().as_str()).await;
+
+    for _ in 0..50 {
+        let private = publish(&alice.node, &child, Audience::peers([bob.id()])).expect("publish");
+        announced(&mut bob_table, &child).await;
+        private.unpublish();
+        retracted(&mut bob_table, &child).await;
+    }
+
+    // Carol's table has seen every announcement before this one.
+    let last = publish(&alice.node, alice.path("last"), Audience::Granted).expect("publish");
+    step("carol sees the last publication", async {
+        loop {
+            let event = carol_table.next().await.expect("origin closed");
+            let (announce, active) = common::announcement(&event);
+            assert!(
+                !(active && announce.prefix.as_str() == child),
+                "carol saw {child} announced"
+            );
+            if active && announce.prefix.as_str() == last.path().as_str() {
+                return;
+            }
+        }
+    })
+    .await;
 
     alice.shutdown().await;
     bob.shutdown().await;

@@ -14,7 +14,9 @@ use moq_ext_json::ValueWriter;
 use moq_net::{Timescale, track};
 
 let broadcast = moq_net::broadcast::Info::new().produce();
-let track = broadcast.create_track("latency", track::Info::default().with_timescale(Timescale::MILLI))?;
+let track = broadcast
+    .create_track("latency", track::Info::default().with_timescale(Timescale::MILLI))
+    .ok_or("the track exists")?;
 let latency = ValueWriter::<u64>::new(track, Default::default());
 latency.update(&150)?;
 latency.update(&160)?;

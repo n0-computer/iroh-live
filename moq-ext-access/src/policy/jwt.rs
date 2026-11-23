@@ -9,7 +9,7 @@ use crate::{Grant, PeerId};
 
 /// A [`TokenVerifier`] of JWTs, which checks them with a moq-auth [`KeySet`] as moq-relay does.
 ///
-/// A valid token admits the peer with the publish and subscribe patterns its
+/// A valid token admits the peer with the publish and subscribe prefixes its
 /// claims grant at the requested path, and its `exp` claim becomes the
 /// authorization's expiry. A token whose root does not overlap the requested
 /// path is a rejection.
@@ -51,7 +51,7 @@ impl JwtVerifier {
 
     /// Verifies `token` and returns what it grants at `path`, as moq-relay reads it.
     ///
-    /// The grant's patterns are relative to `path`, and it expires with the
+    /// The grant's prefixes are relative to `path`, and it expires with the
     /// token.
     ///
     /// # Errors
@@ -75,10 +75,10 @@ impl<P: PeerId> TokenVerifier<P> for JwtVerifier {
     fn verify(&self, token: &str, request: &PeerRequest<P>) -> Decision {
         let path = request.path();
         let grant = self.verify_grant(token, path).map_err(rejection)?;
-        // The patterns are relative to the requested path, and a grant names
+        // The prefixes are relative to the requested path, and a grant names
         // absolute paths.
-        let absolute = |patterns: moq_auth::Patterns| {
-            patterns
+        let absolute = |prefixes: moq_auth::Prefixes| {
+            prefixes
                 .rooted(path)
                 .map_err(|err| Rejection::new(format!("invalid token path: {err}")))
         };
@@ -121,8 +121,8 @@ mod tests {
     fn claims() -> Claims {
         Claims::default()
             .with_root("spaces/alice")
-            .with_publish(["bob/**".parse().expect("a pattern")])
-            .with_subscribe(["**".parse().expect("a pattern")])
+            .with_publish(["bob".parse().expect("a prefix")])
+            .with_subscribe([moq_auth::Prefix::all()])
     }
 
     fn sign(keys: &KeySet, claims: &Claims) -> String {
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_token_admits_with_its_patterns() {
+    fn a_valid_token_admits_with_its_prefixes() {
         let keys = keys();
         let verifier = JwtVerifier::new(keys.clone());
         let token = sign(&keys, &claims());
@@ -236,5 +236,55 @@ mod tests {
         verifier
             .verify_grant("garbage", "spaces/alice")
             .expect_err("not a token");
+    }
+
+    /// Signs a token whose claims are `payload`, a JSON object, as written.
+    ///
+    /// Returns the token and a key set that verifies it. moq-auth only signs
+    /// claims it would read back, so a token spelled as an earlier release
+    /// wrote it is signed here with an Ed25519 key.
+    #[cfg(feature = "rcan")]
+    fn sign_raw(payload: &str) -> (KeySet, String) {
+        use data_encoding::BASE64URL_NOPAD;
+        use ed25519_dalek::{Signer, SigningKey};
+        use moq_auth::{EllipticCurve, Jwk, KeyMaterial};
+
+        let signer = SigningKey::from_bytes(&[7; 32]);
+        let material = KeyMaterial::OKP {
+            curve: EllipticCurve::Ed25519,
+            x: signer.verifying_key().to_bytes().to_vec(),
+            d: Some(signer.to_bytes().to_vec()),
+        };
+        let key = Jwk::new(Algorithm::EdDSA, material)
+            .import()
+            .expect("a key");
+        let header = BASE64URL_NOPAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
+        let body = BASE64URL_NOPAD.encode(payload.as_bytes());
+        let signed = format!("{header}.{body}");
+        let signature = BASE64URL_NOPAD.encode(&signer.sign(signed.as_bytes()).to_bytes());
+        let keys = KeySet {
+            keys: vec![Arc::new(key)],
+        };
+        (keys, format!("{signed}.{signature}"))
+    }
+
+    #[cfg(feature = "rcan")]
+    #[test]
+    fn a_subtree_claim_grants_its_subtree_and_another_wildcard_rejects() {
+        let (keys, token) = sign_raw(r#"{"root":"spaces/alice","publish":["bob/**"]}"#);
+        let grant = verify(&JwtVerifier::new(keys), &token, "/spaces/alice")
+            .expect("admitted")
+            .grant;
+        assert!(grant.allows_publish("spaces/alice/bob"));
+        assert!(grant.allows_publish("spaces/alice/bob/cam"));
+        assert!(!grant.allows_publish("spaces/alice/bobby"));
+
+        let (keys, token) = sign_raw(r#"{"root":"spaces/alice","publish":["*/cam"]}"#);
+        let rejection =
+            verify(&JwtVerifier::new(keys), &token, "/spaces/alice").expect_err("rejected");
+        assert!(
+            matches!(rejection.code(), moq_net::Error::Unauthorized),
+            "{rejection}"
+        );
     }
 }

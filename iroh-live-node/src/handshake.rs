@@ -4,10 +4,7 @@ use std::{num::NonZeroU64, sync::Arc};
 
 use iroh::{EndpointAddr, EndpointId, endpoint::Connection};
 use moq_ext_access::Viewer;
-use moq_net::{
-    auth,
-    origin::{self, Source},
-};
+use moq_net::{auth, origin};
 use n0_error::e;
 use tracing::{info, warn};
 
@@ -15,6 +12,29 @@ use crate::{
     ConnectOptions, Direction, Error, Grant, SessionRequest, admission::authorize, node::Shared,
     policy::Authorization, state::served, transport,
 };
+
+/// Where a route entered the node's route table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// Published on this node.
+    Local,
+    /// Announced by a session that carries this hop id, 0 if it named none.
+    Peer(u64),
+}
+
+impl Source {
+    /// Returns where `route` entered the table.
+    ///
+    /// moq made its own `Source` crate-private, and keeps
+    /// [`entered_from`](origin::RouteInfo::entered_from) behind its
+    /// `test-support` feature as the one read of it.
+    pub(crate) fn of(route: &origin::RouteInfo) -> Self {
+        match route.entered_from() {
+            Some(hop) => Self::Peer(hop),
+            None => Self::Local,
+        }
+    }
+}
 
 /// The moq hop id the routes of one link carry.
 ///

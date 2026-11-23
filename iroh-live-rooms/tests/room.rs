@@ -34,22 +34,6 @@ fn publish_counter(
     Ok((broadcast, writer))
 }
 
-/// Returns the next group `track` delivers, past the groups it gave up on.
-///
-/// A reader that joins a live track gives up on the backlog its delay budget
-/// already aged out, and reports it as a gap before the first group.
-async fn next_group(
-    track: &mut track::Ordered,
-) -> moq_net::Result<Option<moq_net::group::Consumer>> {
-    loop {
-        match track.next_group().await? {
-            Some(track::Item::Group(group)) => return Ok(Some(group)),
-            Some(track::Item::Gap { .. }) => {}
-            None => return Ok(None),
-        }
-    }
-}
-
 /// Returns a predicate that holds once a room state lists `member` with a `cam` broadcast.
 fn lists_cam(member: EndpointId) -> impl Fn(&RoomState) -> bool + Copy {
     lists(member, "cam")
@@ -136,7 +120,7 @@ async fn a_member_subscribes_on_demand() {
         .ordered();
     let mut previous = None;
     for index in 0..5 {
-        let mut group = tokio::time::timeout(TIMEOUT, next_group(&mut track))
+        let mut group = tokio::time::timeout(TIMEOUT, track.next_group())
             .await
             .unwrap_or_else(|_| panic!("timed out on frame {index}"))
             .expect("track failed")
@@ -333,11 +317,11 @@ async fn room_broadcasts_are_private() {
     let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
     let _cam = publish_counter(&room_a, "cam").expect("publish");
     let a = peer_a.id();
-    let private_path = format!("rooms/{}/{a}/cam", room_a.ticket().topic_id());
+    let private_path = format!("rooms/{a}/{}/cam", room_a.ticket().topic_id());
     // In a's own scope, outside the room.
     let public = peer_a
         .node
-        .publish(format!("rooms/elsewhere/{a}/public"), Audience::Granted)
+        .publish(format!("rooms/{a}/elsewhere/public"), Audience::Granted)
         .expect("publish");
     let _public_writer = counting_into(public.broadcast(), 0);
     wait_for_state(&room_b, "b sees a's cam", lists_cam(a)).await;
@@ -367,6 +351,49 @@ async fn room_broadcasts_are_private() {
     );
 
     outsider.shutdown().await;
+    peer_a.shutdown().await;
+    peer_b.shutdown().await;
+}
+
+/// Reports whether `peer` fails to resolve `path` from `publisher` within three seconds.
+async fn refused(peer: &Peer, path: &str, publisher: EndpointId) -> bool {
+    let subscribe = peer.node.subscribe(path, Reach::Direct(publisher));
+    tokio::time::timeout(Duration::from_secs(3), subscribe)
+        .await
+        .is_err()
+}
+
+/// A member in two rooms shows each room's broadcast to that room's members only.
+///
+/// Alice's paths in both rooms share the prefix `rooms/<alice>`, so the
+/// separation rests on each publication's audience.
+#[tokio::test]
+#[traced_test]
+async fn a_member_in_two_rooms_is_visible_per_topic() {
+    let (peer_a, room_x, peer_b, room_bx) = two_peers_in_room().await;
+    let room_y = peer_a.join(&RoomTicket::generate(), "alice").await;
+    let peer_c = Peer::spawn().await;
+    let room_cy = peer_c.join(&room_y.ticket(), "carol").await;
+    let _cam_x = publish_counter(&room_x, "cam").expect("publish");
+    let _cam_y = publish_counter(&room_y, "cam").expect("publish");
+    let a = peer_a.id();
+    let path_x = format!("rooms/{a}/{}/cam", room_x.ticket().topic_id());
+    let path_y = format!("rooms/{a}/{}/cam", room_y.ticket().topic_id());
+
+    wait_for_state(&room_bx, "bob sees a's cam", lists_cam(a)).await;
+    wait_for_state(&room_cy, "carol sees a's cam", lists_cam(a)).await;
+    room_bx.subscribe(a, "cam").await.expect("bob reads room x");
+    room_cy
+        .subscribe(a, "cam")
+        .await
+        .expect("carol reads room y");
+
+    let (bob_refused, carol_refused) =
+        tokio::join!(refused(&peer_b, &path_y, a), refused(&peer_c, &path_x, a));
+    assert!(bob_refused, "bob resolved alice's broadcast in room y");
+    assert!(carol_refused, "carol resolved alice's broadcast in room x");
+
+    peer_c.shutdown().await;
     peer_a.shutdown().await;
     peer_b.shutdown().await;
 }
@@ -478,12 +505,9 @@ async fn until_announced(updates: &mut announce::Consumer, path: &str, present: 
         loop {
             let update = updates.next().await.expect("origin closed");
             let (announce, is_present) = match &update {
-                announce::Event::Absent(announce) | announce::Event::Offline(announce) => {
-                    (announce, false)
-                }
-                announce::Event::Present(announce)
-                | announce::Event::Unavailable(announce)
-                | announce::Event::Available(announce) => (announce, true),
+                announce::Event::Present(announce) => (announce, true),
+                announce::Event::Absent(announce) => (announce, false),
+                other => panic!("an announce event this test does not know: {other:?}"),
             };
             if announce.prefix.as_str() == path && is_present == present {
                 return;
@@ -501,7 +525,7 @@ async fn dropping_a_room_frees_its_names() {
     let peer = Peer::spawn().await;
     let ticket = RoomTicket::generate();
     let room = peer.join(&ticket, "alice").await;
-    let path = format!("rooms/{}/{}/cam", ticket.topic_id(), peer.id());
+    let path = format!("rooms/{}/{}/cam", peer.id(), ticket.topic_id());
     let mut updates = peer.node.origin().announced();
     let _cam = publish_counter(&room, "cam").expect("publish");
     until_announced(&mut updates, &path, true).await;
@@ -528,7 +552,7 @@ async fn a_member_cannot_forge_anothers_broadcast() {
     let mallory = Peer::spawn().await;
     let _room_m = mallory.join(&room_b.ticket(), "mallory").await;
     let b = peer_b.id();
-    let path = format!("rooms/{}/{b}/cam", room_b.ticket().topic_id());
+    let path = format!("rooms/{b}/{}/cam", room_b.ticket().topic_id());
     let forgery = mallory
         .node
         .publish(path.as_str(), Audience::Granted)
@@ -562,7 +586,7 @@ async fn a_member_cannot_forge_anothers_broadcast() {
         .await
         .expect("subscribe to the track")
         .ordered();
-    let mut group = tokio::time::timeout(TIMEOUT, next_group(&mut track))
+    let mut group = tokio::time::timeout(TIMEOUT, track.next_group())
         .await
         .expect("timed out reading")
         .expect("track failed")
@@ -637,7 +661,7 @@ async fn a_room_resyncs_after_its_map_subscription_restarts() {
         .await
         .expect("subscribe to the track")
         .ordered();
-    tokio::time::timeout(TIMEOUT, next_group(&mut track))
+    tokio::time::timeout(TIMEOUT, track.next_group())
         .await
         .expect("timed out on a frame")
         .expect("track failed")

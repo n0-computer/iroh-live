@@ -14,10 +14,10 @@ page](https://doc.moq.dev/concept/layer/iroh) upstream.
 `iroh-live-node` has no path layout. `Node::publish` takes a full path, and
 the crates above bring their own layout. `iroh-live` publishes at
 `live/<endpoint id>/<name>`, and `iroh-live-rooms` at
-`rooms/<topic>/<endpoint id>/<name>`. A broadcast has the same path over every
+`rooms/<endpoint id>/<topic>/<name>`. A broadcast has the same path over every
 link, direct or through any number of relays. That lets the route table see
-several routes to it, and lets a relay's token grant `live/<id>/**` to one
-publisher. A `BroadcastTicket` names a publisher and a name, and
+several routes to it, and lets a relay's token grant the prefix `live/<id>`
+to one publisher. A `BroadcastTicket` names a publisher and a name, and
 `ticket.path()` is the path.
 
 ## One route table, fed by every link
@@ -53,7 +53,7 @@ policy decides it for each peer, and the default policy grants
 `Grant::subscribe_only()`: a peer may read anything and publish nothing.
 `LiveLayout::config()` lets a peer publish under `live/<peer>/`, and
 `iroh_live::layout::config((LiveLayout::default(), RoomsLayout))` adds
-`rooms/*/<peer>/`. The table is shared by everything on the node and answers a
+`rooms/<peer>/`. The table is shared by everything on the node and answers a
 ticket without dialing. A peer whose grant
 let it announce another publisher's path could stand in for that publisher,
 so grants should name the peer. A relay is trusted with every path it forwards,
@@ -92,8 +92,8 @@ Who sees a publication is moq's per-session authorization
 (`moq_net::auth::Handle::authorize`), which every session enforces locally, on
 every protocol version, as client and as server. The node authorizes each
 session before its handshake, so its first announcements already keep to it.
-The grant's subscribe half lists the exact paths of the publications whose
-audience admits the peer, within the session's `Grant`. The audience is
+The grant's subscribe half lists the paths of the publications whose audience
+admits the peer, within the session's `Grant`, each as a prefix. The audience is
 `Granted` or a watched set of `Peers`. A relay link sees every `Granted`
 publication and never a `Peers` one, which a relay would forward to anyone.
 `Grant`, `SessionRequest`, `Audience` and `visible_paths`, the rule that turns

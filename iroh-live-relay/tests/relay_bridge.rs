@@ -186,7 +186,7 @@ impl TestRelay {
         }
         config.listen.tls.generate = vec!["localhost".into()];
         if !shipped {
-            config.auth.public = vec![moq_net::Pattern::all()];
+            config.auth.public = vec![moq_net::Prefix::all()];
         }
         let keys_file = keys.as_ref().map(KeysFile::new);
         let mut relay = moq_relay::Relay::load(config)
@@ -521,7 +521,7 @@ async fn publish_into(relay: &TestRelay, end: End) -> (String, Box<dyn std::any:
         End::Noq => {
             let origin = moq_tokio::origin::spawn();
             let broadcast = origin
-                .route("browser-stream", origin::RouteOptions::default())
+                .route("anon/browser-stream", origin::RouteOptions::default())
                 .expect("broadcast");
             // The track producers stay alive with the broadcast, or the tracks end.
             let tracks: Vec<_> = [
@@ -549,7 +549,7 @@ async fn publish_into(relay: &TestRelay, end: End) -> (String, Box<dyn std::any:
             )
             .await;
             (
-                "browser-stream".to_owned(),
+                "anon/browser-stream".to_owned(),
                 Box::new((origin, broadcast, tracks, session)),
             )
         }
@@ -903,7 +903,7 @@ async fn a_relay_link_publishes_and_consumes() {
     // Consuming: a browser's broadcast resolves through the relay.
     let pub_origin = moq_tokio::origin::spawn();
     let browser_broadcast = pub_origin
-        .route("browser-stream", origin::RouteOptions::default())
+        .route("anon/browser-stream", origin::RouteOptions::default())
         .expect("broadcast");
     let track = browser_broadcast
         .broadcast()
@@ -923,7 +923,7 @@ async fn a_relay_link_publishes_and_consumes() {
 
     let subscription = step(
         "subscribe timeout",
-        node.subscribe("browser-stream", Reach::Relays),
+        node.subscribe("anon/browser-stream", Reach::Relays),
     )
     .await
     .expect("subscribe through the relay");
@@ -937,7 +937,7 @@ async fn a_relay_link_publishes_and_consumes() {
         loop {
             let update = updates.next().await.expect("origin closed");
             let announce = announcement(&update).0;
-            if announce.prefix.as_str() == "browser-stream" {
+            if announce.prefix.as_str() == "anon/browser-stream" {
                 return announce.route.clone();
             }
         }
@@ -946,7 +946,7 @@ async fn a_relay_link_publishes_and_consumes() {
     assert!(route.cost().value() >= 10, "{route:?}");
     link.detach().await;
     assert_eq!(link.status().get(), RelayStatus::Detached);
-    retracted(&mut updates, "browser-stream").await;
+    retracted(&mut updates, "anon/browser-stream").await;
 
     drop(broadcast);
     node.shutdown().await;
@@ -1313,7 +1313,7 @@ async fn a_relay_cannot_splice_a_forgery_into_a_direct_subscription() {
     alice.shutdown().await;
 }
 
-/// The shipped relay keeps iroh clients to their own paths, browsers to one segment.
+/// The shipped relay keeps iroh clients to their own paths, browsers to `anon/`.
 #[tokio::test]
 async fn the_shipped_relay_refuses_forged_paths() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1338,7 +1338,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
         .expect("publish");
     let _own = counter(own.broadcast(), 0);
     let forged_path = format!("live/{alice}/cam");
-    let room_path = format!("rooms/topic/{alice}/cam");
+    let room_path = format!("rooms/{alice}/topic/cam");
     let forged = mallory
         .publish(forged_path.as_str(), Audience::Granted)
         .expect("publish at alice's path");
@@ -1349,7 +1349,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
     let _room_forged = counter(room_forged.broadcast(), 0);
     let _link = attached(&mallory, &relay).await;
 
-    // A browser tries the same, and publishes a name of its own.
+    // A browser tries the same, and publishes under the anonymous prefix.
     let browser = moq_tokio::origin::spawn();
     let browser_forged = browser
         .route(
@@ -1358,7 +1358,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
         )
         .expect("broadcast");
     let browser_own = browser
-        .route("browser-stream", origin::RouteOptions::default())
+        .route("anon/browser-stream", origin::RouteOptions::default())
         .expect("broadcast");
     let _browser_session = established(
         noq_client()
@@ -1368,7 +1368,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
     .await;
 
     announced_at(&sub_origin, own.path().as_str()).await;
-    announced_at(&sub_origin, "browser-stream").await;
+    announced_at(&sub_origin, "anon/browser-stream").await;
     for path in [forged_path, room_path, format!("live/{alice}/screen")] {
         assert!(
             !routed_soon(&sub_origin, &path).await,
@@ -1390,7 +1390,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
     group.finish().expect("finish");
     let subscription = step(
         "subscribe timeout",
-        viewer.subscribe("browser-stream", iroh_live_node::Reach::Relays),
+        viewer.subscribe("anon/browser-stream", iroh_live_node::Reach::Relays),
     )
     .await
     .expect("subscribe through the relay");
@@ -1406,7 +1406,7 @@ async fn the_shipped_relay_refuses_forged_paths() {
 /// A browser that dials an iroh publisher's path cannot publish beneath it.
 ///
 /// A grant without a root is rooted at the dialed path, so the browser's
-/// one-segment rule must be reduced to that path, not granted as is.
+/// `anon` prefix must be reduced to that path, not granted as is.
 #[tokio::test]
 async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1421,7 +1421,7 @@ async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
 
     let alice = iroh::SecretKey::generate().public();
     let mut held = Vec::new();
-    for dialed in [format!("live/{alice}"), format!("rooms/topic/{alice}")] {
+    for dialed in [format!("live/{alice}"), format!("rooms/{alice}/topic")] {
         let browser = moq_tokio::origin::spawn();
         held.push(
             browser
@@ -1451,11 +1451,11 @@ async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
             "{refused}"
         );
     }
-    // A browser at the root still publishes a name of its own.
+    // A browser at the root still publishes under the anonymous prefix.
     let browser = moq_tokio::origin::spawn();
     held.push(
         browser
-            .route("hello", origin::RouteOptions::default())
+            .route("anon/hello", origin::RouteOptions::default())
             .expect("broadcast"),
     );
     let session = established(
@@ -1465,10 +1465,10 @@ async fn a_browser_cannot_publish_under_a_dialed_iroh_path() {
     )
     .await;
 
-    announced_at(&sub_origin, "hello").await;
+    announced_at(&sub_origin, "anon/hello").await;
     for path in [
         format!("live/{alice}/cam"),
-        format!("rooms/topic/{alice}/cam"),
+        format!("rooms/{alice}/topic/cam"),
     ] {
         assert!(
             !routed_soon(&sub_origin, &path).await,
@@ -1643,7 +1643,7 @@ async fn a_relay_cannot_forge_a_room_members_broadcast() {
         .await
         .expect("join");
     let topic = room_a.ticket().topic_id();
-    let cam_path = format!("rooms/{topic}/{}/cam", bob_endpoint.id());
+    let cam_path = format!("rooms/{}/{topic}/cam", bob_endpoint.id());
 
     // Mallory publishes Bob's camera into the relay before Bob is there.
     let mallory = moq_tokio::origin::spawn();
@@ -1743,8 +1743,8 @@ fn signing_keys() -> KeySet {
 /// Signs a token that lets its holder publish under `prefix/` and read everything.
 fn token_for(keys: &KeySet, prefix: &str) -> String {
     let claims = Claims::default()
-        .with_publish([format!("{prefix}/**").parse().expect("a pattern")])
-        .with_subscribe([moq_net::Pattern::all()]);
+        .with_publish([prefix.parse().expect("a prefix")])
+        .with_subscribe([moq_net::Prefix::all()]);
     keys.sign(&claims).expect("signed")
 }
 
@@ -1761,11 +1761,11 @@ fn attach_with_token(
     node.attach_relay(config).expect("attach")
 }
 
-/// Signs a token for `tokens/**` that expires `after` from now.
+/// Signs a token for `tokens/` that expires `after` from now.
 fn expiring_token(keys: &KeySet, after: Duration) -> String {
     let mut claims = Claims::default()
-        .with_publish(["tokens/**".parse().expect("a pattern")])
-        .with_subscribe([moq_net::Pattern::all()]);
+        .with_publish(["tokens".parse().expect("a prefix")])
+        .with_subscribe([moq_net::Prefix::all()]);
     claims.expires = Some(
         (std::time::SystemTime::now() + after)
             .try_into()
@@ -2120,7 +2120,7 @@ async fn a_relay_link_waits_for_a_relay_that_is_down_at_attach() {
     holder.shutdown().await;
 }
 
-/// With a key, a browser without a token keeps the public rule: names of one segment only.
+/// With a key, a browser without a token keeps the public rule: names under `anon/` only.
 #[tokio::test]
 async fn a_browser_without_a_token_keeps_the_public_rule_under_a_key() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -2128,7 +2128,7 @@ async fn a_browser_without_a_token_keeps_the_public_rule_under_a_key() {
 
     let browser = moq_tokio::origin::spawn();
     let _screen = browser
-        .route("screen", origin::RouteOptions::default())
+        .route("anon/screen", origin::RouteOptions::default())
         .expect("broadcast");
     let _studio = browser
         .route("studio/cam", origin::RouteOptions::default())
@@ -2139,18 +2139,17 @@ async fn a_browser_without_a_token_keeps_the_public_rule_under_a_key() {
             .connect(relay.url()),
     )
     .await;
-    routed(&relay.cluster.origin.consume(), "screen").await;
+    routed(&relay.cluster.origin.consume(), "anon/screen").await;
     assert!(
         !routed_soon(&relay.cluster.origin, "studio/cam").await,
-        "a session without a token published two segments"
+        "a session without a token published outside anon/"
     );
     drop(browser);
 }
 
 /// Signs a token that lets its holder read under `prefix/` and publish nothing.
 fn reader_token(keys: &KeySet, prefix: &str) -> String {
-    let claims =
-        Claims::default().with_subscribe([format!("{prefix}/**").parse().expect("a pattern")]);
+    let claims = Claims::default().with_subscribe([prefix.parse().expect("a prefix")]);
     keys.sign(&claims).expect("signed")
 }
 
@@ -2196,7 +2195,7 @@ async fn a_browser_pulls_under_a_key_only_with_a_token_for_the_path() {
         "the relay pulled for a session without a token for the path"
     );
 
-    // A token for `live/**` reaches the ticket's path, though not the name dialed.
+    // A token for `live` reaches the ticket's path, though not the name dialed.
     let _reader = browser_at(&relay, &name, Some(&reader_token(&keys, "live"))).await;
     assert!(
         wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
@@ -2234,7 +2233,7 @@ async fn an_iroh_client_pulls_under_a_key_only_with_a_token() {
     let url = format!("iroh://{}/{name}", relay.iroh_id)
         .parse()
         .expect("a valid URL");
-    let everything = Claims::default().with_subscribe([moq_net::Pattern::all()]);
+    let everything = Claims::default().with_subscribe([moq_net::Prefix::all()]);
     let token = keys.sign(&everything).expect("signed");
     let config = RelayConfig::new(url).with_token(token.parse().expect("not empty"));
     let _holder = holder.attach_relay(config).expect("attach");

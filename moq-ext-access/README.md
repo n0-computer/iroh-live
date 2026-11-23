@@ -8,8 +8,8 @@ does not link a transport. It carries the shapes a token means on a moq relay.
 The default build has no JWT or crypto stack. The `jwt` and `rcan` features
 add token verifiers.
 
-- `Grant`: what a session may subscribe to and publish, as moq patterns
-  (`*` one segment, `**` a subtree).
+- `Grant`: what a session may subscribe to and publish, as moq path prefixes,
+  each covering its path and every path beneath it.
 - `SessionRequest`: what a peer asked for when it opened a session.
 - `Audience`: who may see a publication, generic over the peer id (`PeerId`),
   such as an iroh endpoint id.

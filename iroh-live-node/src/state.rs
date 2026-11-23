@@ -19,13 +19,16 @@ use std::{
 
 use iroh::EndpointId;
 use moq_ext_access::Viewer;
-use moq_net::{Path, Pattern, auth, origin, origin::Source};
+use moq_net::{Path, Prefix, Prefixes, auth, origin};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
-    Grant, LinkId, LinkKind, handshake::Hop, link::LatestSample, policy::Authorization,
+    Grant, LinkId, LinkKind,
+    handshake::{Hop, Source},
+    link::LatestSample,
+    policy::Authorization,
     publish::AudienceKind,
 };
 
@@ -262,6 +265,7 @@ impl State {
     /// Adds a publication and re-authorizes every link for it.
     pub(crate) fn add_publication(&mut self, id: u64, publication: PublicationEntry) {
         self.publications.insert(id, publication);
+        self.warn_hidden_parents(id);
         self.authorize_all();
     }
 
@@ -284,7 +288,47 @@ impl State {
         }
         debug!(path = %entry.path, ?audience, "audience changed");
         entry.audience = audience;
+        self.warn_hidden_parents(id);
         self.authorize_all();
+    }
+
+    /// Returns the pairs of publication `id` and one nested with it, upper
+    /// path first, in which the lower one hides the upper one from some link.
+    ///
+    /// A link's grant is a set of prefixes, each covering its subtree, so a
+    /// link the lower publication's audience leaves out cannot see the upper
+    /// one either (see [`moq_ext_access::visible_paths`]).
+    fn hidden_parents(&self, id: u64) -> Vec<(&Path, &Path)> {
+        let Some(entry) = self.publications.get(&id) else {
+            return Vec::new();
+        };
+        self.publications
+            .iter()
+            .filter(|(other, _)| **other != id)
+            .filter_map(|(_, other)| {
+                if beneath(&other.path, &entry.path) {
+                    Some((entry, other))
+                } else if beneath(&entry.path, &other.path) {
+                    Some((other, entry))
+                } else {
+                    None
+                }
+            })
+            .filter(|(upper, lower)| hides(&lower.audience, &upper.audience))
+            .map(|(upper, lower)| (&upper.path, &lower.path))
+            .collect()
+    }
+
+    /// Warns about each publication that publication `id` hides, or that hides it.
+    fn warn_hidden_parents(&self, id: u64) {
+        for (upper, lower) in self.hidden_parents(id) {
+            warn!(
+                %upper,
+                %lower,
+                "a publication beneath another has a narrower audience, so links \
+                 outside it cannot see the upper one either"
+            );
+        }
     }
 
     /// Applies a new decision about the session on link `id`.
@@ -396,8 +440,8 @@ impl State {
             .filter(|path| !base.allows_publish(path.as_str()))
             .fold(base.clone(), |grant, path| {
                 grant
-                    .with_publish_path(path.as_str())
-                    .expect("a claimed path passed check_path, so a literal pattern names it")
+                    .with_publish_prefix(path.as_str())
+                    .expect("a claimed path passed check_path, so it is a valid prefix")
             })
     }
 
@@ -468,7 +512,7 @@ impl State {
 
     /// Returns the moq grant of a link, from the publications it may see.
     ///
-    /// Its subscribe half lists the exact paths of the publications whose
+    /// Its subscribe half lists the paths of the publications whose
     /// audience admits the link, within `base`. Its publish half is `base`'s
     /// for a session, and anything for a relay, which is trusted with what it
     /// forwards.
@@ -480,7 +524,7 @@ impl State {
         let base = &self.effective_grant(peer, base);
         let publish = match viewer {
             Viewer::Direct(_) => base.publish.clone(),
-            Viewer::Relay => Pattern::all().into(),
+            Viewer::Relay => Prefixes::all(),
         };
         let subscribe = moq_ext_access::visible_paths(
             self.publications
@@ -545,6 +589,28 @@ pub(crate) fn served(table: &origin::Producer) -> origin::Consumer {
     table.consume().local()
 }
 
+/// Reports whether `path` lies strictly beneath `upper`.
+fn beneath(path: &Path, upper: &Path) -> bool {
+    path != upper
+        && upper
+            .as_str()
+            .parse::<Prefix>()
+            .is_ok_and(|prefix| prefix.matches(path.as_str()))
+}
+
+/// Reports whether a publication for `lower` beneath one for `upper` hides
+/// the upper one from a link that `upper` admits.
+///
+/// A relay sees only `Granted` publications, so a `Peers` one beneath a
+/// `Granted` one always hides it from relays.
+fn hides(lower: &AudienceKind, upper: &AudienceKind) -> bool {
+    match (lower, upper) {
+        (AudienceKind::Granted, _) => false,
+        (AudienceKind::Peers(_), AudienceKind::Granted) => true,
+        (AudienceKind::Peers(lower), AudienceKind::Peers(upper)) => !upper.is_subset(lower),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -605,7 +671,7 @@ mod tests {
 
     /// Returns a grant that lets a peer subscribe anywhere and publish under `live/<peer>/`.
     fn own_paths(peer: EndpointId) -> Grant {
-        let own: Pattern = format!("live/{peer}/**").parse().expect("a pattern");
+        let own: moq_net::Prefix = format!("live/{peer}").parse().expect("a prefix");
         Grant::publish_under(own)
     }
 
@@ -736,9 +802,10 @@ mod tests {
         assert!(widened.publish.matches(claimed.as_str()));
         assert!(widened.publish.matches(&own), "the base grant stays");
         assert!(
-            !widened.publish.matches("shows/news/extra"),
-            "a claim covers exactly its path"
+            widened.publish.matches("shows/news/extra"),
+            "a claim covers its path and every path beneath it"
         );
+        assert!(!widened.publish.matches("shows/newsroom"));
 
         // The first release leaves the other claim in place.
         state.release_path(&peer, &claimed);
@@ -846,6 +913,63 @@ mod tests {
             assert!(grant.subscribe.matches("live/me/mic"), "{id:?}");
         }
         assert!(state.remove_publication(10).is_none());
+    }
+
+    #[test]
+    fn a_claim_covers_the_paths_beneath_it_and_no_sibling() {
+        let mut state = State::default();
+        let bob = SecretKey::generate().public();
+        let cam = Path::new(&format!("live/{bob}/cam")).expect("a valid path");
+        state.claim_path(bob, &cam).expect("claimed");
+        let grant = state.effective_grant(Some(&bob), &Grant::nothing());
+        assert!(grant.allows_publish(&format!("live/{bob}/cam")));
+        assert!(grant.allows_publish(&format!("live/{bob}/cam/hd")));
+        assert!(!grant.allows_publish(&format!("live/{bob}/camx")));
+        assert!(!grant.allows_publish(&format!("live/{bob}")));
+    }
+
+    #[tokio::test]
+    async fn a_narrower_publication_beneath_another_hides_it_and_is_reported() {
+        let table = Table::new();
+        let mut state = State::default();
+        add(&mut state, LinkId(1), relay());
+        let (bob, carol) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
+        let peers = |set: &[EndpointId]| AudienceKind::Peers(set.iter().copied().collect());
+        let hidden = |state: &State, id| {
+            state
+                .hidden_parents(id)
+                .into_iter()
+                .map(|(upper, lower)| (upper.as_str().to_owned(), lower.as_str().to_owned()))
+                .collect::<Vec<_>>()
+        };
+        let pair = vec![("live/me/cam".to_owned(), "live/me/cam/private".to_owned())];
+
+        state.add_publication(10, table.publication("live/me/cam", AudienceKind::Granted));
+        state.add_publication(11, table.publication("live/me/camx", peers(&[bob])));
+        assert!(hidden(&state, 11).is_empty(), "camx is not beneath cam");
+        assert!(grant_of(&state, LinkId(1)).subscribe.matches("live/me/cam"));
+
+        state.add_publication(12, table.publication("live/me/cam/private", peers(&[bob])));
+        assert_eq!(hidden(&state, 12), pair);
+        assert_eq!(hidden(&state, 10), pair);
+        assert!(
+            !grant_of(&state, LinkId(1)).subscribe.matches("live/me/cam"),
+            "the relay sees the parent of a publication it may not see"
+        );
+
+        // An audience beneath that admits everyone the upper one does hides nothing.
+        state.set_audience(10, peers(&[bob]));
+        assert!(hidden(&state, 12).is_empty());
+        state.set_audience(12, peers(&[bob, carol]));
+        assert!(hidden(&state, 12).is_empty());
+        state.set_audience(10, peers(&[bob, carol]));
+        state.set_audience(12, peers(&[bob]));
+        assert_eq!(hidden(&state, 12), pair);
+        state.set_audience(12, AudienceKind::Granted);
+        assert!(hidden(&state, 12).is_empty());
     }
 
     #[tokio::test]

@@ -150,8 +150,7 @@ impl FileImport {
         let mut importer = match source.format {
             ImportFormat::Avc3 => {
                 let track = broadcast
-                    .unique_track(".avc3", catalog.track_info(hang::catalog::PRIORITY.video))
-                    .anyerr()?;
+                    .unique_track(".avc3", catalog.track_info(hang::catalog::PRIORITY.video));
                 let import =
                     moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
                         .anyerr()?;

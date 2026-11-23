@@ -12,7 +12,7 @@ let config = PlayerConfig::default()
 | Field, builder | Default | Meaning |
 |---|---|---|
 | `rendition`, `with_rendition` | `RenditionMode::Auto` | Which video rendition plays |
-| `latency`, `with_latency` | `DEFAULT_LATENCY`, 100 ms to 150 ms | moq-net's `Delay { min, max }`: the least time each frame is held, and the lag past which the player skips to the live edge |
+| `latency`, `with_latency` | `DEFAULT_LATENCY`, 100 ms to 150 ms | moq-mux's `Delay { min, max }`, as `iroh_live::media::Delay`: the least time each frame is held, and the lag past which the player skips to the live edge |
 | `audio`, `with_audio` | `AudioMode::Off` | Whether audio is subscribed, decoded and played |
 | `decoder`, `with_decoder` | `decode::Kind::Auto` | Which video decoder opens |
 | `adaptation`, `with_adaptation` | see below | Thresholds and timers of automatic choice |

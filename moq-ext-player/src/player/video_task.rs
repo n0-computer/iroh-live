@@ -877,10 +877,12 @@ mod tests {
             &mut broadcast,
             moq_mux::catalog::Config::default().with_catalog(hang::catalog::Catalog::default()),
         )?;
-        let track = broadcast.create_track(
-            "video",
-            Some(catalog.track_info(hang::catalog::PRIORITY.video)),
-        )?;
+        let track = broadcast
+            .create_track(
+                "video",
+                Some(catalog.track_info(hang::catalog::PRIORITY.video)),
+            )
+            .ok_or("the video track exists")?;
         let mut import =
             moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())?;
         let mut split = moq_mux::codec::h264::Split::new();
@@ -903,7 +905,7 @@ mod tests {
         let settings = DecodeSettings {
             consumer: consumer.clone(),
             decoder: moq_video::decode::Kind::Software,
-            delay: moq_net::track::Delay::default().with_max(Duration::from_secs(60)),
+            delay: moq_mux::container::Delay::default().with_max(Duration::from_secs(60)),
         };
         let remote = RemoteBroadcast::from_consumer(consumer);
         // The catalog has its own track, so the first snapshot may not have

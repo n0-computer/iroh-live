@@ -13,8 +13,8 @@ use std::{
 };
 
 use moq_net::{
-    Instance, Path, Pattern, Patterns, broadcast,
-    origin::{self, Link, RouteEvent, RouteKind, Source},
+    Instance, Path, Prefix, Prefixes, broadcast,
+    origin::{self, Link, RouteEvent, RouteKind},
 };
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
@@ -25,7 +25,7 @@ use tracing::{debug, info};
 
 use crate::{
     BroadcastTicket, Error, LinkId, Node, PathClaim, Reach, ServingLink, Session, ValueReader,
-    handshake::Hop,
+    handshake::{Hop, Source},
     node::Shared,
     publish::check_path,
     state::{LinkEntry, State},
@@ -87,6 +87,7 @@ struct SubscriptionInner {
 
 /// The route that serves one path, as the route table announces it.
 struct Routes {
+    path: Path,
     announced: Option<origin::Routes>,
     source: Option<Source>,
 }
@@ -94,13 +95,9 @@ struct Routes {
 impl Routes {
     /// Starts following the routes at exactly `path` in `table`.
     fn new(table: &origin::Consumer, path: &Path) -> Self {
-        let announced = path
-            .as_str()
-            .parse::<Pattern>()
-            .ok()
-            .and_then(|pattern| table.scope("", &Patterns::from(pattern)).ok())
-            .map(|scoped| scoped.routes());
+        let announced = routes_under(table, path).ok();
         Self {
+            path: path.clone(),
             announced,
             source: None,
         }
@@ -110,10 +107,24 @@ impl Routes {
     fn source(&mut self) -> Option<Source> {
         let announced = self.announced.as_mut()?;
         while let Some(event) = announced.try_next() {
-            self.source = live_route(&event).map(|announce| announce.route.source());
+            if event.announce.prefix == self.path {
+                self.source = live_route(&event).map(|announce| Source::of(&announce.route));
+            }
         }
         self.source
     }
+}
+
+/// Returns the routes `table` announces at `path` and beneath it.
+///
+/// A scope is a set of prefixes, so a caller after the route at exactly
+/// `path` skips the events of paths beneath it.
+fn routes_under(table: &origin::Consumer, path: &Path) -> Result<origin::Routes, moq_net::Error> {
+    let prefix = path
+        .as_str()
+        .parse::<Prefix>()
+        .map_err(|_| moq_net::Error::Unauthorized)?;
+    Ok(table.scope("", &Prefixes::from(prefix))?.routes())
 }
 
 impl Subscription {
@@ -354,14 +365,11 @@ pub(crate) async fn announced_by(
     path: &Path,
     from: impl Fn(Hop) -> bool,
 ) -> Result<Instance, moq_net::Error> {
-    let pattern = path
-        .as_str()
-        .parse::<Pattern>()
-        .map_err(|_| moq_net::Error::Unauthorized)?;
-    let mut announced = view.scope("", &Patterns::from(pattern))?.routes();
+    let mut announced = routes_under(view, path)?;
     while let Some(event) = announced.next().await {
-        if let Some(announce) = live_route(&event)
-            && Hop::of_route(announce.route.source()).is_some_and(&from)
+        if event.announce.prefix == *path
+            && let Some(announce) = live_route(&event)
+            && Hop::of_route(Source::of(&announce.route)).is_some_and(&from)
         {
             return Ok(announce.route.instance().clone());
         }
@@ -372,8 +380,12 @@ pub(crate) async fn announced_by(
 /// Returns the route an event leaves covering the prefix, or `None` once no route does.
 fn live_route(event: &RouteEvent) -> Option<&moq_net::announce::Announce> {
     match event.kind {
-        RouteKind::End | RouteKind::Offline => None,
         RouteKind::Start | RouteKind::Update | RouteKind::Restart => Some(&event.announce),
+        RouteKind::End | RouteKind::Offline => None,
+        kind => {
+            debug!(?kind, prefix = %event.announce.prefix, "unknown route kind, read as ended");
+            None
+        }
     }
 }
 

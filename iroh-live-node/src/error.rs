@@ -66,22 +66,22 @@ pub enum Error {
     Duplicate { path: Path },
     /// The path cannot be published or subscribed.
     ///
-    /// It is empty, holds a `*`, or has more segments than a pattern takes.
+    /// It is empty, holds a `*`, or has more segments than a path may have.
     #[error("invalid path {path:?}")]
     InvalidPath { path: String },
     /// The session's grant does not cover the path.
     ///
-    /// For a subscribe, the peer may not publish the path. `publish_patterns`
-    /// are the patterns the grant lets the peer publish, as text.
+    /// For a subscribe, the peer may not publish the path. `publish_prefixes`
+    /// are the prefixes the grant lets the peer publish.
     #[error(
         "the grant of {} does not let it publish {path}, it may publish [{}]",
         peer.fmt_short(),
-        list_patterns(publish_patterns)
+        list_prefixes(publish_prefixes)
     )]
     NotGranted {
         path: Path,
         peer: EndpointId,
-        publish_patterns: moq_net::Patterns,
+        publish_prefixes: moq_net::Prefixes,
     },
     /// The peer does not own the path, so it cannot be claimed for the peer.
     #[error("{} does not own {path}", peer.fmt_short())]
@@ -133,19 +133,19 @@ impl From<moq_transport_iroh::Error> for Error {
     }
 }
 
-/// How many patterns [`Error::NotGranted`] lists.
-const LISTED_PATTERNS: usize = 8;
+/// How many prefixes [`Error::NotGranted`] lists.
+const LISTED_PREFIXES: usize = 8;
 
-/// Renders the first few of `patterns` for an error message.
-fn list_patterns(patterns: &moq_net::Patterns) -> String {
-    let mut text = patterns
+/// Renders the first few of `prefixes` for an error message.
+fn list_prefixes(prefixes: &moq_net::Prefixes) -> String {
+    let mut text = prefixes
         .iter()
-        .take(LISTED_PATTERNS)
+        .take(LISTED_PREFIXES)
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    if patterns.len() > LISTED_PATTERNS {
-        text.push_str(&format!(", and {} more", patterns.len() - LISTED_PATTERNS));
+    if prefixes.len() > LISTED_PREFIXES {
+        text.push_str(&format!(", and {} more", prefixes.len() - LISTED_PREFIXES));
     }
     text
 }
@@ -156,7 +156,7 @@ impl Error {
         n0_error::e!(Self::NotGranted {
             path,
             peer,
-            publish_patterns: grant.publish.clone(),
+            publish_prefixes: grant.publish.clone(),
         })
     }
 }
@@ -174,18 +174,18 @@ pub(crate) fn to_path(
 
 #[cfg(test)]
 mod tests {
-    use moq_net::{Pattern, Patterns};
+    use moq_net::{Prefix, Prefixes};
 
     use super::*;
 
     #[test]
-    fn not_granted_lists_at_most_eight_patterns() {
-        let patterns: Patterns = (0..12)
-            .map(|n| Pattern::literal(&format!("live/p{n}/cam")).expect("pattern"))
+    fn not_granted_lists_at_most_eight_prefixes() {
+        let prefixes: Prefixes = (0..12)
+            .map(|n| format!("live/p{n}/cam").parse::<Prefix>().expect("prefix"))
             .collect();
-        let listed = list_patterns(&patterns);
+        let listed = list_prefixes(&prefixes);
         assert_eq!(listed.matches("/cam").count(), 8, "{listed}");
         assert!(listed.ends_with("and 4 more"), "{listed}");
-        assert_eq!(list_patterns(&Patterns::new()), "");
+        assert_eq!(list_prefixes(&Prefixes::new()), "");
     }
 }

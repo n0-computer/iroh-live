@@ -50,8 +50,8 @@ irl publish --relay <RELAY_ENDPOINT_ID>
 ## Publish from a browser
 
 The relay also serves a publish page, which publishes the browser's camera
-and microphone under a name of one segment. A Rust node reads it by attaching
-to the relay and subscribing with `Reach::Relays`, as
+and microphone under `anon/`, by default at `anon/hello`. A Rust node reads
+it by attaching to the relay and subscribing with `Reach::Relays`, as
 [`iroh-live/examples/subscribe_test.rs`](../../iroh-live/examples/subscribe_test.rs)
 does. `irl watch` cannot, since its tickets name a publisher, not a relay.
 

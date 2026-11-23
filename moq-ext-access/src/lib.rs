@@ -25,19 +25,19 @@ use std::{
     sync::Arc,
 };
 
-use moq_net::{Pattern, Patterns};
+use moq_net::{Prefix, Prefixes};
 use n0_error::stack_error;
 
 pub mod policy;
 
-/// An error returned when no pattern names exactly one path.
+/// An error returned when a path is not a valid grant prefix.
 #[stack_error(derive)]
-#[error("no pattern names exactly the path {path:?}")]
+#[error("{path:?} is not a valid grant prefix")]
 pub struct InvalidPath {
     /// The path that was given.
     pub path: String,
     #[error(source, std_err)]
-    source: moq_net::InvalidPattern,
+    source: moq_net::InvalidPrefix,
 }
 
 /// A peer's identity: any small, comparable, printable id.
@@ -48,14 +48,14 @@ impl<T: Clone + Eq + Ord + Hash + Debug + Display + Send + Sync + 'static> PeerI
 /// What a session may subscribe to from a node, and publish into it.
 ///
 /// The shape of a moq-auth grant, so a token means the same thing to a node
-/// and to a moq relay. Patterns are moq's: `*` matches one segment, `**` a
-/// subtree, anything else itself.
+/// and to a moq relay. Each member is a path prefix that covers the path and
+/// every path beneath it; the empty prefix covers everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grant {
     /// The paths the peer may subscribe to.
-    pub subscribe: Patterns,
+    pub subscribe: Prefixes,
     /// The paths the peer may publish into the node's route table.
-    pub publish: Patterns,
+    pub publish: Prefixes,
 }
 
 impl Grant {
@@ -63,8 +63,8 @@ impl Grant {
     #[must_use]
     pub fn everything() -> Self {
         Self {
-            subscribe: Patterns::from(Pattern::all()),
-            publish: Patterns::from(Pattern::all()),
+            subscribe: Prefixes::all(),
+            publish: Prefixes::all(),
         }
     }
 
@@ -72,19 +72,19 @@ impl Grant {
     #[must_use]
     pub fn subscribe_only() -> Self {
         Self {
-            subscribe: Patterns::from(Pattern::all()),
-            publish: Patterns::new(),
+            subscribe: Prefixes::all(),
+            publish: Prefixes::new(),
         }
     }
 
     /// Returns a grant to subscribe to everything and publish only at `publish`.
     ///
-    /// With a pattern that names the peer, such as `live/<peer id>/**`, no peer
+    /// With a prefix that names the peer, such as `live/<peer id>`, no peer
     /// can publish at another's paths.
     #[must_use]
-    pub fn publish_under(publish: impl Into<Patterns>) -> Self {
+    pub fn publish_under(publish: impl Into<Prefixes>) -> Self {
         Self {
-            subscribe: Patterns::from(Pattern::all()),
+            subscribe: Prefixes::all(),
             publish: publish.into(),
         }
     }
@@ -93,24 +93,24 @@ impl Grant {
     #[must_use]
     pub fn nothing() -> Self {
         Self {
-            subscribe: Patterns::new(),
-            publish: Patterns::new(),
+            subscribe: Prefixes::new(),
+            publish: Prefixes::new(),
         }
     }
 
-    /// Returns this grant with the literal `path` added to what the peer may publish.
+    /// Returns this grant with the prefix `text` added to what the peer may
+    /// publish: the path it names and every path beneath it.
     ///
     /// # Errors
     ///
-    /// Fails with [`InvalidPath`] if no pattern names exactly `path`: a segment
-    /// holds `*`, or the path has too many segments. moq patterns have no
-    /// escape for `*`.
-    pub fn with_publish_path(mut self, path: &str) -> Result<Self, InvalidPath> {
-        let pattern = Pattern::literal(path).map_err(|source| InvalidPath {
-            path: path.to_owned(),
+    /// Fails with [`InvalidPath`] if `text` is not a valid prefix: it holds
+    /// `*`, has an empty segment, or has too many segments.
+    pub fn with_publish_prefix(mut self, text: &str) -> Result<Self, InvalidPath> {
+        let prefix = text.parse::<Prefix>().map_err(|source| InvalidPath {
+            path: text.to_owned(),
             source,
         })?;
-        self.publish.insert(pattern);
+        self.publish.insert(prefix);
         Ok(self)
     }
 
@@ -355,19 +355,26 @@ pub enum Viewer<'a, P: PeerId> {
 /// A path convention: where each peer publishes, and which peer owns a path.
 ///
 /// The two halves agree: [`owner`](Self::owner) of a path that
-/// [`scope`](Self::scope) gives a peer names that peer.
+/// [`scope`](Self::scope) gives a peer names that peer or no one.
+///
+/// Ownership must carry down to sub-paths: every path beneath a path a peer
+/// owns is owned by that peer or by no one. A grant is a set of prefixes,
+/// so a peer that may publish at a path it owns, such as through a ticket
+/// claim, may publish beneath it too. A layout whose owner is a later
+/// segment, such as `<name>/<peer>`, breaks this: a claim on `cam/<bob>`
+/// would let Bob publish `cam/<bob>/<carol>`, which names Carol.
 ///
 /// A pair `(A, B)` is the union of two layouts.
 pub trait Layout<P: PeerId>: Debug + Send + Sync + 'static {
     /// Returns the paths `peer` may publish its own broadcasts under.
-    fn scope(&self, peer: &P) -> Patterns;
+    fn scope(&self, peer: &P) -> Prefixes;
 
     /// Returns the peer that owns `path`, or `None` for a path outside the layout.
     fn owner(&self, path: &str) -> Option<P>;
 }
 
 impl<P: PeerId, T: Layout<P> + ?Sized> Layout<P> for Arc<T> {
-    fn scope(&self, peer: &P) -> Patterns {
+    fn scope(&self, peer: &P) -> Prefixes {
         (**self).scope(peer)
     }
 
@@ -377,7 +384,7 @@ impl<P: PeerId, T: Layout<P> + ?Sized> Layout<P> for Arc<T> {
 }
 
 impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
-    fn scope(&self, peer: &P) -> Patterns {
+    fn scope(&self, peer: &P) -> Prefixes {
         let mut scope = self.0.scope(peer);
         scope.extend(self.1.scope(peer).iter().cloned());
         scope
@@ -388,30 +395,34 @@ impl<P: PeerId, A: Layout<P>, B: Layout<P>> Layout<P> for (A, B) {
     }
 }
 
-/// Returns the exact paths of `publications` that `viewer` may see, as patterns.
+/// Returns the paths of `publications` that `viewer` may see, as prefixes.
 ///
 /// A publication is visible when the link's `grant` covers its path and its
 /// audience admits the link. A relay sees `Granted` publications, and never a
 /// `Peers` one, which a relay would forward to anyone. A direct link is in a
 /// `Peers` audience when its peer is in the set.
 ///
-/// Each path is a literal pattern, so nothing beside the listed publications
-/// matches. A path no pattern can spell is left out.
+/// A moq grant is a set of prefixes, each covering its whole subtree, so a
+/// visible publication with a hidden one beneath it is left out too: listing
+/// it would expose the hidden one. A path that is not a valid prefix is left
+/// out as well.
 ///
-/// moq bounds the result. It refuses an AUTH_OK larger than 64 KiB, and caps
-/// a union of patterns at [`Pattern::MAX_INTERSECTIONS`] (1024) members. A
-/// link that may see more publications than that, or whose paths add up to
-/// more bytes, cannot be granted them one by one.
+/// moq bounds the result: it refuses an AUTH_OK larger than 64 KiB. A link
+/// that may see publications whose paths add up to more bytes cannot be
+/// granted them one by one.
 #[must_use]
 pub fn visible_paths<'a, P: PeerId>(
     publications: impl IntoIterator<Item = (&'a str, &'a AudienceKind<P>)>,
     grant: &Grant,
     viewer: Viewer<'_, P>,
-) -> Patterns {
-    publications
+) -> Prefixes {
+    let (shown, hidden): (Vec<_>, Vec<_>) = publications
         .into_iter()
-        .filter(|(path, audience)| visible(path, audience, grant, &viewer))
-        .filter_map(|(path, _)| Pattern::literal(path).ok())
+        .partition(|(path, audience)| visible(path, audience, grant, &viewer));
+    shown
+        .into_iter()
+        .filter_map(|(path, _)| path.parse::<Prefix>().ok())
+        .filter(|prefix| !hidden.iter().any(|(path, _)| prefix.matches(path)))
         .collect()
 }
 
@@ -436,16 +447,16 @@ fn visible<P: PeerId>(
 mod tests {
     use super::*;
 
-    /// A layout that gives each peer `<prefix>/<peer>/**`.
+    /// A layout that gives each peer `<root>/<peer>`.
     #[derive(Debug)]
-    struct Prefix(&'static str);
+    struct Under(&'static str);
 
-    impl Layout<String> for Prefix {
-        fn scope(&self, peer: &String) -> Patterns {
-            Patterns::from(
-                format!("{}/{peer}/**", self.0)
-                    .parse::<Pattern>()
-                    .expect("pattern"),
+    impl Layout<String> for Under {
+        fn scope(&self, peer: &String) -> Prefixes {
+            Prefixes::from(
+                format!("{}/{peer}", self.0)
+                    .parse::<Prefix>()
+                    .expect("prefix"),
             )
         }
 
@@ -458,7 +469,7 @@ mod tests {
 
     #[test]
     fn a_pair_of_layouts_is_their_union() {
-        let both = (Prefix("live"), Arc::new(Prefix("rooms")));
+        let both = (Under("live"), Arc::new(Under("rooms")));
         let bob = "bob".to_owned();
         let scope = both.scope(&bob);
         assert!(scope.matches("live/bob/cam"));
@@ -514,17 +525,17 @@ mod tests {
     }
 
     #[test]
-    fn grants_match_patterns() {
+    fn grants_match_prefixes() {
         let everything = Grant::everything();
         assert!(everything.allows_subscribe("live/x/cam"));
         assert!(everything.allows_publish("anything"));
         let only = Grant::subscribe_only();
         assert!(only.allows_subscribe("anything"));
         assert!(!only.allows_publish("anything"));
-        let live: Pattern = "live/**".parse().expect("pattern");
+        let live: Prefix = "live".parse().expect("prefix");
         let scoped = Grant {
-            subscribe: Patterns::from(live),
-            publish: Patterns::new(),
+            subscribe: Prefixes::from(live),
+            publish: Prefixes::new(),
         };
         assert!(scoped.allows_subscribe("live/x/cam"));
         assert!(!scoped.allows_subscribe("rooms/t/x/cam"));
@@ -532,10 +543,10 @@ mod tests {
     }
 
     #[test]
-    fn a_publish_path_with_a_wildcard_is_an_error() {
-        for path in ["a/*/b", "a/**", "a/b*c"] {
+    fn a_publish_prefix_that_is_not_valid_is_an_error() {
+        for path in ["a/*/b", "a/**", "a/b*c", "a//b", "/a"] {
             let err = Grant::nothing()
-                .with_publish_path(path)
+                .with_publish_prefix(path)
                 .expect_err("a path with a wildcard");
             assert_eq!(err.path, path);
         }
@@ -546,9 +557,10 @@ mod tests {
         let nothing = Grant::nothing();
         assert!(!nothing.allows_publish("a/b") && !nothing.allows_subscribe("a/b"));
         let one = Grant::nothing()
-            .with_publish_path("a/b")
+            .with_publish_prefix("a/b")
             .expect("a literal path");
-        assert!(one.allows_publish("a/b") && !one.allows_publish("a/b/c"));
+        assert!(one.allows_publish("a/b") && one.allows_publish("a/b/c"));
+        assert!(!one.allows_publish("a/bc") && !one.allows_publish("a"));
         let both = Grant::subscribe_only().union(&one);
         assert!(both.allows_publish("a/b") && both.allows_subscribe("x"));
         assert!(!both.allows_publish("x"));
@@ -566,10 +578,7 @@ mod tests {
         assert!(!visible("p", &peers, &grant, &Viewer::Direct(&b)));
         assert!(visible("p", &granted, &grant, &Viewer::Relay));
         assert!(!visible("p", &peers, &grant, &Viewer::Relay));
-        let none = Grant {
-            subscribe: Patterns::new(),
-            publish: Patterns::new(),
-        };
+        let none = Grant::nothing();
         assert!(!visible("p", &granted, &none, &Viewer::Direct(&a)));
     }
 
@@ -585,10 +594,6 @@ mod tests {
         assert!(for_a.matches("live/x/public"));
         assert!(for_a.matches("live/x/secret"));
         assert!(
-            !for_a.matches("live/x/public/below"),
-            "a literal, not a subtree"
-        );
-        assert!(
             !for_a.matches("live/y/learned"),
             "a path nobody published here"
         );
@@ -600,6 +605,30 @@ mod tests {
         let relay = visible_paths(publications, &grant, Viewer::Relay);
         assert!(relay.matches("live/x/public"));
         assert!(!relay.matches("live/x/secret"));
+    }
+
+    #[test]
+    fn visible_paths_leave_out_a_publication_above_a_hidden_one() {
+        let granted = AudienceKind::<String>::Granted;
+        let peers = AudienceKind::Peers(BTreeSet::from(["a".to_string()]));
+        let publications = [
+            ("live/x", &granted),
+            ("live/x/secret", &peers),
+            ("live/y", &granted),
+        ];
+        let grant = Grant::everything();
+        let (a, b) = ("a".to_string(), "b".to_string());
+
+        let for_a = visible_paths(publications, &grant, Viewer::Direct(&a));
+        assert!(for_a.matches("live/x") && for_a.matches("live/x/secret"));
+
+        let for_b = visible_paths(publications, &grant, Viewer::Direct(&b));
+        assert!(
+            !for_b.matches("live/x"),
+            "its prefix would cover the hidden path"
+        );
+        assert!(!for_b.matches("live/x/secret"));
+        assert!(for_b.matches("live/y"));
     }
 
     #[test]

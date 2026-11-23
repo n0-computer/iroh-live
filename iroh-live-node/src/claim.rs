@@ -56,8 +56,9 @@ impl Drop for PathClaim {
 /// Reports whether `peer` owns `path` by the generic rule.
 ///
 /// Exactly one segment is the peer's id in its canonical 64-hex spelling, and
-/// no other segment parses as an endpoint id. So a widened path names its
-/// publisher and no other peer, and cannot overlap another peer's paths.
+/// no other segment parses as an endpoint id. So a claimed path names its
+/// publisher and no other peer. A path beneath it that names a second id
+/// belongs to no one by this rule.
 pub(crate) fn owns_by_id(peer: &EndpointId, path: &Path) -> bool {
     let own = peer.to_string();
     let mut named = 0;
@@ -74,7 +75,8 @@ pub(crate) fn owns_by_id(peer: &EndpointId, path: &Path) -> bool {
 impl Node {
     /// Widens what `peer` may publish on this node to `path`, for as long as the claim lives.
     ///
-    /// This is how a ticket subscribe reads a path the node's grant would not
+    /// moq grants are prefixes, so the claim covers every path beneath `path`
+    /// too. This is how a ticket subscribe reads a path the node's grant would not
     /// let the peer publish. The claim is added on top of each session's
     /// grant, on every session with the peer, including ones that
     /// start later. Dropping the last claim on a path narrows the grant again,
@@ -94,9 +96,11 @@ impl Node {
     /// [`Layout::owner`](crate::layout::Layout::owner) of
     /// [`NodeConfig::layout`](crate::NodeConfig::layout) decides if it is
     /// set. Otherwise exactly one segment of the path is the peer's endpoint
-    /// id, and no other segment parses as one. That keeps a
-    /// claimed path from overlapping any other peer's paths, which hop pinning
-    /// and the route table rely on.
+    /// id, and no other segment parses as one. The claimed path itself then
+    /// belongs to the peer. The paths beneath it that the claim also covers
+    /// belong to the peer or to no one, provided the layout's ownership
+    /// carries down to sub-paths, as [`Layout`](crate::layout::Layout)
+    /// requires. Hop pinning and the route table rely on that.
     ///
     /// # Errors
     ///

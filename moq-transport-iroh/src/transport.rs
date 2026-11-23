@@ -35,16 +35,15 @@ use crate::{ALPN, Error, RecvStream, SendGroup, SendStream, TransportError};
 ///   schedules streams by an urgency alone, so a group's priority and each
 ///   stream's order in it are packed into the urgency; see [`SendGroup`] for
 ///   the mapping and where it departs from moq-quic's.
-/// - [`wire`](poll::Session::wire) holds the UDP byte counts, refreshed from
-///   the connection statistics whenever moq-net reads
-///   [`metrics`](poll::Session::metrics).
+/// - [`wire`](poll::Session::wire) holds the UDP byte counts and the bytes
+///   declared lost, refreshed from the connection statistics whenever moq-net
+///   reads [`metrics`](poll::Session::metrics). iroh reports neither the time
+///   sends waited on congestion control nor flow-control stalls, so those
+///   counters stay zero.
 /// - [`probe`](poll::Session::probe) is `None`: iroh's congestion controller
 ///   takes no probe target.
 /// - [`receive_window`](poll::Session::receive_window) is `None`: iroh does not
 ///   report the receive windows in force. moq-net then never pauses a stream.
-/// - [`export_keying_material`](poll::Session::export_keying_material) derives
-///   from the connection's TLS secrets, so both ends export the same bytes and
-///   no other session does.
 pub struct Transport {
     connection: Connection,
     // One slot per operation that may wait. iroh's futures for them borrow
@@ -264,6 +263,7 @@ impl poll::Session for Transport {
         // moq-net reads the wire right after the metrics.
         self.wire.set_sent_bytes(stats.udp_tx.bytes);
         self.wire.set_received_bytes(stats.udp_rx.bytes);
+        self.wire.set_lost_bytes(stats.lost_bytes);
         let path = self
             .connection
             .paths()
@@ -275,15 +275,6 @@ impl poll::Session for Transport {
 
     fn wire(&self) -> Option<Wire> {
         Some(self.wire.clone())
-    }
-
-    fn export_keying_material(&self, label: &[u8], context: &[u8]) -> Option<[u8; 32]> {
-        let mut output = [0; 32];
-        // Fails only for an output longer than the TLS hash allows.
-        self.connection
-            .export_keying_material(&mut output, label, context)
-            .ok()?;
-        Some(output)
     }
 }
 
@@ -460,27 +451,6 @@ pub(crate) mod tests {
         assert_eq!(client.protocol(), std::str::from_utf8(ALPN).ok());
         assert_eq!(server.protocol(), client.protocol());
         assert_eq!(client.address(), Address::Setup);
-    }
-
-    #[tokio::test]
-    async fn both_ends_export_the_same_keying_material() {
-        let (client, server, _endpoints) = pair().await;
-        let label = b"EXPORTER-moq-lite-route-key";
-        let dialed = client
-            .export_keying_material(label, b"ctx")
-            .expect("an exporter");
-        assert_eq!(server.export_keying_material(label, b"ctx"), Some(dialed));
-        assert_ne!(
-            client.export_keying_material(label, b"other"),
-            Some(dialed),
-            "another context exports other bytes"
-        );
-        let (other, _, _endpoints) = pair().await;
-        assert_ne!(
-            other.export_keying_material(label, b"ctx"),
-            Some(dialed),
-            "another session exports other bytes"
-        );
     }
 
     #[tokio::test]

@@ -38,7 +38,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::{
     Job, SourceClock,
-    cuts::Cuts,
+    cuts::{Cuts, asked as refresh_asked},
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
 };
@@ -90,7 +90,7 @@ fn finish_tracks(tracks: HashMap<String, HandedOver>) {
 
 /// Waits until a subscriber wants the track, or fails once it closes.
 async fn wanted(demand: &mut moq_net::track::Demand) -> Result<(), moq_net::Error> {
-    while demand.wanted_changed().await?.is_none() {}
+    while !demand.wanted_changed().await? {}
     Ok(())
 }
 
@@ -100,8 +100,8 @@ async fn wanted(demand: &mut moq_net::track::Demand) -> Result<(), moq_net::Erro
 async fn unwanted(demand: &mut moq_net::track::Demand) -> bool {
     loop {
         match demand.wanted_changed().await {
-            Ok(Some(_)) => {}
-            Ok(None) => return true,
+            Ok(true) => {}
+            Ok(false) => return true,
             Err(_) => return false,
         }
     }
@@ -271,10 +271,10 @@ fn open_track(
     let reserved = catalog.reserve().with_interval(config.effective_join());
     let track_info = reserved
         .track_info(hang::catalog::PRIORITY.video)
-        .with_refresh(refresh(&config.kind));
+        .with_refresh(moq_net::track::Refresh::default().with_ratio(refresh(&config.kind)));
     let track = producer
         .create_track(name, Some(track_info))
-        .map_err(Error::broadcast)?;
+        .ok_or_else(|| Error::broadcast(moq_net::Error::Duplicate))?;
     encode::Publisher::new(track, reserved, published).map_err(Error::catalog)
 }
 
@@ -568,7 +568,7 @@ impl Encoder {
             self.report_encoder(encoder.name());
             // Per encoder, since a fresh one opens with a keyframe that serves
             // every earlier request.
-            let mut cuts = Cuts::default();
+            let mut cuts = Cuts::opening();
             let mut can_cut = encoder.applied().cut;
 
             let mut due: Option<moq_net::Timestamp> = None;
@@ -651,7 +651,7 @@ impl Encoder {
                         .await
                         .map_err(encode_error)?;
                     self.report_encoder(encoder.name());
-                    cuts = Cuts::default();
+                    cuts = Cuts::opening();
                     can_cut = encoder.applied().cut;
                 }
 
@@ -660,7 +660,7 @@ impl Encoder {
                 // picture within a frame instead of after the rest of the
                 // group. A backend that cannot cut leaves every group to its
                 // keyframe interval.
-                if cuts.due(can_cut.then(|| demand.wanted()).flatten())
+                if cuts.due(can_cut && refresh_asked(&demand))
                     && let Err(err) = encoder.cut().await
                 {
                     debug!(error = %err, "no keyframe for a joining subscriber");
@@ -682,7 +682,7 @@ impl Encoder {
                             .await
                             .map_err(encode_error)?;
                         self.report_encoder(encoder.name());
-                        cuts = Cuts::default();
+                        cuts = Cuts::opening();
                         can_cut = encoder.applied().cut;
                         continue;
                     }
@@ -713,12 +713,10 @@ impl Encoder {
                 // level after a switch to a larger source, moves the rendition
                 // to a newly named track and finishes the old one. Follow the
                 // demand of the track the producer writes now.
+                // The new track's first frame was a keyframe.
                 let moved = self.producer.demand();
-                if moved.name() != demand.name() {
-                    // The new track's first frame was a keyframe.
-                    cuts = Cuts::default();
-                } else if encoded.iter().any(|unit| unit.keyframe) {
-                    cuts.served(moved.wanted());
+                if moved.name() != demand.name() || encoded.iter().any(|unit| unit.keyframe) {
+                    cuts.served();
                 }
                 demand = moved;
                 let track = demand.name();
@@ -791,7 +789,7 @@ pub(super) async fn run_encoded(
                 ENCODED_RENDITION,
                 Some(catalog.track_info(hang::catalog::PRIORITY.video)),
             )
-            .map_err(Error::broadcast)?;
+            .ok_or_else(|| Error::broadcast(moq_net::Error::Duplicate))?;
         let mut import =
             moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
                 .map_err(Error::catalog)?;

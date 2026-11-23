@@ -21,8 +21,13 @@ let policy = Verify::new(JwtVerifier::new(keys))
     .with_fallback(Open(Grant::subscribe_only()));
 ```
 
-The claims' patterns become the grant, and the `exp` claim its expiry. A JWT
+The claims' prefixes become the grant, and the `exp` claim its expiry. A JWT
 is a bearer token: anyone who holds it may use it.
+
+Each prefix covers its path and every path beneath it. moq-auth writes a
+prefix as the pattern `foo/**`, and reads `foo/**` and `foo` alike, so a
+claim that names a bare path grants its whole subtree. A claim with any other
+wildcard, such as `*/cam`, is refused, and its token must be issued again.
 
 ## Delegate with rcan
 
@@ -39,6 +44,11 @@ use iroh_live::node::{Grant, policy::{Open, RcanVerifier, Verify}};
 let verifier = RcanVerifier::new(alice_account.public().as_verifying_key(), "spaces/alice");
 let policy = Verify::new(verifier).with_fallback(Open(Grant::subscribe_only()));
 ```
+
+A capability's prefixes are written as the patterns `foo/**` and `**`, as
+moq-auth writes them. A chain issued by an older release whose members are
+literal paths, such as `bob/cam`, no longer verifies, and must be issued
+again.
 
 The device presents the encoded chain with `ConnectOptions::with_token` when it
 dials. [`iroh-live-node/examples/delegated_publisher.rs`](../../iroh-live-node/examples/delegated_publisher.rs)

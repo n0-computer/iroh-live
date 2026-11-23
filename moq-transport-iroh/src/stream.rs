@@ -83,7 +83,7 @@ impl poll::SendStream for SendStream {
     type Group = SendGroup;
     /// iroh does not report which bytes the peer acknowledged, so
     /// [`poll_acked`](poll::SendStream::poll_acked) keeps its default, which
-    /// answers [`Acked::Unsupported`](poll::Acked::Unsupported).
+    /// is ready as soon as the stream took the bytes.
     type Offset = ();
 
     fn offset(&self) -> Self::Offset {}

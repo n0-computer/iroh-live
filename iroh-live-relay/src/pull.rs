@@ -4,8 +4,8 @@
 //! session names a valid [`BroadcastTicket`], the node subscribes to the
 //! ticket's broadcast, and the publisher's session announces it straight into
 //! the cluster at its own path. The node's base grant is nothing, and each
-//! pull holds a [`PathClaim`] that lets the publisher announce exactly the
-//! pulled path, so its other broadcasts stay out. The relay pulls only a path
+//! pull holds a [`PathClaim`] that lets the publisher announce the pulled path
+//! and the paths beneath it, so its other broadcasts stay out. The relay pulls only a path
 //! the ticket's peer owns: its canonical `live/<peer>/<name>` path, or a room
 //! path with the peer as member. Anything else is refused with
 //! [`NotOwner`](iroh_live_node::Error::NotOwner). A session that named the
@@ -863,11 +863,11 @@ mod tests {
         assert_eq!(owner(&path(&format!("live/{peer}/cam/hd"))), Some(peer));
         let topic = iroh_live_rooms::RoomTicket::generate().topic_id();
         assert_eq!(
-            owner(&path(&format!("rooms/{topic}/{peer}/cam"))),
+            owner(&path(&format!("rooms/{peer}/{topic}/cam"))),
             Some(peer)
         );
-        assert_eq!(owner(&path(&format!("rooms/{topic}/{peer}"))), None);
-        assert_eq!(owner(&path(&format!("rooms/topic/{peer}/cam"))), None);
+        assert_eq!(owner(&path(&format!("rooms/{peer}/{topic}"))), None);
+        assert_eq!(owner(&path(&format!("rooms/{peer}/topic/cam"))), None);
         assert_eq!(owner(&path("fleet/robot/cam")), None);
         assert_eq!(owner(&path(&format!("live/{peer}"))), None);
         assert_eq!(owner(&path(&format!("other/{peer}/cam"))), None);

@@ -21,11 +21,12 @@ ends the relay at once.
 | `--open-pulls` | off | Lets any session make the relay pull a ticket, see [Pulls](#pulls). For local and development use |
 | `--auth-key <PATH>` | none | Verifies JWTs from browsers and iroh clients with the keys in this file, a JWK or a JWK set |
 | `--auth-url <URL>` | none | Asks this auth server about every browser session, as moq-relay does |
-| `--auth-public <PATTERN>` | none | Lets every browser session publish and subscribe at these patterns |
-| `--auth-public-publish <PATTERN>` | none | Lets every browser session publish at these patterns |
-| `--auth-public-subscribe <PATTERN>` | none | Lets every browser session subscribe at these patterns |
+| `--auth-public <PREFIX>` | none | Lets every browser session publish and subscribe under these prefixes |
+| `--auth-public-publish <PREFIX>` | none | Lets every browser session publish under these prefixes |
+| `--auth-public-subscribe <PREFIX>` | none | Lets every browser session subscribe under these prefixes |
 
-The pattern flags take a comma-separated list. `--auth-key` conflicts with
+The prefix flags take a comma-separated list, such as `anon,demo`, and refuse
+a wildcard: `anon` already covers every path beneath it. `--auth-key` conflicts with
 `--auth-url` and the `--auth-public` flags.
 
 TLS certificates are self-signed and generated at startup. There is no ACME.
@@ -38,9 +39,9 @@ clients have an endpoint id.
 Without auth flags:
 
 - An iroh client may read the whole relay, and publish at the paths that name
-  its endpoint id, `live/<id>/...` and `rooms/<topic>/<id>/...`.
-- A browser may read anything, and publish a name of one segment, which keeps
-  it out of `live/` and `rooms/`.
+  its endpoint id, `live/<id>/...` and `rooms/<id>/...`.
+- A browser may read anything, and publish under `anon/`, which keeps it out
+  of `live/` and `rooms/`.
 
 With `--auth-key`:
 
@@ -48,7 +49,7 @@ With `--auth-key`:
   the rules above, and an invalid token is refused.
 - A session **without** a token keeps the rules above. Anonymous browsers and
   iroh clients still read every broadcast, and anonymous browsers can still
-  publish names of one segment. `--auth-key` changes what token holders may
+  publish under `anon/`. `--auth-key` changes what token holders may
   do. It takes nothing from sessions without a token.
 - Browsers are decided by moq-auth's reference policy,
   `moq_auth::serve::Policy`, and iroh clients by a `Verify` over the same key
@@ -82,7 +83,7 @@ A relay without either pulls nothing, and refuses a session that asks. With
 `--auth-url` or `--auth-public`, browsers pull nothing.
 
 The relay pulls only a ticket whose path is the publisher's own, such as
-`live/<peer>/<name>` or `rooms/<topic>/<peer>/<name>`, and refuses others with
+`live/<peer>/<name>` or `rooms/<peer>/<topic>/<name>`, and refuses others with
 `NotOwner`. A pull ends ten seconds after the last session that named it.
 
 | Pull limit | Default |

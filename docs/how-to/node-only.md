@@ -8,7 +8,7 @@ sessions, route table and relay links.
 ## The program
 
 The default `NodeConfig` lets peers read anything and publish nothing, so
-this reader grants the publisher `demo/**`. The publishing side is
+this reader grants the publisher the prefix `demo`. The publishing side is
 [`iroh-live/examples/moq_only.rs`](../../iroh-live/examples/moq_only.rs),
 which serves `demo/hello`:
 
@@ -18,7 +18,7 @@ cargo run -p iroh-live --example moq_only     # prints its endpoint id
 
 ```rust,no_run
 use iroh::EndpointId;
-use iroh_live::node::{Grant, Node, NodeConfig, MoqPreset, Reach, moq_net::Pattern, policy};
+use iroh_live::node::{Grant, Node, NodeConfig, MoqPreset, Reach, moq_net::Prefix, policy};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("usage: reader <id>")?
         .parse()?;
     let endpoint = iroh::Endpoint::bind(MoqPreset).await?;
-    let demo: Pattern = "demo/**".parse()?;
+    let demo: Prefix = "demo".parse()?;
     let node = Node::new(
         endpoint.clone(),
         NodeConfig::default().with_policy(policy::Open(Grant::publish_under(demo))),

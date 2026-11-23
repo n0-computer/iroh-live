@@ -9,7 +9,7 @@ implementation, [moq-dev/moq](https://github.com/moq-dev/moq).
 
 A broadcast lives at a [path](paths.md). `irl publish` publishes at
 `live/<endpoint id>/hello`, a call at `live/<endpoint id>/call`, and a room at
-`rooms/<topic>/<endpoint id>/<name>`.
+`rooms/<endpoint id>/<topic>/<name>`.
 
 A track is one video rendition, the audio, or any data. A video track has the
 name of its `VideoRendition`. `irl publish` names a single rendition `video`,

@@ -20,10 +20,12 @@
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let broadcast = moq_net::broadcast::Info::new().produce();
-//! let track = broadcast.create_track(
-//!     "latency",
-//!     track::Info::default().with_timescale(Timescale::MILLI),
-//! )?;
+//! let track = broadcast
+//!     .create_track(
+//!         "latency",
+//!         track::Info::default().with_timescale(Timescale::MILLI),
+//!     )
+//!     .ok_or("the track exists")?;
 //! let latency = ValueWriter::<u64>::new(track, Default::default());
 //! // Both succeed, even within one millisecond.
 //! latency.update(&150)?;

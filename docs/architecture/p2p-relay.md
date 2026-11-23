@@ -48,7 +48,7 @@ total and per client, and rate-limits each client's new dials. That node uses th
 cluster origin as its route table (`NodeConfig::table`), so the publisher's
 session announces the broadcast straight into the cluster at its own path,
 with no copy. The relay pulls only a ticket whose path is the publisher's
-canonical `live/<peer>/<name>` or `rooms/<topic>/<peer>/<name>` path, and
+canonical `live/<peer>/<name>` or `rooms/<peer>/<topic>/<name>` path, and
 refuses any other ticket with `NotOwner`. The session that named the ticket is
 served the cluster with a mount at that name (`origin::Producer::mount`), so
 it reads the broadcast under the name it asked for. From then on it is ordinary
