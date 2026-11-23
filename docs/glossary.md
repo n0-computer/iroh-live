@@ -7,10 +7,10 @@ These docs use each term below in one meaning only.
 | Audience | Who sees one publication: every granted session (`Audience::Granted`), or a set of peers (`Audience::Peers`). See [Access control](concepts/access.md#audience) |
 | Broadcast | A named set of tracks that one node publishes, such as a camera's video and audio. See [Broadcasts](concepts/broadcasts.md) |
 | Catalog | The track that describes a broadcast's other tracks: codec, size, bitrate |
-| Claim | A path that `Node::subscribe_ticket` lets a ticket's publisher publish, while the subscription lives. See [Access reference](reference/access.md#ticket-claims) |
+| Claim | A path, and every path beneath it, that `Node::subscribe_ticket` lets a ticket's publisher publish, while the subscription lives. See [Access reference](reference/access.md#ticket-claims) |
 | Endpoint | iroh's QUIC socket with a key pair. One node runs on one endpoint |
 | Endpoint id | The public key of an endpoint, which identifies a node. Not "node id" or "peer id". See [Nodes and endpoints](concepts/nodes.md) |
-| Grant | The paths a peer may read and publish, as two sets of patterns |
+| Grant | The paths a peer may read and publish, as two sets of path prefixes |
 | Group | A run of frames that starts with a keyframe. A late reader skips to the newest group |
 | iroh relay | A server that forwards encrypted packets between endpoints that cannot reach each other. Knows nothing about media. See [Relays](concepts/relays.md) |
 | iroh-live relay | The `iroh-live-relay` server: a MoQ relay that serves broadcasts to many viewers, browsers included. See [Relays](concepts/relays.md) |
@@ -19,7 +19,8 @@ These docs use each term below in one meaning only.
 | MoQ | Media over QUIC, the publish and subscribe protocol iroh-live speaks |
 | Node | The iroh-live state on one endpoint: route table, publications, sessions, policy |
 | Path | The name of a broadcast, such as `live/<endpoint id>/hello` |
-| Pattern | A path with wildcards: `*` for one segment, `**` for the rest |
+| Pattern | A path with wildcards, `*` for one segment and `**` for the rest, which a discovery filter matches announcements against. Grants take prefixes instead |
+| Prefix | A path that covers itself and every path beneath it, as a grant names what a peer may read or publish. The empty prefix covers every path |
 | Player | Decodes a subscribed broadcast, picks a rendition, and keeps audio and video in step |
 | Policy | What decides which peers may connect, and with which grant. See [Access control](concepts/access.md) |
 | Publication | A broadcast that a node publishes at a path, with its audience |

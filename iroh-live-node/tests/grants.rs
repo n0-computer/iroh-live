@@ -17,7 +17,7 @@ use iroh_live_node::{
     layout::Layout,
     policy::{self, PeerRequest, Rejection},
 };
-use moq_net::{Path, Pattern, Patterns};
+use moq_net::{Path, Prefix, Prefixes};
 use n0_tracing_test::traced_test;
 use n0_watcher::Watcher;
 
@@ -422,11 +422,11 @@ async fn claims_are_capped_by_bytes_and_repeats_are_free() {
 struct Fleet(EndpointId);
 
 impl Layout<EndpointId> for Fleet {
-    fn scope(&self, peer: &EndpointId) -> Patterns {
+    fn scope(&self, peer: &EndpointId) -> Prefixes {
         if *peer == self.0 {
-            Patterns::from(Pattern::literal("fleet/cam").expect("a pattern"))
+            Prefixes::from("fleet/cam".parse::<Prefix>().expect("a prefix"))
         } else {
-            Patterns::new()
+            Prefixes::new()
         }
     }
 
@@ -707,9 +707,9 @@ async fn a_policy_rejection_refuses_an_accept_and_fails_a_dial() {
 async fn a_policy_grant_holds_in_both_directions() {
     let fleet = |peer: &iroh::EndpointId| -> Grant {
         Grant::publish_under(
-            format!("fleet/{peer}/**")
-                .parse::<moq_net::Pattern>()
-                .expect("pattern"),
+            format!("fleet/{peer}")
+                .parse::<moq_net::Prefix>()
+                .expect("prefix"),
         )
     };
     let alice = Peer::bare(NodeConfig::default().with_policy(policy::from_fn(

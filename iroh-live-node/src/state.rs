@@ -19,13 +19,16 @@ use std::{
 
 use iroh::EndpointId;
 use moq_ext_access::Viewer;
-use moq_net::{Path, Pattern, auth, origin, origin::Source};
+use moq_net::{Path, Prefixes, auth, origin};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::{
-    Grant, LinkId, LinkKind, handshake::Hop, link::LatestSample, policy::Authorization,
+    Grant, LinkId, LinkKind,
+    handshake::{Hop, Source},
+    link::LatestSample,
+    policy::Authorization,
     publish::AudienceKind,
 };
 
@@ -397,7 +400,7 @@ impl State {
             .fold(base.clone(), |grant, path| {
                 grant
                     .with_publish_path(path.as_str())
-                    .expect("a claimed path passed check_path, so a literal pattern names it")
+                    .expect("a claimed path passed check_path, so it is a valid prefix")
             })
     }
 
@@ -468,7 +471,7 @@ impl State {
 
     /// Returns the moq grant of a link, from the publications it may see.
     ///
-    /// Its subscribe half lists the exact paths of the publications whose
+    /// Its subscribe half lists the paths of the publications whose
     /// audience admits the link, within `base`. Its publish half is `base`'s
     /// for a session, and anything for a relay, which is trusted with what it
     /// forwards.
@@ -480,7 +483,7 @@ impl State {
         let base = &self.effective_grant(peer, base);
         let publish = match viewer {
             Viewer::Direct(_) => base.publish.clone(),
-            Viewer::Relay => Pattern::all().into(),
+            Viewer::Relay => Prefixes::all(),
         };
         let subscribe = moq_ext_access::visible_paths(
             self.publications
@@ -605,7 +608,7 @@ mod tests {
 
     /// Returns a grant that lets a peer subscribe anywhere and publish under `live/<peer>/`.
     fn own_paths(peer: EndpointId) -> Grant {
-        let own: Pattern = format!("live/{peer}/**").parse().expect("a pattern");
+        let own: moq_net::Prefix = format!("live/{peer}").parse().expect("a prefix");
         Grant::publish_under(own)
     }
 
@@ -736,9 +739,10 @@ mod tests {
         assert!(widened.publish.matches(claimed.as_str()));
         assert!(widened.publish.matches(&own), "the base grant stays");
         assert!(
-            !widened.publish.matches("shows/news/extra"),
-            "a claim covers exactly its path"
+            widened.publish.matches("shows/news/extra"),
+            "a claim covers its path and every path beneath it"
         );
+        assert!(!widened.publish.matches("shows/newsroom"));
 
         // The first release leaves the other claim in place.
         state.release_path(&peer, &claimed);

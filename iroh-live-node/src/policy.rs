@@ -29,7 +29,7 @@
 //! use iroh::EndpointId;
 //! use iroh_live_node::{
 //!     Grant, NodeConfig,
-//!     moq_net::Pattern,
+//!     moq_net::Prefix,
 //!     policy::{self, PeerRequest, Rejection},
 //! };
 //!
@@ -40,7 +40,7 @@
 //!         if !known.contains(peer) {
 //!             return Err(Rejection::new("unknown peer"));
 //!         }
-//!         let own: Pattern = format!("live/{peer}/**").parse().expect("a pattern");
+//!         let own: Prefix = format!("live/{peer}").parse().expect("a prefix");
 //!         Ok(Grant::publish_under(own).into())
 //!     }));
 //! # drop(config);

@@ -34,10 +34,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("read with: {me}");
             let path = layout.path(me, "control")?;
             let publication = node.publish(path, Audience::Granted)?;
-            let mut control = publication.broadcast().create_track(
-                "control",
-                track::Info::default().with_timescale(Timescale::MILLI),
-            )?;
+            let mut control = publication
+                .broadcast()
+                .create_track(
+                    "control",
+                    track::Info::default().with_timescale(Timescale::MILLI),
+                )
+                .ok_or("the track exists")?;
             for n in 0u32.. {
                 let now = Timestamp::from(Instant::now());
                 control.write_frame(now, format!("tick {n}").into_bytes())?;
@@ -54,13 +57,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .subscribe(None)
                 .await?
                 .ordered();
-            while let Some(item) = control.next_group().await? {
+            while let Some(item) = control.next_item().await? {
                 let mut group = match item {
                     track::Item::Group(group) => group,
                     track::Item::Gap { range, .. } => {
                         println!("skipped groups {range:?}");
                         continue;
                     }
+                    _ => continue,
                 };
                 while let Some(frame) = group.read_frame().await? {
                     println!("{}", String::from_utf8_lossy(&frame.payload));

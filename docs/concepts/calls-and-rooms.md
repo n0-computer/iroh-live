@@ -20,7 +20,7 @@ contacts also keeps strangers from ringing.
 
 A room is an [iroh-gossip](https://github.com/n0-computer/iroh-gossip) topic.
 Its members announce themselves and the names of the broadcasts they publish
-into the room. Each member publishes at `rooms/<topic>/<its id>/<name>`, to
+into the room. Each member publishes at `rooms/<its id>/<topic>/<name>`, to
 an audience of the current members, and subscribes to the members it wants
 to show.
 

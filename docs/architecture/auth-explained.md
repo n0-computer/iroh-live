@@ -71,16 +71,16 @@ pub struct Authorization {
 }
 
 pub struct Grant {
-    pub subscribe: Patterns,
-    pub publish: Patterns,
+    pub subscribe: Prefixes,
+    pub publish: Prefixes,
 }
 ```
 
 A `Grant` has the same shape as a moq-auth grant, so a token means the same
-thing to a node and to a moq relay. Its patterns are moq patterns: `*`
-matches one path segment, `**` matches the rest of the path, and anything
-else matches itself. Patterns are an allow-list. There is no way to write
-"everything except this path".
+thing to a node and to a moq relay. Each half is a set of moq path
+prefixes: a prefix covers its own path and every path beneath it, and the
+empty prefix covers every path. A prefix holds no wildcard. Prefixes are an
+allow-list. There is no way to write "everything except this path".
 
 The two halves of a grant do different jobs:
 
@@ -114,7 +114,7 @@ pub enum Audience<P: PeerId> {
 ```
 
 `Granted` hands the decision back to the grant. Every session whose subscribe
-patterns cover the path sees the publication. That includes the relays the
+prefixes cover the path sees the publication. That includes the relays the
 node is attached to.
 
 `Peers` names a set of endpoint ids. Only sessions with those peers see the
@@ -203,10 +203,11 @@ grant.
 The node does not pass the policy's grant through as it is. It computes a
 *view* of the link, `State::link_view`, and the view is what moq enforces:
 
-- **subscribe:** the exact paths of this node's own publications that the
-  grant covers and whose audience admits the link. Each path is a literal
-  pattern, so nothing else matches.
-- **publish:** the grant's publish patterns, widened by the peer's ticket
+- **subscribe:** the paths of this node's own publications that the grant
+  covers and whose audience admits the link, each as a prefix. A prefix also
+  covers the paths beneath it, so a visible publication with a hidden
+  publication beneath it is left out of the view.
+- **publish:** the grant's publish prefixes, widened by the peer's ticket
   claims (see [ownership](#ownership-and-impersonation)).
 
 moq-net then enforces the view on the session, whether or not the peer's
@@ -220,9 +221,9 @@ protocol version speaks AUTH:
   Announcements retract, subscriptions reset, and broadcasts the peer
   published abort. A wider view brings back what the old one held back.
 
-moq bounds the view. It refuses an AUTH_OK larger than 64 KiB, and caps a
-union of patterns at 1024 members. A link that may see more publications
-than that cannot be granted them one by one.
+moq bounds the view. It refuses an AUTH_OK larger than 64 KiB, so a link
+that may see publications whose paths add up to more than that cannot be
+granted them one by one.
 
 ### The effective grant
 
@@ -297,16 +298,18 @@ path names its publisher.
 ```rust,ignore
 pub trait Layout<P: PeerId> {
     /// The paths `peer` may publish its own broadcasts under.
-    fn scope(&self, peer: &P) -> Patterns;
+    fn scope(&self, peer: &P) -> Prefixes;
     /// The peer that owns `path`, or `None` for a path outside the layout.
     fn owner(&self, path: &str) -> Option<P>;
 }
 ```
 
 `LiveLayout` puts a peer's broadcasts at `live/<peer id>/<name>`. Its
-`scope` is `live/<peer id>/**`, and its `owner` parses the id back out of a
-path. `RoomsLayout` does the same for `rooms/<topic>/<member id>/<name>`,
-with the scope `rooms/*/<member id>/**`. A pair of layouts is their union.
+`scope` is the prefix `live/<peer id>`, and its `owner` parses the id back
+out of a path. `RoomsLayout` does the same for
+`rooms/<member id>/<topic>/<name>`, with the prefix `rooms/<member id>`, so
+one prefix covers every room the member is in. A pair of layouts is their
+union.
 
 A layout doubles as a policy. `LiveLayout::policy()` admits every peer with
 `Grant::publish_under(layout.scope(peer))`. That grant lets the peer read
@@ -330,8 +333,9 @@ lets no peer publish anything, so the publisher's announcement would be
 withheld.
 
 `Node::subscribe_ticket` solves that with a *claim*. Before it subscribes,
-the node calls `Node::claim_path(publisher, path)`. The claim adds exactly
-that literal path to the publish half, on every session with the publisher,
+the node calls `Node::claim_path(publisher, path)`. The claim adds that path
+as a prefix to the publish half, covering the path and every path beneath it,
+on every session with the publisher,
 for as long as the subscription holds it. When the last claim on a path
 drops, the grant narrows again, and moq ends what local readers read there.
 
@@ -371,7 +375,7 @@ Two verifiers ship behind features:
 |---|---|---|
 | Token | a JWT, as moq-relay reads it | an `rcan1:` capability chain |
 | Checked against | a moq-auth `KeySet` | a principal's ed25519 key and a root path |
-| Grant | the claims' patterns, rooted at the requested path | the last link's `MoqCapability`, within the verifier's root |
+| Grant | the claims' prefixes, rooted at the requested path | the last link's `MoqCapability`, within the verifier's root |
 | Expiry | the `exp` claim | one second after the earliest link's `valid_until` |
 | Bound to the peer | no: whoever holds it may use it | yes: the last link must name the peer's endpoint id |
 
@@ -443,7 +447,7 @@ requires each node's policy to let the other publish at
 
 A room is a gossip topic. Its members announce themselves, and the room
 keeps the current member ids in a `Watchable<BTreeSet<EndpointId>>`.
-`Room::publish` places a broadcast at `rooms/<topic>/<me>/<name>` with
+`Room::publish` places a broadcast at `rooms/<me>/<topic>/<name>` with
 `Audience::Peers(members.clone())`. Every room publication shares the one
 watchable, so a member who joins sees all of them, and a member who leaves
 loses all of them. The rooms crate never touches the node's policy.
@@ -473,7 +477,7 @@ relay, therefore never sees a `Peers` publication.
 ### Why not a policy instead?
 
 A policy could also express a membership list: give each member a subscribe
-pattern for the path, and call `Node::reauthorize` when the list changes. The
+prefix for the path, and call `Node::reauthorize` when the list changes. The
 audience stays for three reasons. It is local: `Calls` and `Room` set it up
 themselves, and need nothing from the application beyond a policy that admits
 the layout. It keeps a publication off relay links, which bypass the policy
@@ -500,7 +504,7 @@ on every dial. `RelayLink::tokens()` returns moq-net's `auth::Tokens`, whose
 - *iroh clients* come in through `IrohSessions`, which knows their endpoint
   id. It decides each session with a policy, by default `relay_policy()`:
   read the whole relay, and publish under `live/<id>/` and
-  `rooms/*/<id>/`. With `--auth-key`, the policy becomes a `Verify` over the key file,
+  `rooms/<id>/`. With `--auth-key`, the policy becomes a `Verify` over the key file,
 `KeyFile`, with `relay_policy()` as its fallback. `KeyFile` reads the file
 again when its modification time or size changes, as moq-auth's reference
 policy does for browsers. The
@@ -508,8 +512,9 @@ policy does for browsers. The
   session, and the client's relay link redials with the tokens set on it last.
 - *Browsers* come in through moq-relay's server. Without auth flags, the relay
   answers each admission with `browser_grant(path)`: read anything, and
-  publish a name of one segment below the dialed path. One segment keeps a
-  browser out of `live/` and `rooms/`, whose paths name an iroh publisher.
+  publish under the prefix `anon/` (`iroh_live_relay::ANON`), reduced to the
+  dialed path. That keeps a browser out of `live/` and `rooms/`, whose paths
+  name an iroh publisher.
   With `--auth-key`, moq-auth's reference policy (`moq_auth::serve::Policy`)
   decides them, with the same public rule for a session without a token. A
   valid JWT grants what its claims say, and the policy reads the key file

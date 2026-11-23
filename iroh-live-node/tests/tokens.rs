@@ -43,8 +43,7 @@ fn alice_config() -> NodeConfig {
 
 /// Returns a chain from alice's account through bob's to `device`, valid for `valid`.
 fn chain_to(device: &Peer, valid: Duration) -> String {
-    let capability = MoqCapability::new("spaces/alice")
-        .with_publish("**".parse::<moq_net::Pattern>().expect("a pattern"));
+    let capability = MoqCapability::new("spaces/alice").with_publish(moq_net::Prefixes::all());
     let issued = Rcan::issuing_builder(
         &alice_account(),
         bob_account().verifying_key(),

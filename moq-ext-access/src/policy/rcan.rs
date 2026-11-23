@@ -6,7 +6,7 @@ use std::{
 };
 
 use ed25519_dalek::VerifyingKey;
-use moq_net::{Pattern, Patterns};
+use moq_net::{InvalidPrefix, Prefix, Prefixes};
 use rcan::{Authorizer, Capability, Expires, Rcan};
 use serde::{Deserialize, Serialize};
 
@@ -26,17 +26,18 @@ const PREFIX: &str = "rcan1:";
 
 /// What a holder may do at a moq node: publish and subscribe under a root.
 ///
-/// The patterns are relative to [`root`](Self::root), as in a moq-auth JWT.
-/// One capability permits another when its paths cover the other's.
+/// The prefixes are relative to [`root`](Self::root), as in a moq-auth JWT,
+/// and each covers its path and every path beneath it. One capability permits
+/// another when its paths cover the other's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "Wire", try_from = "Wire")]
 pub struct MoqCapability {
-    /// The path the patterns are relative to.
+    /// The path the prefixes are relative to.
     pub root: String,
     /// The paths the holder may publish, relative to the root.
-    pub publish: Patterns,
+    pub publish: Prefixes,
     /// The paths the holder may subscribe to, relative to the root.
-    pub subscribe: Patterns,
+    pub subscribe: Prefixes,
 }
 
 impl MoqCapability {
@@ -45,27 +46,27 @@ impl MoqCapability {
     pub fn new(root: impl Into<String>) -> Self {
         Self {
             root: root.into(),
-            publish: Patterns::new(),
-            subscribe: Patterns::new(),
+            publish: Prefixes::new(),
+            subscribe: Prefixes::new(),
         }
     }
 
     /// Returns this capability with `publish` as the paths the holder may publish.
     #[must_use]
-    pub fn with_publish(mut self, publish: impl Into<Patterns>) -> Self {
+    pub fn with_publish(mut self, publish: impl Into<Prefixes>) -> Self {
         self.publish = publish.into();
         self
     }
 
     /// Returns this capability with `subscribe` as the paths the holder may subscribe to.
     #[must_use]
-    pub fn with_subscribe(mut self, subscribe: impl Into<Patterns>) -> Self {
+    pub fn with_subscribe(mut self, subscribe: impl Into<Prefixes>) -> Self {
         self.subscribe = subscribe.into();
         self
     }
 
-    /// Returns the grant this capability gives, with absolute patterns.
-    fn grant(&self) -> Result<Grant, moq_net::InvalidPattern> {
+    /// Returns the grant this capability gives, with absolute prefixes.
+    fn grant(&self) -> Result<Grant, InvalidPrefix> {
         Ok(Grant {
             subscribe: self.subscribe.rooted(&self.root)?,
             publish: self.publish.rooted(&self.root)?,
@@ -100,7 +101,7 @@ enum Wire {
 impl From<MoqCapability> for Wire {
     fn from(capability: MoqCapability) -> Self {
         let strings =
-            |patterns: &Patterns| patterns.iter().map(|p| p.as_str().to_owned()).collect();
+            |prefixes: &Prefixes| prefixes.iter().map(|p| p.as_str().to_owned()).collect();
         Self::Access {
             publish: strings(&capability.publish),
             subscribe: strings(&capability.subscribe),
@@ -110,7 +111,7 @@ impl From<MoqCapability> for Wire {
 }
 
 impl TryFrom<Wire> for MoqCapability {
-    type Error = moq_net::InvalidPattern;
+    type Error = InvalidPrefix;
 
     fn try_from(wire: Wire) -> Result<Self, Self::Error> {
         let Wire::Access {
@@ -118,17 +119,29 @@ impl TryFrom<Wire> for MoqCapability {
             publish,
             subscribe,
         } = wire;
-        let patterns = |strings: Vec<String>| {
+        let prefixes = |strings: Vec<String>| {
             strings
                 .iter()
-                .map(|pattern| pattern.parse::<Pattern>())
-                .collect::<Result<Patterns, _>>()
+                .map(|text| wire_prefix(text))
+                .collect::<Result<Prefixes, _>>()
         };
         Ok(Self {
             root,
-            publish: patterns(publish)?,
-            subscribe: patterns(subscribe)?,
+            publish: prefixes(publish)?,
+            subscribe: prefixes(subscribe)?,
         })
+    }
+}
+
+/// Parses a prefix of a capability's wire form.
+///
+/// Chains issued when grants were patterns spell a subtree `foo/**`, and
+/// every path `**`. Those read as the prefixes `foo` and the empty prefix,
+/// and any other wildcard is refused.
+fn wire_prefix(text: &str) -> Result<Prefix, InvalidPrefix> {
+    match text {
+        "**" => Ok(Prefix::all()),
+        _ => text.strip_suffix("/**").unwrap_or(text).parse(),
     }
 }
 
@@ -159,7 +172,7 @@ impl TryFrom<Wire> for MoqCapability {
 /// let alice = SigningKey::from_bytes(&[1; 32]);
 /// let device = SigningKey::from_bytes(&[2; 32]);
 /// let capability =
-///     MoqCapability::new("spaces/alice").with_publish("device/**".parse::<moq_net::Pattern>()?);
+///     MoqCapability::new("spaces/alice").with_publish("device".parse::<moq_net::Prefix>()?);
 /// let link = Rcan::issuing_builder(&alice, device.verifying_key(), capability)
 ///     .sign(Expires::valid_for(std::time::Duration::from_secs(3600)));
 /// // The device presents this as its token:
@@ -168,7 +181,7 @@ impl TryFrom<Wire> for MoqCapability {
 /// // The node that shares alice's space verifies it:
 /// let verifier = RcanVerifier::new(alice.verifying_key(), "spaces/alice");
 /// # drop((token, verifier));
-/// # Ok::<_, moq_net::InvalidPattern>(())
+/// # Ok::<_, moq_net::InvalidPrefix>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct RcanVerifier {

@@ -20,6 +20,7 @@ use moq_net::{
     origin::{self, Link},
     reconnect::{self, Action, Attempt, Verdict},
 };
+use moq_tokio::connection::Phase;
 use n0_error::{AnyError, e};
 use n0_future::{
     join_all,
@@ -491,27 +492,37 @@ async fn tokio_uplink(
     status: Watchable<RelayStatus>,
 ) {
     let monitor = link::monitor_relay(connection.monitor(), latest_sample);
-    let mut watch = connection.clone();
+    let watch = connection.monitor();
     // Aborts the connection for every clone when the task ends, so a
     // `RelayLink` handle held past shutdown does not keep redialing.
     let _stop = StopOnDrop(connection);
     let _monitor = AbortOnDropHandle::new(tokio::spawn(monitor));
+    let mut seen = watch.state();
     loop {
+        match &seen.phase {
+            Phase::Connected { .. } | Phase::Migrating { .. } => {
+                if status.set(RelayStatus::Connected).is_ok() {
+                    info!("relay connected");
+                }
+            }
+            Phase::Disconnected { failure } => {
+                if status.set(RelayStatus::Reconnecting).is_ok() {
+                    warn!(error = ?failure, "relay session dropped, redialing");
+                }
+            }
+            Phase::Connecting { failure } => debug!(error = ?failure, "relay connecting"),
+            Phase::Closed { failure } => {
+                debug!(error = ?failure, "relay link closed");
+                break;
+            }
+        }
         let update = tokio::select! {
             // The connection aborts as the task ends.
             _ = shared.shutdown.cancelled() => break,
-            update = watch.status() => update,
+            update = watch.state_changed(seen.revision) => update,
         };
         match update {
-            Ok(moq_tokio::Status::Connected | moq_tokio::Status::Migrating) => {
-                info!("relay connected");
-                status.set(RelayStatus::Connected).ok();
-            }
-            Ok(moq_tokio::Status::Disconnected) => {
-                warn!("relay session dropped, redialing");
-                status.set(RelayStatus::Reconnecting).ok();
-            }
-            Ok(other) => debug!(?other, "relay status"),
+            Ok(observation) => seen = observation,
             // A detach aborts the connection, which is no failure.
             Err(moq_tokio::Error::Stopped) => {
                 debug!("relay link stopped");

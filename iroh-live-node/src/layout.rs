@@ -8,7 +8,7 @@
 
 use iroh::EndpointId;
 pub use moq_ext_access::Layout;
-use moq_net::{Path, Pattern, Patterns, broadcast};
+use moq_net::{Path, Pattern, Prefix, Prefixes, broadcast};
 use n0_error::e;
 
 use crate::{
@@ -199,12 +199,12 @@ impl LiveLayout {
 }
 
 impl Layout<EndpointId> for LiveLayout {
-    /// Returns `<root>/<peer>/**`.
-    fn scope(&self, peer: &EndpointId) -> Patterns {
-        let pattern: Pattern = format!("{}/{peer}/**", self.root)
+    /// Returns `<root>/<peer>`, which covers every path beneath it.
+    fn scope(&self, peer: &EndpointId) -> Prefixes {
+        let prefix: Prefix = format!("{}/{peer}", self.root)
             .parse()
             .expect("the root and an endpoint id are valid path segments");
-        Patterns::from(pattern)
+        Prefixes::from(prefix)
     }
 
     /// Returns the peer a path names, if [`path`](LiveLayout::path) spells it that way.
@@ -334,7 +334,7 @@ mod tests {
             assert!(!layout.scope(&other).matches(path.as_str()), "{path}");
         }
         assert_eq!(layout.owner(&format!("live/{peer}")), None);
-        assert_eq!(layout.owner(&format!("rooms/topic/{peer}/cam")), None);
+        assert_eq!(layout.owner(&format!("rooms/{peer}/topic/cam")), None);
         assert_eq!(layout.owner(&format!("fleet/{peer}/cam")), None);
     }
 

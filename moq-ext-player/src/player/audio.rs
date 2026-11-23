@@ -10,7 +10,7 @@ use std::{
 #[cfg(feature = "playback")]
 use moq_audio::playback;
 use moq_ext_sources::{AudioFormat, ByPtr, Error, SlotState, send_if_changed};
-use moq_net::track::Delay;
+use moq_mux::container::Delay;
 use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::{broadcast, watch};
 use tracing::{Instrument, debug, info, info_span, warn};

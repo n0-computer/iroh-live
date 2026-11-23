@@ -1,4 +1,4 @@
-use moq_net::Pattern;
+use moq_net::Prefix;
 use n0_future::future::block_on;
 
 use super::*;
@@ -11,10 +11,10 @@ fn request(peer: &str) -> PeerRequest<Peer> {
     PeerRequest::new(peer.to_owned(), SessionRequest::default(), Event::Connect)
 }
 
-/// Returns a grant that lets a peer publish under `prefix/**`.
+/// Returns a grant that lets a peer publish at and under `prefix`.
 fn under(prefix: &str) -> Grant {
-    let pattern: Pattern = format!("{prefix}/**").parse().expect("a pattern");
-    Grant::publish_under(pattern)
+    let prefix: Prefix = prefix.parse().expect("a prefix");
+    Grant::publish_under(prefix)
 }
 
 /// Runs `policy` on `request` to its decision.

@@ -66,14 +66,17 @@ pub async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
     .await
 }
 
-/// Returns the announcement `event` carries, and whether it says the path is active.
+/// Returns the announcement `event` carries, and whether it says the path is present.
+///
+/// # Panics
+///
+/// Panics on an event moq added after these helpers were written.
 #[must_use]
 pub fn announcement(event: &announce::Event) -> (&announce::Announce, bool) {
     match event {
-        announce::Event::Absent(announce) | announce::Event::Offline(announce) => (announce, false),
-        announce::Event::Present(announce)
-        | announce::Event::Unavailable(announce)
-        | announce::Event::Available(announce) => (announce, true),
+        announce::Event::Present(announce) => (announce, true),
+        announce::Event::Absent(announce) => (announce, false),
+        other => panic!("an announce event this helper does not know: {other:?}"),
     }
 }
 

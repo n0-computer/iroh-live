@@ -23,10 +23,12 @@ async fn a_late_reader_gets_the_newest_value_and_then_the_next() {
         .expect("a path");
     let (_publication, track) = publisher
         .publish_with(path.clone(), Audience::Granted, |producer| {
-            producer.create_track(
-                "latency",
-                track::Info::default().with_timescale(Timescale::MILLI),
-            )
+            producer
+                .create_track(
+                    "latency",
+                    track::Info::default().with_timescale(Timescale::MILLI),
+                )
+                .ok_or(moq_net::Error::Duplicate)
         })
         .expect("publish");
     // Fixed times, so the reader's stamps can be checked.

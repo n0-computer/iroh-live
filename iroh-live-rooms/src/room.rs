@@ -9,7 +9,7 @@ use std::{
 use iroh::EndpointId;
 use iroh_gossip::TopicId;
 use iroh_live_node::{Audience, Node, Publication, Subscription, layout::Layout};
-use moq_net::{Pattern, Patterns, broadcast};
+use moq_net::{Prefix, Prefixes, broadcast};
 use n0_error::e;
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
@@ -143,7 +143,7 @@ impl Room {
 
     /// Publishes a broadcast into the room as `name`, to its members only, and returns it.
     ///
-    /// The path is `rooms/<topic>/<this member>/<name>`. `B` is built from the
+    /// The path is `rooms/<this member>/<topic>/<name>`. `B` is built from the
     /// route table's `broadcast::Producer`: a `LocalBroadcast`, or the producer
     /// itself. The broadcast stays announced until it closes,
     /// [`unpublish`](Self::unpublish) takes it out, or the room is left.
@@ -320,18 +320,19 @@ impl Inner {
     }
 }
 
-/// The path layout of room broadcasts: `rooms/<topic>/<member>/<name>`.
+/// The path layout of room broadcasts: `rooms/<member>/<topic>/<name>`.
 ///
-/// A member publishes under `rooms/*/<member>/**`. A node that runs rooms
-/// lets every peer publish there, as
+/// A member publishes under the prefix `rooms/<member>`, which names it
+/// before the topic so that one prefix covers every room it is in. A node
+/// that runs rooms lets every peer publish there, as
 /// [`policy((LiveLayout::default(), RoomsLayout))`](iroh_live_node::layout::policy)
 /// does.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RoomsLayout;
 
 impl Layout<EndpointId> for RoomsLayout {
-    fn scope(&self, peer: &EndpointId) -> Patterns {
-        Patterns::from(publish_scope(*peer))
+    fn scope(&self, peer: &EndpointId) -> Prefixes {
+        Prefixes::from(publish_scope(*peer))
     }
 
     fn owner(&self, path: &str) -> Option<EndpointId> {
@@ -339,16 +340,16 @@ impl Layout<EndpointId> for RoomsLayout {
     }
 }
 
-/// Returns the paths `member` publishes room broadcasts under, `rooms/*/<member>/**`.
-fn publish_scope(member: EndpointId) -> Pattern {
-    format!("rooms/*/{member}/**")
+/// Returns the prefix `member` publishes room broadcasts under, `rooms/<member>`.
+fn publish_scope(member: EndpointId) -> Prefix {
+    format!("rooms/{member}")
         .parse()
         .expect("an endpoint id is a valid path segment")
 }
 
-/// Returns the path a room broadcast lives at: `rooms/<topic>/<publisher>/<name>`.
+/// Returns the path a room broadcast lives at: `rooms/<publisher>/<topic>/<name>`.
 pub(crate) fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> String {
-    format!("rooms/{topic}/{publisher}/{name}")
+    format!("rooms/{publisher}/{topic}/{name}")
 }
 
 /// Returns the topic, publisher and name of a room broadcast's path.
@@ -356,8 +357,8 @@ pub(crate) fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> St
 /// Returns `None` for any other path, and for a topic or publisher that is
 /// not spelled canonically.
 fn parse_room_path(path: &str) -> Option<(TopicId, EndpointId, &str)> {
-    let (topic_str, rest) = path.strip_prefix("rooms/")?.split_once('/')?;
-    let (publisher_str, name) = rest.split_once('/')?;
+    let (publisher_str, rest) = path.strip_prefix("rooms/")?.split_once('/')?;
+    let (topic_str, name) = rest.split_once('/')?;
     let topic: TopicId = topic_str.parse().ok()?;
     let publisher: EndpointId = publisher_str.parse().ok()?;
     let canonical = topic.to_string() == topic_str && publisher.to_string() == publisher_str;
@@ -375,7 +376,7 @@ mod tests {
         let topic = TopicId::from_bytes([7; 32]);
         let publisher = SecretKey::from_bytes(&[3; 32]).public();
         let path = room_path(topic, publisher, "cam");
-        assert_eq!(path, format!("rooms/{topic}/{publisher}/cam"));
+        assert_eq!(path, format!("rooms/{publisher}/{topic}/cam"));
         assert!(publish_scope(publisher).matches(&path));
         assert!(!publish_scope(SecretKey::from_bytes(&[4; 32]).public()).matches(&path));
     }
@@ -412,8 +413,8 @@ mod tests {
         );
         let granted = grant(&both, peer);
         assert!(granted.allows_publish(&format!("live/{peer}/cam")));
-        assert!(granted.allows_publish(&format!("rooms/topic/{peer}/cam")));
-        assert!(!granted.allows_publish(&format!("rooms/topic/{other}/cam")));
+        assert!(granted.allows_publish(&format!("rooms/{peer}/topic/cam")));
+        assert!(!granted.allows_publish(&format!("rooms/{other}/topic/cam")));
         assert!(!granted.allows_publish(&format!("live/{other}/cam")));
         let request = PeerRequest::new(peer, SessionRequest::default(), Event::Connect);
         let decided = n0_future::future::block_on(Policy::decide(&policy(both), &request))
@@ -429,18 +430,18 @@ mod tests {
         let path = room_path(topic, publisher, "cam/hd");
         assert_eq!(parse_room_path(&path), Some((topic, publisher, "cam/hd")));
         assert_eq!(
-            parse_room_path(&format!("rooms/{topic}/{publisher}/")),
+            parse_room_path(&format!("rooms/{publisher}/{topic}/")),
             None
         );
         assert_eq!(
-            parse_room_path(&format!("rooms/topic/{publisher}/cam")),
+            parse_room_path(&format!("rooms/{publisher}/topic/cam")),
             None
         );
         assert_eq!(
-            parse_room_path(&format!("live/{topic}/{publisher}/cam")),
+            parse_room_path(&format!("live/{publisher}/{topic}/cam")),
             None
         );
         let upper = publisher.to_string().to_uppercase();
-        assert_eq!(parse_room_path(&format!("rooms/{topic}/{upper}/cam")), None);
+        assert_eq!(parse_room_path(&format!("rooms/{upper}/{topic}/cam")), None);
     }
 }

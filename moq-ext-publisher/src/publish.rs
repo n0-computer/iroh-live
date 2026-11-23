@@ -676,7 +676,7 @@ impl LocalBroadcast {
                 name,
                 moq_net::track::Info::default().with_timescale(moq_net::Timescale::MILLI),
             )
-            .map_err(Error::broadcast)?;
+            .ok_or_else(|| Error::broadcast(moq_net::Error::Duplicate))?;
         debug!(parent: &self.shared.span, track = name, "value track created");
         Ok(ValueWriter::new(
             track,

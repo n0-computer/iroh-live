@@ -31,14 +31,14 @@ fn device(key: &SigningKey) -> Device {
     Device(key.verifying_key().to_bytes())
 }
 
-/// Parses `pattern`, which must be valid.
-fn pattern(pattern: &str) -> Pattern {
-    pattern.parse().expect("a pattern")
+/// Parses `prefix`, which must be valid.
+fn prefix(prefix: &str) -> Prefix {
+    prefix.parse().expect("a prefix")
 }
 
 /// Returns a capability under `spaces/alice` to publish under `prefix`.
 fn publish_under(prefix: &str) -> MoqCapability {
-    MoqCapability::new("spaces/alice").with_publish(pattern(&format!("{prefix}/**")))
+    MoqCapability::new("spaces/alice").with_publish(self::prefix(prefix))
 }
 
 /// Returns an expiry `hours` from now.
@@ -140,7 +140,7 @@ fn a_chain_over_the_link_limit_rejects() {
 #[test]
 fn a_capability_outside_the_root_rejects() {
     let (alice, bob) = (key(1), key(2));
-    let elsewhere = MoqCapability::new("spaces/alicea").with_publish(pattern("**"));
+    let elsewhere = MoqCapability::new("spaces/alicea").with_publish(Prefix::all());
     let link = Rcan::issuing_builder(&alice, bob.verifying_key(), elsewhere).sign(hours(1));
     let rejection = verify(&alice_verifier(), &bob, &encode_chain(&[link])).expect_err("rejected");
     assert!(rejection.reason().contains("outside"), "{rejection}");
@@ -315,9 +315,28 @@ fn the_root_matches_whole_segments() {
 #[test]
 fn a_verifier_at_the_empty_root_admits_any_root() {
     let (alice, bob) = (key(1), key(2));
-    let elsewhere = MoqCapability::new("fleet").with_publish(pattern("**"));
+    let elsewhere = MoqCapability::new("fleet").with_publish(Prefix::all());
     let link = Rcan::issuing_builder(&alice, bob.verifying_key(), elsewhere).sign(hours(1));
     let verifier = RcanVerifier::new(alice.verifying_key(), "");
     let authorization = verify(&verifier, &bob, &encode_chain(&[link])).expect("admitted");
     assert!(authorization.grant.allows_publish("fleet/cam"));
+}
+
+#[test]
+fn a_chain_spelled_in_subtree_patterns_reads_as_prefixes() {
+    let wire = Wire::Access {
+        root: "spaces/alice".to_owned(),
+        publish: vec!["device/**".to_owned()],
+        subscribe: vec!["**".to_owned()],
+    };
+    let capability = MoqCapability::try_from(wire).expect("a capability");
+    assert_eq!(capability.publish, Prefixes::from(prefix("device")));
+    assert_eq!(capability.subscribe, Prefixes::all());
+
+    let wildcard = Wire::Access {
+        root: "spaces/alice".to_owned(),
+        publish: vec!["device/*/cam".to_owned()],
+        subscribe: Vec::new(),
+    };
+    assert!(MoqCapability::try_from(wildcard).is_err());
 }

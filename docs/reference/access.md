@@ -11,9 +11,9 @@ re-exports them with the peer type fixed to `EndpointId`.
 |---|---|---|
 | `NodeConfig::default()` | `policy::Open(Grant::subscribe_only())` | Read, and publish nothing |
 | `LiveLayout::config()` | `LiveLayout::policy()` | Read, and publish under `live/<its id>/` |
-| `layout::config((LiveLayout::default(), RoomsLayout))` | the union of both layouts | Also publish under `rooms/<topic>/<its id>/` |
-| `iroh-live-relay`, iroh clients | `relay_policy()` | Read the whole relay, and publish under `live/<its id>/` and `rooms/*/<its id>/` |
-| `iroh-live-relay`, browsers | `browser_grant(path)` | Read anything, and publish a name of one segment |
+| `layout::config((LiveLayout::default(), RoomsLayout))` | the union of both layouts | Also publish under `rooms/<its id>/` |
+| `iroh-live-relay`, iroh clients | `relay_policy()` | Read the whole relay, and publish under `live/<its id>/` and `rooms/<its id>/` |
+| `iroh-live-relay`, browsers | `browser_grant(path)` | Read anything, and publish under `anon/` |
 
 `NodeConfig::decide_timeout` defaults to 10 seconds.
 
@@ -38,15 +38,16 @@ re-exports them with the peer type fixed to `EndpointId`.
 
 ## Grants
 
-A `Grant` has two sets of path patterns, `subscribe` and `publish`. A pattern
-segment `*` matches one segment, and `**` matches the rest of the path.
+A `Grant` has two sets of path prefixes, `subscribe` and `publish`. A prefix
+covers its own path and every path beneath it, the empty prefix covers every
+path, and a prefix holds no wildcard.
 
 | Constructor | Read | Publish |
 |---|---|---|
 | `Grant::everything()` | everything | everything |
 | `Grant::subscribe_only()` | everything | nothing |
 | `Grant::nothing()` | nothing | nothing |
-| `Grant::publish_under(patterns)` | everything | under `patterns` |
+| `Grant::publish_under(prefixes)` | everything | under `prefixes` |
 
 ## Audiences
 
@@ -56,8 +57,9 @@ segment `*` matches one segment, and `**` matches the rest of the path.
 | `Audience::Peers(set)` | Only the peers in a watched set, and never a relay |
 
 `Audience::peers([peer])` builds a fixed set. The node gives each session the
-exact paths of the publications it may see, and moq enforces that on the
-session. A peer that loses a path loses it at once, and what it read there
+paths of the publications it may see, as prefixes, and moq enforces that on
+the session. A prefix covers the paths beneath it too, so a publication with a
+hidden publication beneath it stays hidden as well. A peer that loses a path loses it at once, and what it read there
 ends with `Unauthorized`.
 
 ## Policies
@@ -121,9 +123,9 @@ session that holds one, and `Session::grant()` the grant of one session.
 
 `Node::subscribe_ticket` lets any node play a ticket, whatever its policy.
 Before it subscribes, the node *claims* the ticket's path for the ticket's
-publisher with `Node::claim_path`. The claim adds exactly that path to what
-the publisher may publish, on every session with it, while the subscription
-lives.
+publisher with `Node::claim_path`. The claim adds that path, and every path
+beneath it, to what the publisher may publish, on every session with it,
+while the subscription lives.
 
 The node checks that the publisher owns the path. By default, exactly one
 segment of the path is the publisher's endpoint id in hex, and no other

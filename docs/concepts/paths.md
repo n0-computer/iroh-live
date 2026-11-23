@@ -24,20 +24,23 @@ let broadcast: LocalBroadcast = layout.publish(&node, "hello")?; // live/<id>/he
 ```
 
 Rooms use a second layout, `RoomsLayout`, with paths
-`rooms/<topic>/<peer>/<name>`. A node that runs both takes the union:
+`rooms/<peer>/<topic>/<name>`. A node that runs both takes the union:
 `iroh_live::layout::config((LiveLayout::default(), RoomsLayout))`.
 
 ## Your own paths
 
 The node itself takes any path. `Node::publish(path, audience)` and
 `Node::subscribe(path, reach)` apply no layout. A layout of your own
-implements the `Layout` trait: `scope` returns the patterns a peer may
+implements the `Layout` trait: `scope` returns the prefixes a peer may
 publish under, and `owner` returns the peer that owns a path. The two must
 agree: the owner of any path in `scope(peer)` is `peer`.
 [Publish at your own path](../how-to/custom-paths.md) is a complete program.
 
-A path pattern uses `*` for one segment and `**` for the rest of the path,
-as in `live/*/hello` or `stage/<id>/**`.
+A grant is a set of path prefixes. A prefix such as `stage/<id>` covers its
+own path and every path beneath it, the empty prefix covers every path, and a
+prefix holds no wildcard. Discovery filters, which pick the announcements a
+reader looks at, take path patterns instead: `*` matches one segment and `**`
+the rest of the path, as in `live/*/hello`.
 
 ## Where to go next
 

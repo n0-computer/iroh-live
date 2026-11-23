@@ -126,7 +126,7 @@ removes the member when its lease runs out.
 
 ## Publishing and subscribing
 
-`Room::publish(name)` puts the broadcast at `rooms/<topic>/<this member>/<name>`,
+`Room::publish(name)` puts the broadcast at `rooms/<this member>/<topic>/<name>`,
 where only the room's members can read it. A member that leaves or expires
 loses the path at once. `Room::unpublish(name)`, or closing the broadcast,
 removes the name from this member's announcement. A name must not be empty or

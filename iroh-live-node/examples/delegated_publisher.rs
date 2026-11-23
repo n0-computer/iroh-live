@@ -3,7 +3,7 @@
 //! Alice's node shares the space `spaces/alice`. Its policy verifies rcan
 //! capability chains that alice's account key issued, and lets peers without a
 //! token subscribe only. Alice's account delegates publishing under
-//! `spaces/alice/bob/**` to bob's account, and bob delegates it on to his
+//! `spaces/alice/bob` to bob's account, and bob delegates it on to his
 //! device. The device presents the chain as its token when it dials alice's
 //! node, and alice's node then reads the broadcast the device publishes there.
 //!
@@ -18,7 +18,7 @@ use std::time::Duration;
 use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live_node::{
     Audience, ConnectOptions, Grant, MoqPreset, Node, NodeConfig, Reach,
-    moq_net::Pattern,
+    moq_net::Prefix,
     policy::{MoqCapability, Open, RcanVerifier, Verify, encode_chain},
 };
 use rcan::{Expires, Rcan};
@@ -46,8 +46,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Alice's account lets bob's account publish under `spaces/alice/bob/`
     // for a day, and bob's account delegates that to the device for an hour.
-    // The patterns are relative to the capability's root.
-    let capability = MoqCapability::new("spaces/alice").with_publish("bob/**".parse::<Pattern>()?);
+    // The prefixes are relative to the capability's root.
+    let capability = MoqCapability::new("spaces/alice").with_publish("bob".parse::<Prefix>()?);
     let issued = Rcan::issuing_builder(
         alice_account.as_signing_key(),
         bob_account.public().as_verifying_key(),

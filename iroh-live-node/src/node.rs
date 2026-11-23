@@ -175,7 +175,7 @@ impl NodeConfig {
 ///
 /// let publication = node.publish("demo/camera", Audience::Granted)?;
 /// // write tracks into the broadcast in the route table:
-/// let _track = publication.broadcast().create_track("video", None)?;
+/// let _track = publication.broadcast().create_track("video", None).ok_or("the track exists")?;
 /// # Ok(())
 /// # }
 /// ```
@@ -481,7 +481,9 @@ impl Node {
     ) -> Result<(Publication, ValueWriter<T>), Error> {
         self.publish_with(path, audience, |broadcast| {
             let info = track::Info::default().with_timescale(moq_net::Timescale::MILLI);
-            let track = broadcast.create_track(name, info)?;
+            let track = broadcast
+                .create_track(name, info)
+                .ok_or(moq_net::Error::Duplicate)?;
             Ok::<_, moq_net::Error>(ValueWriter::new(track, json::snapshot::Config::default()))
         })
     }

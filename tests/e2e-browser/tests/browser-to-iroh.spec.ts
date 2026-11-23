@@ -22,7 +22,7 @@ test("Browser publish → CLI subscribe", async ({ page }) => {
 
   // Navigate to publish page with fake camera. HTTP and QUIC share the
   // same port, so the moq-lite fingerprint flow works automatically.
-  const publishUrl = `http://localhost:${relay.httpPort}/publish.html?name=browser-stream`;
+  const publishUrl = `http://localhost:${relay.httpPort}/publish.html?name=anon/browser-stream`;
   await page.goto(publishUrl);
 
   // Wait for moq-publish element to be attached and publishing
@@ -38,7 +38,7 @@ test("Browser publish → CLI subscribe", async ({ page }) => {
     "--relay",
     relay.irohAddr,
     "--name",
-    "browser-stream",
+    "anon/browser-stream",
     "--frames",
     "3",
   ], {

@@ -7,14 +7,14 @@ mod common;
 
 use std::{num::NonZeroU64, time::Duration};
 
-use common::{TIMEOUT, TestBroadcast, endpoint, read_counter, step, subscription};
+use common::{TIMEOUT, TestBroadcast, announcement, endpoint, read_counter, step, subscription};
 use iroh::{
     Endpoint, EndpointAddr,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use moq_net::{
-    Pattern, announce, auth, broadcast,
+    Prefix, announce, auth, broadcast,
     origin::{self, Link, RouteEvent, RouteInfo, RouteKind, RouteOptions},
 };
 use n0_future::task::AbortOnDropHandle;
@@ -143,12 +143,12 @@ fn publish(origin: &origin::Producer, path: &str) -> (origin::Route, TestBroadca
     (route, writer)
 }
 
-/// Returns a grant to subscribe to exactly `paths`, as the node gives a session.
+/// Returns a grant to subscribe to `paths` and beneath them, as the node gives a session.
 fn grant(paths: &[&str]) -> auth::Grant {
     let mut grant = auth::Grant::default();
     grant.subscribe = paths
         .iter()
-        .map(|path| Pattern::literal(path).expect("a literal"))
+        .map(|path| path.parse::<Prefix>().expect("a prefix"))
         .collect();
     grant
 }
@@ -179,7 +179,7 @@ async fn best_route(
     let mut routes = origin.consume().routes();
     tokio::time::timeout(TIMEOUT, async {
         loop {
-            let RouteEvent { kind, announce } = routes.next().await.expect("origin closed");
+            let RouteEvent { kind, announce, .. } = routes.next().await.expect("origin closed");
             if matches!(
                 kind,
                 RouteKind::Start | RouteKind::Update | RouteKind::Restart
@@ -219,14 +219,7 @@ async fn announced_paths(origin: &origin::Producer) -> Vec<String> {
     while let Ok(Some(event)) =
         tokio::time::timeout(Duration::from_millis(300), announced.next()).await
     {
-        let (announce, active) = match event {
-            announce::Event::Absent(announce) | announce::Event::Offline(announce) => {
-                (announce, false)
-            }
-            announce::Event::Present(announce)
-            | announce::Event::Unavailable(announce)
-            | announce::Event::Available(announce) => (announce, true),
-        };
+        let (announce, active) = announcement(&event);
         let path = announce.prefix.as_str().to_owned();
         if !active {
             paths.retain(|p| *p != path);

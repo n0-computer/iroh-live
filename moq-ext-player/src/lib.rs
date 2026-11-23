@@ -73,7 +73,7 @@ pub mod test_util;
 pub use hang::catalog::Catalog;
 use moq_ext_sources::frames;
 pub use moq_ext_sources::{Error, SlotState, SourceClosed, VideoFrames};
-pub use moq_net::track::Delay;
+pub use moq_mux::container::Delay;
 
 pub use self::{
     catalog::video_rendition,

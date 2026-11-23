@@ -16,7 +16,7 @@
 //!
 //! // Publish a broadcast this process writes, created in the route table.
 //! let publication = node.publish("demo/studio", Audience::Granted)?;
-//! let _track = publication.broadcast().create_track("video", None)?;
+//! let _track = publication.broadcast().create_track("video", None).ok_or("the track exists")?;
 //!
 //! // Resolve a peer's broadcast, dialing the peer if no route exists yet.
 //! let subscription = node.subscribe("demo/camera", Reach::Both(peer)).await?;
@@ -51,8 +51,8 @@
 //! with its paths.
 //!
 //! Every link serves only this node's own publications, never a route it
-//! learned from another link. A peer sees the exact paths of the publications
-//! whose audience admits it, within its [`Grant`]. The node re-authorizes every
+//! learned from another link. A peer sees the paths of the publications whose
+//! audience admits it, within its [`Grant`]. The node re-authorizes every
 //! session when a publication or an audience changes, so a peer taken out of
 //! an audience loses the path at once, and what it read there ends with
 //! [`moq_net::Error::Unauthorized`].

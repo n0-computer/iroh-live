@@ -19,7 +19,7 @@ use moq_ext_sources::{
     ByPtr, Error, SlotState, send_if_changed,
     stats::{Rates, SharedCell},
 };
-use moq_net::track::Delay;
+use moq_mux::container::Delay;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{Instrument, debug_span, info, info_span};
@@ -132,7 +132,7 @@ pub enum AudioMode {
 pub struct PlayerConfig {
     /// How to choose the video rendition.
     pub rendition: RenditionMode,
-    /// How far behind live to run, as the moq subscription's [`Delay`].
+    /// How far behind live to run, as the media reader's [`Delay`].
     ///
     /// The playout clock runs at least `min` behind the live edge. Each track
     /// asks for more when it needs it: video for its catalog `delay` plus its

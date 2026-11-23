@@ -18,7 +18,7 @@
 //! the lease can tell whether it is still there.
 //!
 //! Room broadcasts are private to the members. [`Room::publish`] places a
-//! broadcast at `rooms/<topic>/<member>/<name>` with the membership as its
+//! broadcast at `rooms/<member>/<topic>/<name>` with the membership as its
 //! audience, and a member that leaves loses the paths.
 //! [`Room::subscribe`] reads each member over the session with that member, so
 //! no other peer can stand in for it.

@@ -35,7 +35,7 @@ let router = node.mount(iroh::protocol::Router::builder(endpoint)).spawn();
 // Publish a broadcast this process writes, to every granted session. It is
 // created in the route table, and peers read it without a copy.
 let publication = node.publish("demo/my-stream", Audience::Granted)?;
-let track = publication.broadcast().create_track("video", None)?;
+let track = publication.broadcast().create_track("video", None).ok_or("the track exists")?;
 
 // Resolve a peer's broadcast, dialing the peer if no route exists yet.
 let subscription = node.subscribe("demo/camera", Reach::Both(peer)).await?;
@@ -46,7 +46,7 @@ let consumer = subscription.broadcast();
 
 A publication's `Audience` says who sees it: `Granted`, or a watched set of
 `Peers`. A session's `Grant` says what the peer may subscribe to and publish,
-in moq-auth's pattern form. `Audience` and `Grant` come from
+as moq-auth's path prefixes. `Audience` and `Grant` come from
 [`moq-ext-access`](../moq-ext-access). The node's policy
 (`NodeConfig::with_policy`) gives each peer its grant, and without one a peer
 may read anything and publish nothing. `iroh-live`, for example, lets a peer

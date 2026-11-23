@@ -22,7 +22,7 @@ broadcast that should reach only some peers uses an audience, below.
 
 A *policy* decides each peer when a session opens, and again when the
 application asks or the decision expires. It returns a *grant*, two sets of
-path patterns: what the peer may read, and what it may publish. A rejection
+path prefixes: what the peer may read, and what it may publish. A rejection
 closes the session. Policies compose: a layout's policy, a filter such as a
 contact list, a queue that asks a person, or a token verifier.
 

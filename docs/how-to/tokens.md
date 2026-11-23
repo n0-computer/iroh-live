@@ -21,7 +21,7 @@ let policy = Verify::new(JwtVerifier::new(keys))
     .with_fallback(Open(Grant::subscribe_only()));
 ```
 
-The claims' patterns become the grant, and the `exp` claim its expiry. A JWT
+The claims' prefixes become the grant, and the `exp` claim its expiry. A JWT
 is a bearer token: anyone who holds it may use it.
 
 ## Delegate with rcan

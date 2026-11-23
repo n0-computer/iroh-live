@@ -27,7 +27,7 @@ use iroh_live::{
         LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition, VideoSource,
         video,
     },
-    moq_net::{Pattern, Patterns},
+    moq_net::{Prefix, Prefixes},
 };
 
 /// Puts a peer's broadcasts at `stage/<peer>/<name>`.
@@ -35,9 +35,9 @@ use iroh_live::{
 struct Stage;
 
 impl Layout<EndpointId> for Stage {
-    fn scope(&self, peer: &EndpointId) -> Patterns {
-        let pattern: Pattern = format!("stage/{peer}/**").parse().expect("a valid pattern");
-        Patterns::from(pattern)
+    fn scope(&self, peer: &EndpointId) -> Prefixes {
+        let prefix: Prefix = format!("stage/{peer}").parse().expect("a valid prefix");
+        Prefixes::from(prefix)
     }
 
     fn owner(&self, path: &str) -> Option<EndpointId> {

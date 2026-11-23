@@ -12,7 +12,7 @@ behavior.
   together.
 - **Paths.** Broadcasts move from bare names, such as `hello`, to
   `live/<endpoint id>/<name>`. Rooms publish at
-  `rooms/<topic>/<endpoint id>/<name>`.
+  `rooms/<endpoint id>/<topic>/<name>`.
 - **Tickets.** `LiveTicket` (`iroh-live:...`) becomes `BroadcastTicket`
   (`ilv1:...`), which holds a full path. Room tickets have the new kind
   `room2`. Old tickets do not parse.
@@ -152,9 +152,10 @@ Names from development versions between the two releases:
   stops this node from dialing it. See [Access control](concepts/access.md).
 - **Routes.** One route table takes every direct session and relay link. A
   subscription moves between a direct route and a relay route without ending.
-- **Latency.** `PlayerConfig::latency` takes moq-net's `Delay`, and its `min`
-  is now a floor. The playout delay follows the catalog's `delay` and the
-  measured audio jitter above it.
+- **Latency.** `PlayerConfig::latency` takes moq-mux's media `Delay`,
+  re-exported as `iroh_live::media::Delay`, and its `min` is now a floor.
+  The playout delay follows the catalog's `delay` and the measured audio
+  jitter above it.
 - **Upstream types.** A `VideoRendition` holds moq-video's
   `encode::Config`, and `set_audio` takes moq-audio's `encode::Config`.
 - **The relay.** It pulls tickets only for sessions whose token allows it, or

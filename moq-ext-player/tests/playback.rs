@@ -567,11 +567,17 @@ async fn a_latency_whose_maximum_is_below_its_minimum_is_refused() {
     assert!(matches!(result, Err(Error::InvalidConfig { .. })));
 }
 
-/// Waits until the readers of `track` ask for `latency`, and nothing else.
+/// Waits until the readers of `track` skip media as late as `latency` allows, and no later.
+///
+/// The subscription carries only the maximum. The minimum places where a
+/// reader joins, which a resubscribe on a running track does not move.
 async fn subscribed_with(track: &moq_net::track::Producer, wanted: Delay) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
-            if track.subscription().is_some_and(|sub| sub.delay == wanted) {
+            if track
+                .subscription()
+                .is_some_and(|sub| sub.delay.max == wanted.max)
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

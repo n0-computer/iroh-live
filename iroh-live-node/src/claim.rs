@@ -74,7 +74,8 @@ pub(crate) fn owns_by_id(peer: &EndpointId, path: &Path) -> bool {
 impl Node {
     /// Widens what `peer` may publish on this node to `path`, for as long as the claim lives.
     ///
-    /// This is how a ticket subscribe reads a path the node's grant would not
+    /// moq grants are prefixes, so the claim covers every path beneath `path`
+    /// too. This is how a ticket subscribe reads a path the node's grant would not
     /// let the peer publish. The claim is added on top of each session's
     /// grant, on every session with the peer, including ones that
     /// start later. Dropping the last claim on a path narrows the grant again,

@@ -7,7 +7,7 @@ use std::{
 
 use iroh::EndpointId;
 use moq_net::{
-    Path, Pattern, broadcast,
+    Path, Prefix, broadcast,
     origin::{self, RouteOptions},
 };
 use n0_error::{AnyError, e};
@@ -51,7 +51,7 @@ pub(crate) type AudienceKind = moq_ext_access::AudienceKind<EndpointId>;
 /// use iroh_live_node::Audience;
 ///
 /// let publication = node.publish("live/studio", Audience::Granted)?;
-/// let _track = publication.broadcast().create_track("video", None)?;
+/// let _track = publication.broadcast().create_track("video", None).ok_or("the track exists")?;
 /// // Narrow it to one peer, who then holds the only route to it.
 /// let peers = n0_watcher::Watchable::new(BTreeSet::from([peer]));
 /// publication.set_audience(Audience::Peers(peers));
@@ -427,12 +427,12 @@ fn unpublish_when_closed(
     })
 }
 
-/// Refuses a path that is empty or that no literal pattern names.
+/// Refuses a path that is empty or that is no grant prefix.
 ///
-/// moq patterns have no escape for `*`, so a segment that holds one cannot
-/// be granted, and neither can a path with more segments than a pattern takes.
+/// moq grants have no escape for `*`, so a segment that holds one cannot be
+/// granted, and neither can a path with more segments than a prefix takes.
 pub(crate) fn check_path(path: &Path) -> Result<(), Error> {
-    if path.is_empty() || Pattern::literal(path.as_str()).is_err() {
+    if path.is_empty() || path.as_str().parse::<Prefix>().is_err() {
         return Err(e!(Error::InvalidPath {
             path: path.as_str().to_owned()
         }));

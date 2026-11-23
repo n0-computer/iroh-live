@@ -15,13 +15,13 @@ use std::time::Duration;
 use bytes::Bytes;
 use iroh::EndpointId;
 pub(crate) use iroh_live_node::test_util::{
-    TIMEOUT, TestNode, announced, endpoint, eventually, retracted, step,
+    TIMEOUT, TestNode, announced, announcement, endpoint, eventually, retracted, step,
 };
 use iroh_live_node::{
     Audience, Error, Grant, Node, NodeConfig, Publication, Session,
     policy::{self, PeerRequest, Policy},
 };
-use moq_net::{Pattern, announce, broadcast, track};
+use moq_net::{Prefix, announce, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher as _;
 
@@ -65,7 +65,7 @@ impl Peer {
 
 /// Returns a grant to subscribe anywhere and publish under `live/<peer>/` only.
 pub(crate) fn own_paths(peer: EndpointId) -> Grant {
-    let own: Pattern = format!("live/{peer}/**").parse().expect("pattern");
+    let own: Prefix = format!("live/{peer}").parse().expect("prefix");
     Grant::publish_under(own)
 }
 

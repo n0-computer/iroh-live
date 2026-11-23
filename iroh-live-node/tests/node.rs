@@ -18,7 +18,7 @@ use iroh_live_node::{
     Session,
     policy::{self, Event, PeerRequest, Queue, Rejection},
 };
-use moq_net::{Pattern, Patterns};
+use moq_net::{Prefix, Prefixes};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
 use n0_watcher::{Watchable, Watcher};
@@ -523,10 +523,10 @@ fn answer_with_token(queue: &Queue, alice: iroh::EndpointId) -> AbortOnDropHandl
                 pending.reject(Rejection::new("no token"));
                 continue;
             }
-            let pattern: Pattern = format!("live/{alice}/public").parse().expect("pattern");
+            let prefix: Prefix = format!("live/{alice}/public").parse().expect("prefix");
             pending.admit(Grant {
-                subscribe: Patterns::from(pattern),
-                publish: Patterns::new(),
+                subscribe: Prefixes::from(prefix),
+                publish: Prefixes::new(),
             });
         }
     }))
@@ -866,7 +866,7 @@ async fn a_grant_bounds_what_a_peer_publishes() {
     let allowed = publish(&bob.node, bob.path("allowed"), Audience::Granted).expect("publish");
     let other = publish(&bob.node, bob.path("other"), Audience::Granted).expect("publish");
 
-    let within: Pattern = allowed.path().as_str().parse().expect("pattern");
+    let within: Prefix = allowed.path().as_str().parse().expect("prefix");
     let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
         while let Some(pending) = queue.next().await {
             pending.admit(Grant::publish_under(within.clone()));
@@ -917,9 +917,12 @@ async fn a_dial_grant_holds_from_the_start_and_widens_on_reauthorize() {
     let wanted = publish(&bob.node, bob.path("wanted"), Audience::Granted).expect("publish");
     let other = publish(&bob.node, bob.path("other"), Audience::Granted).expect("publish");
     let narrow = Grant {
-        subscribe: Patterns::new(),
-        publish: Pattern::literal(wanted.path().as_str())
-            .expect("pattern")
+        subscribe: Prefixes::new(),
+        publish: wanted
+            .path()
+            .as_str()
+            .parse::<Prefix>()
+            .expect("prefix")
             .into(),
     };
     let current = Arc::new(Mutex::new(narrow.clone()));

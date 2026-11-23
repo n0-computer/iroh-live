@@ -4,9 +4,9 @@
 //! would carry no peer identity anyway. So the relay accepts iroh sessions
 //! itself with [`IrohSessions`], and asks a [`Policy`] about each. The
 //! default, [`relay_policy`], lets each client publish only at the paths that
-//! name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`. Browsers
-//! come in through moq-relay's server, and [`browser_grant`] keeps them to
-//! names of one segment below the root.
+//! name it: `live/<its id>/...` and `rooms/<its id>/...`. Browsers come in
+//! through moq-relay's server, and [`browser_grant`] keeps them to names under
+//! [`ANON`].
 
 use std::{sync::Arc, time::Duration};
 
@@ -21,7 +21,7 @@ use iroh_live_node::{
     policy::{Authorization, DynPolicy, Event, PeerRequest, Policy},
 };
 use iroh_live_rooms::RoomsLayout;
-use moq_net::Pattern;
+use moq_net::{Prefix, Prefixes};
 use moq_relay::cluster::Cluster;
 use n0_error::e;
 use tokio_util::sync::CancellationToken;
@@ -303,13 +303,17 @@ impl ProtocolHandler for IrohSessions {
     }
 }
 
-/// Returns the grant for a browser that dialed `path`: subscribe anywhere, publish one segment.
+/// The prefix a browser without a token publishes under, as moq-relay's
+/// anonymous rules name it.
+pub const ANON: &str = "anon";
+
+/// Returns the grant for a browser that dialed `path`: subscribe anywhere, publish under [`ANON`].
 ///
 /// The rule is rooted at `/` and reduced to the dialed path, as moq-relay does
 /// with its public rules. The grant itself is rooted at the dialed path, so
 /// granting the unreduced rule would let a browser that dials `/live/<id>`
-/// publish beneath it. One segment keeps a browser out of `live/` and
-/// `rooms/`, whose paths name an iroh publisher.
+/// publish beneath it. [`ANON`] keeps a browser out of `live/` and `rooms/`,
+/// whose paths name an iroh publisher.
 ///
 /// # Errors
 ///
@@ -328,11 +332,11 @@ pub fn browser_grant(path: &str) -> Result<moq_auth::Grant, moq_auth::Error> {
 
 /// Returns what a browser may do without a token, rooted at `/`.
 ///
-/// It may subscribe anywhere and publish at names of one segment.
+/// It may subscribe anywhere and publish under [`ANON`].
 pub(crate) fn browser_rules() -> moq_auth::Permissions {
     moq_auth::Permissions::new(
-        "*".parse::<Pattern>().expect("a valid pattern"),
-        Pattern::all(),
+        ANON.parse::<Prefix>().expect("a valid prefix"),
+        Prefixes::all(),
     )
 }
 
@@ -379,9 +383,9 @@ mod tests {
             .grant
             .publish;
         assert!(scope.matches(&format!("live/{id}/cam")));
-        assert!(scope.matches(&format!("rooms/topic/{id}/cam")));
+        assert!(scope.matches(&format!("rooms/{id}/topic/cam")));
         assert!(!scope.matches(&format!("live/{other}/cam")));
-        assert!(!scope.matches(&format!("rooms/topic/{other}/cam")));
+        assert!(!scope.matches(&format!("rooms/{other}/topic/cam")));
         assert!(!scope.matches("cam"));
     }
 
@@ -395,10 +399,12 @@ mod tests {
     }
 
     #[test]
-    fn a_browser_publishes_one_segment_names() {
-        assert!(a_browser_may_publish("hello"));
+    fn a_browser_publishes_under_anon() {
+        assert!(a_browser_may_publish("anon/hello"));
+        assert!(a_browser_may_publish("anon/hello/cam"));
+        assert!(!a_browser_may_publish("hello"));
         assert!(!a_browser_may_publish("live/someone/cam"));
-        assert!(!a_browser_may_publish("rooms/topic/someone/cam"));
+        assert!(!a_browser_may_publish("rooms/someone/topic/cam"));
     }
 
     /// The grant is rooted at the dialed path, so its publish half must not reach below it.
@@ -407,8 +413,9 @@ mod tests {
         let peer = iroh::SecretKey::from_bytes(&[7; 32]).public();
         for dialed in [
             format!("/live/{peer}"),
-            format!("/rooms/topic/{peer}"),
+            format!("/rooms/{peer}/topic"),
             "/live".to_owned(),
+            "/hello".to_owned(),
         ] {
             let grant = browser_grant(&dialed).expect("a grant");
             assert!(
@@ -417,10 +424,10 @@ mod tests {
             );
             assert!(grant.subscribe.path.matches("cam"), "{dialed}");
         }
-        // A one-segment path is itself the one segment a browser may publish.
-        let grant = browser_grant("/hello").expect("a grant");
+        // A path under the anonymous prefix may be published at and beneath.
+        let grant = browser_grant("/anon/hello").expect("a grant");
         assert!(grant.publish.path.matches(""));
-        assert!(!grant.publish.path.matches("cam"));
+        assert!(grant.publish.path.matches("cam"));
     }
 
     /// A browser that dials a ticket reads it, and publishes nothing beneath it.
