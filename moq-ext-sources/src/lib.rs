@@ -20,8 +20,8 @@
 //! | Moving gradient | [`VideoSource::test_gradient`] | `pattern` |
 //! | Bouncing square, also drawn on demand | [`VideoSource::test_bounce`], [`BouncePattern`] | `pattern` for the source |
 //! | Sine tone | [`AudioSource::tone`] | `pattern` |
-//! | WAV, MP3 and MP4 (AAC) audio file | [`AudioSource::file`] | `file` |
-//! | MP4 (H.264) video file, decoded in real time | [`VideoSource::file`] | `file` |
+//! | Audio of a WAV, MP3, or MP4 (AAC) file | [`AudioSource::file`] | `file` |
+//! | Video of an MP4 (H.264) file | [`VideoSource::file`] | `file` |
 //! | Camera, display, window | [`VideoSource::capture`], [`VideoSource::camera`], [`VideoSource::screen`] | `capture` |
 //! | Microphone | [`AudioSource::microphone`] | `capture` |
 //! | Raspberry Pi camera through `rpicam-vid` | [`VideoSource::rpicam`], `rpicam_h264` | `rpicam` (Linux) |
@@ -102,7 +102,8 @@ pub use self::{
     error::{Error, SourceClosed},
     frames::VideoFrames,
     source::{
-        AudioFormat, AudioSource, FileEnd, FrameSender, VideoFormat, VideoSource, VideoSwitch,
+        AudioFormat, AudioSource, FileEnd, FrameSender, VideoFileConfig, VideoFormat, VideoSource,
+        VideoSwitch,
     },
     status::{ByPtr, SlotState},
 };

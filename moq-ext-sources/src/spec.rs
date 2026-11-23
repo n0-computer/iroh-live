@@ -85,8 +85,10 @@ pub enum VideoSourceSpec {
     Test(TestPattern),
     /// A media file.
     ///
-    /// [`open`](VideoSourceSpec::open) decodes its H.264 video into raw
-    /// pictures. A publisher can also import the encoded video as it is.
+    /// [`open`] decodes the H.264 video of an MP4 file into raw pictures. A
+    /// publisher can also import the encoded video as it is.
+    ///
+    /// [`open`]: VideoSourceSpec::open
     File {
         /// Path to the file.
         path: PathBuf,
@@ -420,6 +422,8 @@ pub struct VideoOpenOptions {
     pub framerate: Option<video::FrameRate>,
     /// Whether a screen or window capture draws the mouse cursor, `true` by default.
     pub cursor: bool,
+    /// The decoder backend a file source opens, `Auto` by default.
+    pub decoder: video::decode::Kind,
     /// The app whose config directory keeps the desktop portal's grants.
     portal_grants: Option<String>,
     /// Whether the grants stay stored when the stream ends.
@@ -433,6 +437,7 @@ impl Default for VideoOpenOptions {
             height: None,
             framerate: None,
             cursor: true,
+            decoder: video::decode::Kind::default(),
             portal_grants: None,
             portal_grants_kept_after_end: false,
         }
@@ -452,6 +457,13 @@ impl VideoOpenOptions {
     #[must_use]
     pub fn with_framerate(mut self, rate: video::FrameRate) -> Self {
         self.framerate = Some(rate);
+        self
+    }
+
+    /// Opens a file source with the `decoder` backend.
+    #[must_use]
+    pub fn with_decoder(mut self, decoder: video::decode::Kind) -> Self {
+        self.decoder = decoder;
         self
     }
 
@@ -501,8 +513,8 @@ impl VideoSourceSpec {
     /// desktop portal on Wayland with the `pipewire` feature. The portal asks
     /// on each open unless [`VideoOpenOptions::with_portal_grants`] keeps its
     /// grants. A test pattern defaults to 1280x720 at 30 fps. A file decodes
-    /// through [`VideoSource::file`], at the size the options ask for or its
-    /// own, and at its own rate.
+    /// through [`VideoSource::file`] with the options' decoder, at the size
+    /// they ask for or its own, and at its own rate.
     ///
     /// Cancellation safe, as [`VideoSource::capture`] is.
     ///
@@ -668,18 +680,23 @@ fn portal(kind: PortalKind, _options: &VideoOpenOptions) -> Result<video::captur
     )))
 }
 
-/// Decodes the video file at `path`, at the size in `options` if they give both dimensions.
+/// Decodes the video file at `path` with the decoder in `options`.
+///
+/// Scales to the size in `options` only if they give both dimensions, because
+/// one dimension alone would distort the picture.
 #[cfg(feature = "file")]
 async fn video_file(
     path: &Path,
     looping: bool,
     options: &VideoOpenOptions,
 ) -> Result<VideoSource, Error> {
-    let size = match (options.width, options.height) {
-        (Some(width), Some(height)) => Some(video::Size::new(width, height)),
-        _ => None,
-    };
-    VideoSource::file(path, file_end(looping), size).await
+    let mut config = crate::VideoFileConfig::default()
+        .with_end(file_end(looping))
+        .with_decoder(options.decoder.clone());
+    if let (Some(width), Some(height)) = (options.width, options.height) {
+        config = config.with_size(video::Size::new(width, height));
+    }
+    VideoSource::file(path, config).await
 }
 
 /// Fails, since this build reads no files.
@@ -867,6 +884,23 @@ mod tests {
         assert_eq!(source.format().rate, video::FrameRate::new(10, 1).unwrap());
         let frame = source.frames().next().await.expect("a frame");
         assert_eq!(frame.size(), video::Size::new(32, 24));
+    }
+
+    /// A decoder backend that cannot open fails the open of a video file, not a later frame.
+    #[cfg(feature = "file")]
+    #[tokio::test]
+    async fn a_video_file_with_a_missing_decoder_fails_to_open() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/source/test_data/clip.mp4");
+        let spec: VideoSourceSpec = format!("file:{}", path.display()).parse().unwrap();
+        let options = VideoOpenOptions::default()
+            .with_decoder(video::decode::Kind::Named("no-such-decoder".into()));
+        let result = spec.open(&options).await;
+        assert!(
+            matches!(result, Err(Error::Decoder { .. })),
+            "{:?}",
+            result.map(|_| ())
+        );
     }
 
     /// The test tones open in every build with generated sources.

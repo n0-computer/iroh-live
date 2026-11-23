@@ -25,9 +25,10 @@ let audio = AudioSource::test_pattern(layout)?;
 the switch swaps or opens what feeds the source while a broadcast encodes it.
 `VideoSource::scaled` returns a source of another's frames scaled to a fixed
 size as CPU I420, not for publishing. `AudioSource::file(path, FileEnd)` plays
-a WAV, MP3 or MP4 (AAC) file and stops or restarts at its end.
-`VideoSource::file(path, FileEnd, size)` decodes the H.264 video of an MP4 file
-in real time, like a camera. `rpicam_h264` returns the
+the audio of a WAV, MP3 or MP4 (AAC) file and stops or restarts at its end.
+`VideoSource::file(path, VideoFileConfig)` decodes the H.264 video of an MP4
+file in real time, like a camera. Other containers and codecs fail when the
+source opens. `rpicam_h264` returns the
 Annex-B H.264 that `rpicam-vid` encoded, for
 `LocalBroadcast::set_encoded_video`. The crate docs list every constructor.
 

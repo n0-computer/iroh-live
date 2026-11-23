@@ -413,27 +413,30 @@ impl VideoSource {
         Ok(source)
     }
 
-    /// Decodes the H.264 video of an MP4 file in real time, like a camera.
+    /// Decodes the video of a media file in real time, like a camera.
     ///
-    /// Each picture comes when its timestamp is due on the wall clock, scaled
-    /// to `size`, or at the file's own size for `None`. The rate is the
-    /// file's. `at_end` says whether the source ends with the file or starts
-    /// it again; a looping file keeps its timestamps rising. The pictures are
-    /// CPU I420. The decoder is hardware where the build has one, else
-    /// OpenH264. The file's audio is [`AudioSource::file`]'s.
+    /// Reads MP4 files (ISO base media) with H.264 video. Each picture comes
+    /// when its timestamp is due on the wall clock, so an encoder sees a live
+    /// rate and a preview plays at normal speed. The pictures are CPU I420 at
+    /// the size `config` asks for, or at the file's size. The frame rate is
+    /// the file's. A looping file keeps its timestamps rising, so a broadcast
+    /// does not see a jump back. For the audio track of the same file, use
+    /// [`AudioSource::file`].
     ///
+    /// The file is probed and the decoder opened before this returns.
     /// Cancellation safe: dropping the future stops the decode thread.
     ///
     /// # Errors
     ///
-    /// Fails if the file cannot be read, holds no H.264 track, or no decoder
-    /// opens for it.
+    /// Fails with [`Error::Device`] if the file cannot be read, is in another
+    /// container, or has no H.264 video track. An MP4 with H.265, VP9 or AV1
+    /// video fails this way. Fails with [`Error::Decoder`] if no decoder of the
+    /// [`VideoFileConfig::decoder`] backend opens. A read or decode error
+    /// later in the file fails the source, as [`failure`] reports.
+    ///
+    /// [`failure`]: Self::failure
     #[cfg(feature = "file")]
-    pub async fn file(
-        path: impl AsRef<Path>,
-        at_end: FileEnd,
-        size: Option<video::Size>,
-    ) -> Result<Self, Error> {
+    pub async fn file(path: impl AsRef<Path>, config: VideoFileConfig) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
         let probe = {
             let path = path.clone();
@@ -442,17 +445,24 @@ impl VideoSource {
                 .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??
         };
         let format = VideoFormat {
-            size: size.unwrap_or(probe.size),
+            size: config.size.unwrap_or(probe.size),
             rate: probe.rate,
         };
+        // The decoder is bound to the thread that opens it, so it opens on the
+        // decode thread, which reports the result back.
         let (opened, ready) = tokio::sync::oneshot::channel();
         let source = Self::spawn("file", format, move |sender| {
             let opened = |result| {
                 let _ = opened.send(result);
             };
-            video_file::play(&path, at_end, format.size, opened, |frame| {
-                sender.push(frame).is_ok()
-            })
+            video_file::play(
+                &path,
+                config.at_end,
+                format.size,
+                &config.decoder,
+                opened,
+                |frame| sender.push(frame).is_ok(),
+            )
         })?;
         ready
             .await
@@ -581,12 +591,53 @@ pub fn rpicam_h264(
 }
 
 /// What a file source does when it reaches the end of the file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FileEnd {
     /// Ends the source.
+    #[default]
     Stop,
     /// Starts the file again from the beginning.
     Restart,
+}
+
+/// How [`VideoSource::file`] plays a video file.
+///
+/// The default plays the file once, at its own size, with the decoder that
+/// [`decode::Kind::Auto`] picks.
+///
+/// [`decode::Kind::Auto`]: video::decode::Kind::Auto
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VideoFileConfig {
+    /// What the source does at the end of the file, [`FileEnd::Stop`] by default.
+    pub at_end: FileEnd,
+    /// The size to scale the pictures to, or `None` for the size of the file.
+    pub size: Option<video::Size>,
+    /// The decoder backend to open, `Auto` by default.
+    pub decoder: video::decode::Kind,
+}
+
+impl VideoFileConfig {
+    /// Returns this config with `at_end` as what the source does at the end of the file.
+    #[must_use]
+    pub fn with_end(mut self, at_end: FileEnd) -> Self {
+        self.at_end = at_end;
+        self
+    }
+
+    /// Returns this config with `size` as the size to scale the pictures to.
+    #[must_use]
+    pub fn with_size(mut self, size: video::Size) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    /// Returns this config with `decoder` as the decoder backend to open.
+    #[must_use]
+    pub fn with_decoder(mut self, decoder: video::decode::Kind) -> Self {
+        self.decoder = decoder;
+        self
+    }
 }
 
 /// What an audio source produces.
@@ -708,18 +759,22 @@ impl AudioSource {
         )
     }
 
-    /// Decodes an audio file in real time.
+    /// Decodes the audio of a media file in real time.
     ///
+    /// Reads WAV (PCM), MP3, and MP4 (ISO base media) with AAC-LC audio. The
+    /// samples keep in step with the wall clock, as a microphone's do.
     /// `at_end` says whether the source ends with the file or starts it again.
-    /// Reads WAV, MP3, and the AAC audio of an MP4 file. The file is probed
-    /// before this returns, and decoding starts on its own thread.
+    /// The file is probed before this returns, and decoding starts on its own
+    /// thread.
     ///
     /// Cancellation safe: dropping the future stops the decode thread.
     ///
     /// # Errors
     ///
-    /// Fails if the file cannot be read, holds no audio track, or uses a codec
-    /// this build cannot decode.
+    /// Fails with [`Error::Device`] if the file cannot be read, is in another
+    /// container, has no audio track, or uses another codec, such as Opus or
+    /// FLAC. A corrupt packet later in the file is skipped. A read error ends
+    /// the source.
     #[cfg(feature = "file")]
     pub async fn file(path: impl AsRef<Path>, at_end: FileEnd) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();

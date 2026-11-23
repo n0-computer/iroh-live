@@ -1,9 +1,11 @@
 //! Decoding the video of a media file as a source.
 //!
-//! symphonia reads the container and moq-video decodes the H.264 track. The
-//! decode thread hands over each picture when its timestamp comes due on the
-//! wall clock, so the file plays like a camera. Looping reopens the file and
-//! continues the timeline where the last pass ended, so timestamps only rise.
+//! symphonia reads the container, because moq-video has no container reader.
+//! moq-video decodes the H.264 track. Each picture waits until its timestamp
+//! is due on the wall clock, so the file plays like a camera and an encoder
+//! downstream sees a live rate. Looping reopens the file instead of seeking,
+//! and the timeline continues where the last pass ended, so timestamps only
+//! rise.
 
 use std::{
     path::Path,
@@ -12,7 +14,7 @@ use std::{
 
 use bytes::Bytes;
 use hang::catalog::{H264, VideoConfig};
-use moq_video::decode::{Config, Decoder};
+use moq_video::decode::{Config, Decoder, Kind};
 use symphonia::core::{
     codecs::{
         CodecParameters,
@@ -31,13 +33,13 @@ use super::{
 };
 use crate::{Error, video};
 
-/// The frame rate of a file whose first sample declares no duration.
+/// The frame rate of a file whose first sample has no duration.
 const FALLBACK_FPS: u32 = 30;
 
 /// How far playback can fall behind the wall clock before it skips ahead.
 ///
-/// A suspended host or a stalled disk causes this. Without the skip, the file
-/// would play fast until it caught up.
+/// A suspended host or a stalled disk makes playback late. Without the skip,
+/// the file would play fast until it caught up.
 const MAX_BEHIND: Duration = Duration::from_secs(1);
 
 /// The picture size and frame rate a file declares, read before decoding.
@@ -45,7 +47,7 @@ const MAX_BEHIND: Duration = Duration::from_secs(1);
 pub(crate) struct Probe {
     /// The coded picture size.
     pub(crate) size: video::Size,
-    /// The rate of the first sample's duration.
+    /// The rate that the duration of the first sample gives.
     pub(crate) rate: video::FrameRate,
 }
 
@@ -77,12 +79,12 @@ pub(crate) fn probe(path: &Path) -> Result<Probe, Error> {
     Ok(Probe { size, rate })
 }
 
-/// Decodes `path` and hands each picture, at `size`, to `push` when it is due.
+/// Decodes `path` with the `decoder` backend and gives each picture to `push` when it is due.
 ///
-/// Calls `opened` once the file and its decoder open, or with the error if
-/// they do not, and then returns. Restarts the file at its end for
-/// [`FileEnd::Restart`]. Returns when the file ends, or when `push` returns
-/// `false` because the source closed.
+/// Pictures are scaled to `size`. Calls `opened` with the result of the open,
+/// so the caller can return an open error at once. Restarts the file at its
+/// end for [`FileEnd::Restart`]. Returns when the file ends, or when `push`
+/// returns `false` because the source closed.
 ///
 /// # Errors
 ///
@@ -91,10 +93,11 @@ pub(crate) fn play(
     path: &Path,
     at_end: FileEnd,
     size: video::Size,
+    decoder: &Kind,
     opened: impl FnOnce(Result<(), Error>),
     mut push: impl FnMut(video::Frame) -> bool,
 ) -> Result<(), Error> {
-    let (mut reader, mut track, mut decoder) = match open_decoder(path, size) {
+    let (mut reader, mut track, mut decoder) = match open_decoder(path, size, decoder) {
         Ok(open) => {
             opened(Ok(()));
             open
@@ -162,13 +165,18 @@ pub(crate) fn play(
     }
 }
 
-/// Opens `path` and a decoder for its video that scales toward `size`.
+/// Opens `path` and a `kind` decoder for its video.
+///
+/// The decoder delivers CPU pictures, as a camera does, and scales them to
+/// `size` if it can.
 fn open_decoder(
     path: &Path,
     size: video::Size,
+    kind: &Kind,
 ) -> Result<(Box<dyn FormatReader>, Track, Decoder), Error> {
     let (reader, track) = open_track(path)?;
     let mut config = Config::new();
+    config.kind = kind.clone();
     config.output = video::Output::Cpu;
     config.scale_hint = Some(size);
     let decoder = Decoder::new(&catalog(path, &track)?, &config).map_err(Error::decoder)?;
@@ -218,6 +226,8 @@ fn rate_of(time_base: TimeBase, units: u64) -> Option<video::FrameRate> {
 }
 
 /// Returns the H.264 configuration record (avcC) of `track`.
+///
+/// Only an H.264 track has one, so a missing record means another codec.
 fn avcc<'a>(path: &Path, track: &'a Track) -> Result<&'a [u8], Error> {
     video_params(track)
         .into_iter()
@@ -228,7 +238,10 @@ fn avcc<'a>(path: &Path, track: &'a Track) -> Result<&'a [u8], Error> {
         .ok_or_else(|| file_error(path, "the video is not H.264"))
 }
 
-/// Returns the catalog entry of the H.264 track, which opens the decoder.
+/// Returns the catalog entry of the H.264 track.
+///
+/// moq-video opens a decoder from a catalog entry, as it would for a track
+/// of a broadcast.
 fn catalog(path: &Path, track: &Track) -> Result<VideoConfig, Error> {
     let avcc = avcc(path, track)?;
     let mut config = VideoConfig::new(H264 {
@@ -247,8 +260,8 @@ fn catalog(path: &Path, track: &Track) -> Result<VideoConfig, Error> {
 
 /// Returns whether the H.264 sample `data` holds an IDR slice.
 ///
-/// The sample is a list of NAL units, each after its length in `length_size`
-/// bytes.
+/// The decoder needs to know where a picture starts on its own. The sample is
+/// a list of NAL units, each after its length in `length_size` bytes.
 fn is_keyframe(mut data: &[u8], length_size: usize) -> bool {
     while data.len() > length_size {
         let (length, rest) = data.split_at(length_size);
@@ -270,7 +283,7 @@ struct Pacer {
 }
 
 impl Pacer {
-    /// Returns a clock on which media time zero is due at `now`.
+    /// Creates a clock on which media time zero is due at `now`.
     fn new(now: Instant) -> Self {
         Self { started: now }
     }
@@ -278,7 +291,7 @@ impl Pacer {
     /// Returns how long to wait at `now` until media time `at` is due.
     ///
     /// Playback more than [`MAX_BEHIND`] late moves the clock so that `at` is
-    /// due now, and continues from there.
+    /// due now.
     fn wait(&mut self, at: Duration, now: Instant) -> Duration {
         let due = self.started + at;
         if let Some(ahead) = due.checked_duration_since(now) {
@@ -308,7 +321,7 @@ struct Timeline {
 }
 
 impl Timeline {
-    /// Returns the media time of a sample at `pts` in the current pass that lasts `length`.
+    /// Returns the media time of a sample at `pts` that lasts `length`.
     fn at(&mut self, pts: Duration, length: Duration) -> Duration {
         self.end = self.end.max(pts + length);
         self.samples += 1;
@@ -317,7 +330,7 @@ impl Timeline {
 
     /// Starts the next pass where the current one ended.
     ///
-    /// Returns `false` if the current pass had no samples, since looping it
+    /// Returns `false` if the current pass had no samples, because looping it
     /// would spin.
     fn next_pass(&mut self) -> bool {
         if self.samples == 0 {
@@ -444,6 +457,7 @@ mod tests {
             &clip(),
             FileEnd::Restart,
             size,
+            &Kind::Auto,
             |result| opened = Some(result.is_ok()),
             |frame| {
                 frames.push(frame);
@@ -474,6 +488,7 @@ mod tests {
             &clip(),
             FileEnd::Stop,
             video::Size::new(64, 48),
+            &Kind::Auto,
             |_| {},
             |_| {
                 count += 1;

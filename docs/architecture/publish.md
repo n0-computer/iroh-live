@@ -42,8 +42,8 @@ previews can read it.
   current-thread runtime entered, and hands it the sender. It is for
   thread-bound platform objects.
 - `rpicam(config)` reads raw pictures from `rpicam-vid` on a Raspberry Pi.
-- `file(path, at_end, size)` decodes the H.264 video of an MP4 file in real
-  time, scaled to `size` or at the file's own size.
+- `file(path, config)` decodes the H.264 video of an MP4 file in real time.
+  The `VideoFileConfig` sets the end of file, the size and the decoder.
 
 `FrameSender::push` never blocks: a new video frame replaces one not yet taken.
 `FrameSender::demand()` reports whether anything wants the frames: a rendition
