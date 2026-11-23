@@ -80,9 +80,17 @@ impl RateMeter {
 
     /// Counts one event at `now`, as [`tick`](Self::tick) does.
     fn tick_at(&mut self, amount: u64, now: Instant) -> Option<Rates> {
+        let elapsed = now.duration_since(self.started);
+        if elapsed >= self.window * Rates::CURRENT_FOR {
+            // The stream paused for so long that the last reading went stale.
+            // Averaging over the pause would report a rate far below the one
+            // the stream resumes at, so this event opens a new window instead,
+            // as the event that closes a window does.
+            *self = Self::starting(self.window, now);
+            return None;
+        }
         self.events += 1;
         self.amount += amount;
-        let elapsed = now.duration_since(self.started);
         if elapsed < self.window {
             return None;
         }
@@ -118,7 +126,9 @@ impl Rates {
     ///
     /// A steady stream closes a window about once per window, and a stream
     /// slower than one event per window closes one with every event. Two
-    /// windows without a reading mean at least one window without an event.
+    /// windows without a reading mean at least one window without an event,
+    /// so a stream reads as running only while it sends faster than one event
+    /// per two windows.
     const CURRENT_FOR: u32 = 2;
 
     /// Returns whether the stream still runs, as far as these rates tell.
@@ -218,6 +228,15 @@ mod tests {
         let stopped = start + Duration::from_secs(3);
         assert!(rates.is_current_at(stopped + RATE_WINDOW));
         assert!(!rates.is_current_at(stopped + RATE_WINDOW * 2));
+
+        // After a five-second pause the stream resumes at 20 events per second.
+        // The first reading covers only the time since the resume.
+        let resumed = stopped + Duration::from_secs(5);
+        let rates = (0..=40u32)
+            .find_map(|event| meter.tick_at(0, resumed + Duration::from_millis(50) * event))
+            .expect("the resumed stream closes a window");
+        assert_eq!(rates.at, resumed + RATE_WINDOW);
+        assert!((19.0..21.0).contains(&rates.events), "{}", rates.events);
     }
 
     #[test]

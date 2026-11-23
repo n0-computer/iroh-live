@@ -18,7 +18,7 @@ pub struct PublishStats {
     /// Frames per second arriving from the video source, shared by every rendition.
     ///
     /// `None` before the first second of frames, once the source ends, and
-    /// within two seconds of the last frame of a source that stalls.
+    /// from at most two seconds after the last frame.
     pub source_fps: Option<f32>,
     /// Each video rendition's encoder, by rendition name.
     pub renditions: BTreeMap<String, EncodeStats>,
@@ -41,7 +41,7 @@ pub struct EncodeStats {
     /// Frames encoded per second, over the last second.
     ///
     /// `None` before the first second of frames, once the encoder stops, and
-    /// within two seconds of the last frame of an encoder that stalls.
+    /// from at most two seconds after the last frame.
     pub fps: Option<f32>,
     /// Bits published per second, over the last second.
     ///
@@ -87,7 +87,7 @@ impl RenditionEntry {
         }
     }
 
-    /// Forgets the rates, when the encoder stops.
+    /// Forgets the rates of a stopped encoder.
     pub(crate) fn stopped(&mut self) {
         self.rates = None;
     }
