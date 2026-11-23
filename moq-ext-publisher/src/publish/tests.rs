@@ -368,3 +368,99 @@ async fn the_broadcast_hands_back_its_sources() {
         .expect("open");
     assert!(broadcast.video_source().is_none());
 }
+
+/// A producer's keyframe request makes the next frame it pushes a keyframe on every rendition.
+///
+/// The renditions key every ten seconds on their own, so the only keyframes
+/// after the opening one are the two requested ones, and each rendition's
+/// keyframe spacing is the spacing of the two frames pushed after a request.
+/// Each frame is pushed once both renditions published the previous one, so
+/// none is skipped and the requested frames are the ones keyed.
+#[tokio::test]
+async fn a_keyframe_request_keys_the_next_frame_on_every_rendition() {
+    let size = moq_video::Size::new(320, 180);
+    let rate = moq_video::FrameRate::new(30, 1).expect("a valid rate");
+    let (sender, source) = VideoSource::push(moq_ext_sources::VideoFormat { size, rate });
+    let clock = moq_mux::Clock::new();
+    let push = || {
+        let pixels = vec![0x80; moq_video::I420::len(size).expect("a valid size")];
+        let picture = moq_video::I420::new(size, pixels).expect("a whole picture");
+        let timestamp = clock.now();
+        let frame = moq_video::Frame::new(moq_video::Surface::I420(picture), timestamp);
+        sender.push(frame).expect("the source is open");
+        timestamp
+    };
+
+    let names = ["full", "small"];
+    let renditions = names.map(|name| {
+        let mut rendition = crate::VideoRendition::new(name);
+        rendition.config.join = Duration::from_secs(10);
+        rendition
+    });
+    let [full, small] = renditions;
+    let small = small.with_size(moq_video::Size::new(160, 90));
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(source, crate::VideoEncoding::ladder([full, small]))
+        .expect("a valid encoding");
+    let mut subscriptions = Vec::new();
+    tokio::time::timeout(TIMEOUT, async {
+        while broadcast.stats().renditions.len() < names.len() {
+            push();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the renditions start");
+    for name in names {
+        let track = &broadcast.stats().renditions[name].track;
+        let track = broadcast.consume().track(track).expect("the track exists");
+        subscriptions.push(track.subscribe(None));
+    }
+    let published = || names.map(|name| sent(&broadcast, name).frames);
+    tokio::time::timeout(TIMEOUT, async {
+        while published().contains(&0) {
+            push();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("both renditions encode");
+    // Let the encoders take the last frame of the start, so from here on each
+    // count that grows is the frame just pushed.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let mut keyed = Vec::new();
+    for index in 0..12 {
+        let before = published();
+        if index == 3 || index == 9 {
+            sender.request_keyframe();
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let timestamp = push();
+        if index == 3 || index == 9 {
+            keyed.push(timestamp);
+        }
+        tokio::time::timeout(TIMEOUT, async {
+            while published()
+                .iter()
+                .zip(before)
+                .any(|(now, before)| *now <= before)
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("both renditions publish the frame");
+    }
+
+    let spacing = Duration::from_micros((super::micros(keyed[1]) - super::micros(keyed[0])) as u64);
+    let stats = broadcast.stats();
+    for name in names {
+        assert_eq!(
+            stats.renditions[name].keyframe_interval,
+            Some(spacing),
+            "{name} keyed on the two requested frames"
+        );
+    }
+}

@@ -306,7 +306,14 @@ async fn forward(shared: Arc<Shared>, generation: u64) {
             frame = frames.next() => {
                 let Some(frame) = frame else { break };
                 let at = frames.sent_at().unwrap_or_else(Instant::now);
-                if !shared.if_current(generation, |_, _| shared.slot.send_at(frame, at)) {
+                let keyframe = frames.keyframe_requested();
+                let forwarded = shared.if_current(generation, |_, _| {
+                    if keyframe {
+                        shared.slot.request_keyframe();
+                    }
+                    shared.slot.send_at(frame, at);
+                });
+                if !forwarded {
                     return;
                 }
             }

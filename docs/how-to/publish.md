@@ -109,7 +109,9 @@ feeds it.
 ### Other sources
 
 - `VideoSource::push(format)` and `AudioSource::push(format)` take frames
-  that the application makes.
+  that the application makes. A video producer can call
+  `FrameSender::request_keyframe()` before a push to make that frame a
+  keyframe on every rendition.
 - A video file is republished without decoding, through moq-mux's importer.
   `irl` does this in `iroh-live-cli/src/import.rs`. There is no
   `VideoSource` for files.

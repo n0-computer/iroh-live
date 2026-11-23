@@ -77,6 +77,8 @@ async fn run(input: VideoSource, size: video::Size, slot: FrameSlot, demand: Dem
     let mut guard = None;
     // Whether the last frame failed to scale, so a run of failures warns once.
     let mut failing = false;
+    // A keyframe request on the input that no scaled frame has carried yet.
+    let mut keyframe = false;
     loop {
         let want = *wanted.borrow_and_update();
         if want != guard.is_some() {
@@ -96,9 +98,13 @@ async fn run(input: VideoSource, size: video::Size, slot: FrameSlot, demand: Dem
         };
         let Some(frame) = frame else { break };
         let at = frames.sent_at().unwrap_or_else(Instant::now);
+        keyframe |= frames.keyframe_requested();
         match tokio::task::spawn_blocking(move || to_i420(frame, size)).await {
             Ok(Ok(frame)) => {
                 failing = false;
+                if std::mem::take(&mut keyframe) {
+                    slot.request_keyframe();
+                }
                 slot.send_at(frame, at);
             }
             Ok(Err(err)) if is_permanent(&err) => {
