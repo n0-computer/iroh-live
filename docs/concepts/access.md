@@ -41,7 +41,9 @@ narrows it for one broadcast:
 - `Audience::Granted`, the default, reaches every session whose grant covers
   the path, attached relays included.
 - `Audience::Peers(set)` reaches only the peers in the set, and never a
-  relay. Calls and rooms use it.
+  relay link. Calls and rooms use it. Do not put a relay's endpoint id in
+  the set: a relay that pulls the broadcast dials the publisher as an
+  ordinary peer, and then serves it to every session it admits.
 
 When a set, a grant or a publication changes, the node updates every session
 at once. A peer that loses a path stops reading it.
@@ -51,10 +53,12 @@ at once. A peer that loses a path stops reading it.
 - The transport proves each peer's endpoint id. Nothing else a peer sends is
   authentic unless a token signs it.
 - A peer that may publish only under its own id cannot pose as another
-  publisher. The layouts keep peers to their own paths.
+  publisher. The layouts keep peers to their *own paths*, the paths that
+  name its endpoint id: `live/<id>/**` and `rooms/*/<id>/**`.
 - A relay link sees every `Granted` publication, and may forward it to anyone
   the relay admits. Attach only relays that keep each publisher to its own
-  paths.
+  paths. The iroh-live relay admits anyone when it is open, and only token
+  holders and its public area when it is private.
 - A broadcast ticket is not a secret. A room ticket is: anyone who has it
   can join and read the room.
 - A JWT is a bearer token: anyone who holds it may use it. An rcan chain

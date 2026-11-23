@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 use iroh::EndpointId;
 use iroh_live::{BroadcastTicket, layout::LiveLayout, rooms::RoomTicket};
 use n0_error::{Result, anyerr};
@@ -36,9 +36,89 @@ pub(crate) struct TransportArgs {
     /// Suppress the terminal QR code.
     #[arg(long)]
     pub(crate) no_qr: bool,
+
+    /// Presents this token to --relay: a JWT, or an rcan capability chain.
+    ///
+    /// Other users of this machine can read a command line, so prefer
+    /// --relay-token-file or the IRL_RELAY_TOKEN environment variable. The
+    /// variable is read only with --relay and without either flag.
+    #[arg(long, value_name = "TOKEN", conflicts_with = "relay_token_file")]
+    pub(crate) relay_token: Option<SecretString>,
+
+    /// Presents the token in this file to --relay: a JWT, or an rcan capability chain.
+    #[arg(long, value_name = "PATH", requires = "relay")]
+    pub(crate) relay_token_file: Option<PathBuf>,
+
+    /// Binds with the stored key of this name, in `<config dir>/iroh-live/secret_keys`.
+    ///
+    /// The key is created on first use. An rcan chain names the endpoint id
+    /// that presents it, so a node that presents one binds with that key.
+    #[arg(long, value_name = "NAME")]
+    pub(crate) key: Option<String>,
+}
+
+/// The environment variable `irl publish` reads a relay token from.
+pub(crate) const RELAY_TOKEN_VAR: &str = "IRL_RELAY_TOKEN";
+
+/// A string that `Debug` prints redacted, for secrets in arguments.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SecretString(String);
+
+impl SecretString {
+    /// Returns the secret.
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl std::str::FromStr for SecretString {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
 }
 
 impl TransportArgs {
+    /// Returns the token to present to the relay, from --relay-token, its file, or its variable.
+    ///
+    /// The flags win over the variable, so a variable exported for every
+    /// command neither conflicts with --relay-token-file nor counts without
+    /// --relay.
+    pub(crate) fn relay_token(&self) -> Result<Option<moq_net::auth::Token>> {
+        self.relay_token_from(std::env::var(RELAY_TOKEN_VAR).ok())
+    }
+
+    /// Returns the token to present to the relay, with `var` as the variable's value.
+    pub(crate) fn relay_token_from(
+        &self,
+        var: Option<String>,
+    ) -> Result<Option<moq_net::auth::Token>> {
+        let token = match (&self.relay_token, &self.relay_token_file) {
+            (Some(token), _) => token.expose().to_owned(),
+            (None, Some(path)) => std::fs::read_to_string(path)
+                .map_err(|err| anyerr!("failed to read {}: {err}", path.display()))?,
+            (None, None) => match var.filter(|_| self.relay.is_some()) {
+                Some(token) => token,
+                None => return Ok(None),
+            },
+        };
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(anyerr!("the relay token is empty"));
+        }
+        token
+            .parse()
+            .map(Some)
+            .map_err(|err| anyerr!("invalid relay token: {err}"))
+    }
+
     /// Returns whether the node accepts subscribers, which `--no-serve` turns off.
     pub(crate) fn inbound(&self) -> Inbound {
         if self.no_serve {
@@ -440,6 +520,78 @@ pub(crate) struct WatchArgs {
     /// For example `alsa:default`. Default: the system default output.
     #[arg(long, value_name = "ID")]
     pub(crate) audio_output: Option<String>,
+}
+
+/// Arguments for `irl key`.
+#[derive(Args, Debug)]
+pub(crate) struct KeyArgs {
+    /// Name of the stored key, in `<config dir>/iroh-live/secret_keys`.
+    pub(crate) name: String,
+}
+
+/// The `irl rcan` subcommands.
+#[derive(Subcommand, Debug)]
+pub(crate) enum RcanCommand {
+    /// Sign a capability chain: issue a new one, or delegate one you hold.
+    Sign(RcanSignArgs),
+    /// Print the links of a capability chain, and the grant a relay computes.
+    Show(RcanShowArgs),
+}
+
+/// Arguments for `irl rcan sign`.
+#[derive(Args, Debug)]
+pub(crate) struct RcanSignArgs {
+    /// Name of the stored key that signs.
+    ///
+    /// For a new chain, the principal's key. Keep principal keys on the
+    /// operator's machine, and do not publish with them. With --chain, the
+    /// key that the chain's last link names.
+    #[arg(long, value_name = "NAME")]
+    pub(crate) key: String,
+
+    /// The public key or endpoint id the new link names, which holds the chain next.
+    #[arg(long, value_name = "KEY")]
+    pub(crate) to: iroh::PublicKey,
+
+    /// Delegates this chain, a file or `-` for standard input, instead of issuing a new one.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) chain: Option<PathBuf>,
+
+    /// The path the patterns are relative to, the capability's root.
+    ///
+    /// It must lie within the root of the principal on the relay. A new
+    /// chain defaults to the whole relay, a delegation to the chain's root.
+    /// A delegation that sets it must also name --subscribe or --publish,
+    /// since the new link carries only the patterns it names.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) root: Option<String>,
+
+    /// A pattern the holder may subscribe to, relative to the root. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    pub(crate) subscribe: Vec<moq_net::Pattern>,
+
+    /// A pattern the holder may publish at, relative to the root. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    pub(crate) publish: Vec<moq_net::Pattern>,
+
+    /// How long the new link is valid, such as 8h or 30d.
+    #[arg(long, value_name = "DURATION", default_value = "1h", value_parser = humantime::parse_duration)]
+    pub(crate) ttl: std::time::Duration,
+}
+
+/// Arguments for `irl rcan show`.
+#[derive(Args, Debug)]
+pub(crate) struct RcanShowArgs {
+    /// The chain, a file or `-` for standard input.
+    pub(crate) chain: PathBuf,
+
+    /// Checks the chain as a relay with this `--rcan-principal KEY[@ROOT]` does.
+    #[arg(long, value_name = "KEY[@ROOT]")]
+    pub(crate) principal: Option<String>,
+
+    /// The endpoint id that presents the chain. Defaults to the one its last link names.
+    #[arg(long, value_name = "ID", requires = "principal")]
+    pub(crate) peer: Option<EndpointId>,
 }
 
 /// Arguments for `irl run`.

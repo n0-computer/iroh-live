@@ -28,47 +28,102 @@ Back it up, and set `IROH_LIVE_RELAY_DATA` to a persistent volume in a
 container. A new key means a new endpoint id, which every publisher has to
 learn again.
 
-## Know the defaults
+## Choose an access mode
 
-The defaults suit a relay on your own machine or a trusted network:
+Without auth flags the relay is *open*. It suits a relay on your own machine
+or a trusted network:
 
-- **Anyone may read every broadcast on the relay.** Every publisher that
-  pushes to it, and every broadcast it pulls, is visible to every browser and
-  iroh client that connects.
-- An iroh client may publish only at paths that name its endpoint id. A
-  browser may publish names of one segment.
+- **Anyone who reaches the relay reads every broadcast on it**, over
+  WebTransport or by its endpoint id. The relay warns about this at every
+  start.
+- An iroh client may publish only at its own paths, the paths that name its
+  endpoint id. A browser may publish names of one segment.
 - The relay pulls no tickets, so a browser cannot open a ticket until you
-  pass `--open-pulls` or set up tokens.
-- TLS uses a self-signed certificate, made at every start. The web page pins
-  its fingerprint, which works only when the page itself is loaded over plain
-  `http://`. There is no ACME.
+  pass `--open-pulls`.
 
-## Give rights with tokens
+Any `--auth-*` or `--rcan-*` flag makes the relay *private*. A session with a
+valid token gets what the token grants. A session without one gets the
+`--auth-public*` patterns, or is refused. The startup line says which mode
+the relay runs in and why.
 
-`--auth-key <PATH>` makes the relay verify JWTs signed with a key in the
-file, a JWK or a JWK set as `moq auth` writes them. A token grants what its
-claims say: publishing outside the default paths, and pulling a ticket.
+Make a key pair and sign tokens with the `moq` CLI from moq-cli, and give the
+relay only the public key:
 
-`--auth-key` does **not** make the relay private. A session without a token
-keeps the default rules, so anonymous browsers and iroh clients still read
-every broadcast, and anonymous browsers can still publish names of one
-segment.
+```sh
+cargo install moq-cli
+moq auth generate --algorithm ES256 --out private.jwk --public public.jwk
 
-No flag refuses anonymous iroh clients. For browsers, `--auth-url` hands
-every session to an auth server of yours, as moq-relay does, which can refuse
-anonymous ones. The relay then pulls no tickets for browsers.
+# A viewer: read everything for 8 hours.
+moq auth sign --key private.jwk --subscribe '**' --ttl 8h > viewer.jwt
+# A publisher with a known endpoint id: its own paths, read everything.
+moq auth sign --key private.jwk \
+  --publish "live/$PUBLISHER_ID/**" --publish "rooms/*/$PUBLISHER_ID/**" \
+  --subscribe '**' --ttl 12h > publisher.jwt
+```
 
-The relay reads the key file again when it changes, so a rotated key takes
-effect for the next session without a restart. Sessions already admitted keep
-their authorization until their token expires.
+Then pick the flags for the relay you want:
 
-`--open-pulls` lets any session make the relay dial any iroh endpoint, within
-the pull limits. Use it only on a relay that only you can reach.
+```sh
+# Private: only token holders.
+iroh-live-relay --auth-key public.jwk
+
+# Private, and any token holder also publishes at its own paths, so one
+# shared token with --subscribe '**' serves every member.
+iroh-live-relay --auth-key public.jwk --auth-own-paths
+
+# A private relay with a public area: anyone watches demo/, and only token
+# holders read the rest and publish.
+iroh-live-relay --auth-key public.jwk --auth-public-subscribe 'demo/**'
+
+# Anyone may push at their own iroh paths, and only members watch.
+iroh-live-relay --auth-key public.jwk --auth-public-own-paths
+
+# iroh members only, with rcan chains the team key issues.
+iroh-live-relay --rcan-principal "$(irl key team)" --auth-own-paths
+
+# The old --auth-key behaviour, written out: anyone reads, tokens add rights.
+iroh-live-relay --auth-key public.jwk --auth-public-subscribe '**' \
+  --auth-public-publish '*' --auth-public-own-paths
+```
+
+[Use tokens](tokens.md#on-the-iroh-live-relay) shows how clients present a
+token, and how to issue rcan chains with `irl rcan`.
+
+A token grants exactly what it states. A subscribe-only token publishes
+nothing unless the relay runs `--auth-own-paths`, which applies to JWTs and
+to principals at the relay root, not to a principal limited to a root below
+it.
+
+### Keys, expiry and revocation
+
+- Tokens must expire. A private relay refuses a token without an expiry
+  unless you pass `--allow-unexpiring-tokens`.
+- A session admitted with a token lasts at most `--max-session`, 24 hours by
+  default. The relay then asks the client to reconnect, and an iroh client
+  dials a new session with its token. `irl publish` keeps running.
+- The relay reads the key file again when it changes, and checks it once a
+  second. Removing a key refuses it for new sessions at once, and closes the
+  live iroh sessions it admitted within about a second. A browser session
+  keeps its grant until its token or `--max-session` expires.
+- An rcan chain cannot be revoked before it expires. Keep device links
+  short, hours rather than days. Removing a `--rcan-principal` takes a
+  restart, which ends every session anyway.
+- Keep principal keys apart from node keys, on the operator's machine. `irl
+  key` stores them readable by this user only.
+
+`--open-pulls` lets every session the relay admits to read a ticket's path
+make it dial the ticket's publisher. On an open relay that is anyone. On a
+private relay it is token holders, plus sessions without a token whose public
+patterns reach `live/` or `rooms/`, which the relay warns about.
 
 ## Put it on the internet
 
 The browser connection needs a certificate the browser trusts, or a page
-served over plain `http://` that pins the self-signed one. A page on
+served over plain `http://` that pins the self-signed one. Plain HTTP also
+carries the page and its certificate pin, so on a private relay a browser's
+token is only as safe as the network. The relay warns about this when the
+viewer listens beyond loopback. Put browsers on a trusted network, or behind
+a proxy that terminates TLS. A page on
 `https://` cannot pin it, and browsers refuse the self-signed certificate.
 The relay cannot load a certificate of your own yet. Until it can:
 
@@ -82,14 +137,20 @@ The relay cannot load a certificate of your own yet. Until it can:
 
 Before you expose a relay:
 
-- Every broadcast that reaches the relay is readable by anyone who can reach
-  it. Publish only what may be public, or keep the relay on a private network.
-- Do not use `--open-pulls`.
-- Keep the JWK file and the iroh secret key private, and back up the key.
-- Issue short-lived tokens. Removing a key stops new sessions, but a session
-  admitted with a token keeps its rights until the token expires.
+- Make it private: pass `--auth-key`, `--rcan-principal` or both. An open
+  relay serves every broadcast to anyone who reaches it.
+- Check the startup line. It lists what sessions with and without a token
+  get.
+- Do not use `--open-pulls` unless the public patterns stay out of `live/`
+  and `rooms/`.
+- Keep the private JWK, principal keys and the iroh secret key private, and
+  back up the iroh key.
+- Issue short-lived tokens, and give viewers links with `#jwt=`, not
+  `?jwt=`.
 - Calls and rooms publish to a set of peers, and never reach a relay. Only
-  broadcasts with the `Granted` audience do.
+  broadcasts with the `Granted` audience do. Do not put a relay's endpoint id
+  in a `Peers` set: a relay that pulls such a broadcast serves it to everyone
+  it admits.
 
 ## Where to go next
 

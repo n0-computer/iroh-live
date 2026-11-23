@@ -103,6 +103,9 @@ Transport:
 |---|---|
 | `--name <NAME>` | Broadcast name, as the ticket carries it (default: `hello`) |
 | `--relay <ENDPOINT_ID>` | Also push the broadcast to this relay |
+| `--relay-token-file <PATH>` | Present the token in this file to `--relay`: a JWT or an rcan chain |
+| `--relay-token <TOKEN>` | Present this token to `--relay`. Prefer the file or the `IRL_RELAY_TOKEN` variable, since other users can read a command line. The variable counts only with `--relay` and without either flag |
+| `--key <NAME>` | Bind with the stored key of this name, created on first use. A node that presents an rcan chain binds with the key the chain names |
 | `--no-serve` | Accept no incoming sessions and print no ticket. Only useful with `--relay` |
 | `--no-qr` | Do not print the QR code |
 
@@ -126,7 +129,8 @@ relay. The link only publishes: it does not add the relay's routes to this
 node's route table. The command prints the path at which viewers find the
 broadcast on the relay. Use a relay that keeps each publisher to its own
 paths, as `iroh-live-relay` does. On one where anyone may publish anywhere, a
-viewer can be served a forgery.
+viewer can be served a forgery. When a private relay refuses the token, or
+the lack of one, the command prints why and exits with status 1.
 
 `--preview` draws the frames that go to the encoders, so it decodes nothing. A
 file source and `--video rpicam` cannot be previewed, because their frames
@@ -159,6 +163,46 @@ INFO capture frame rate requested. The device runs at the nearest rate it suppor
 `origin` is `--fps`, `--renditions`, `--fps, capping the ladder`, `default`, or
 `device`. Each rung logs the rate the device delivers on its
 `publishing video rendition` line.
+
+## `irl key`
+
+```sh
+irl key <NAME>
+```
+
+Prints the public key of the stored key `NAME`, which is also the endpoint id
+of a node bound with it. The key lives in
+`<config dir>/iroh-live/secret_keys/<NAME>.key`, readable by this user only,
+and is created on first use. `irl run` takes the same names in
+`secret_key_name`, and `irl publish --key` binds with one.
+
+## `irl rcan`
+
+`irl rcan` signs and shows the rcan capability chains that a relay's
+`--rcan-principal` accepts. See [Use tokens](../how-to/tokens.md#on-the-iroh-live-relay).
+
+```sh
+irl rcan sign --key <NAME> --to <KEY> [--chain <PATH>] [--root <PATH>] \
+  [--subscribe <PATTERN>]... [--publish <PATTERN>]... [--ttl <DURATION>]
+irl rcan show <PATH> [--principal <KEY[@ROOT]>] [--peer <ID>]
+```
+
+`sign` prints the chain as a token. Without `--chain` it issues a new chain,
+signed with the principal's stored key `--key`. It needs `--subscribe` or
+`--publish`, and `--root` defaults to the whole relay. With `--chain`, a file
+or `-` for standard input, it delegates the chain, signed with the key its
+last link names. Without `--root`, `--subscribe` or `--publish`, the new link
+carries the chain's capability. With any of them it carries exactly what they
+name, and the command refuses a capability wider than the chain's. It also
+refuses `--root` without `--subscribe` or `--publish`, since the link would
+grant nothing, and notes on stderr each half of the chain that the link drops. `--to`
+names the key that holds the chain next, and `--ttl` how long the new link is
+valid (default: `1h`).
+
+`show` prints each link: its issuer, its audience, its root and patterns, and
+its expiry. With `--principal`, it also prints the grant and expiry that a
+relay with that principal computes for `--peer`, by default the key the last
+link names, or why the relay refuses it.
 
 ## `irl watch`
 

@@ -19,8 +19,8 @@ moq-tokio = { workspace = true }
 # `serve` the reference policy that decides browsers under `--auth-key`.
 moq-auth = { workspace = true, features = ["async", "serve"] }
 moq-net = { workspace = true }
-# The policy types, and the JWT verifier for iroh clients' tokens.
-moq-ext-access = { workspace = true, features = ["jwt"] }
+# The policy types, the JWT verifier and the rcan verifier for iroh clients' tokens.
+moq-ext-access = { workspace = true, features = ["jwt", "rcan"] }
 iroh = { workspace = true }
 # The node that pulls tickets, the endpoint setup, and the `live/` layout with
 # the grant that keeps a peer to its own paths.
@@ -49,6 +49,8 @@ dirs = "7"
 # Decodes the broadcast name in a request path. Already in the tree through `url`.
 percent-encoding = "2"
 url = "2"
+# Parses `--max-session`, and formats it for the startup line.
+humantime = "2.3"
 
 [dev-dependencies]
 # The shared test endpoint, node and wait helpers.

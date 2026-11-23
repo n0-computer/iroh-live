@@ -2,11 +2,11 @@
 //!
 //! moq-tokio's server has no iroh backend, and an iroh session's auth request
 //! would carry no peer identity anyway. So the relay accepts iroh sessions
-//! itself with [`IrohSessions`], and asks a [`Policy`] about each. The
-//! default, [`relay_policy`], lets each client publish only at the paths that
-//! name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`. Browsers
-//! come in through moq-relay's server, and [`browser_grant`] keeps them to
-//! names of one segment below the root.
+//! itself with [`IrohSessions`], and asks a [`Policy`] about each. On an open
+//! relay, [`relay_policy`] lets each client publish only at its own paths, the
+//! paths that name it: `live/<its id>/...` and `rooms/<topic>/<its id>/...`.
+//! Browsers come in through moq-relay's server, and [`browser_grant`] keeps
+//! them to names of one segment below the root.
 
 use std::{sync::Arc, time::Duration};
 
@@ -16,21 +16,32 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, RouterBuilder},
 };
 use iroh_live_node::{
-    BroadcastTicket, DECIDE_TIMEOUT, SessionRequest,
-    layout::LiveLayout,
-    policy::{Authorization, DynPolicy, Event, PeerRequest, Policy},
+    BroadcastTicket, DECIDE_TIMEOUT, Grant, SessionRequest,
+    layout::{self, LiveLayout},
+    policy::{self, Authorization, Closed, DynPolicy, Event, PeerRequest, Policy},
 };
 use iroh_live_rooms::RoomsLayout;
-use moq_net::Pattern;
+use moq_net::{Pattern, Patterns};
 use moq_relay::cluster::Cluster;
 use n0_error::e;
+use n0_future::task::AbortOnDropHandle;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use crate::pull::{Access, Client, PullGuard, Pulls};
+use crate::pull::{Client, PullGuard, Pulls};
 
 /// How long a closing session gets to tell its peer when the relay shuts down.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
+
+/// How long a session the relay asked to reconnect keeps serving before the relay closes it.
+///
+/// The client dials its new session meanwhile, so its broadcasts move over
+/// without a gap.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How often the relay checks its JWT key file for changes.
+const KEY_CHECK: Duration = Duration::from_secs(1);
 
 /// The protocol handler that accepts iroh clients' MoQ sessions into the cluster.
 ///
@@ -43,18 +54,27 @@ pub struct IrohSessions {
     pulls: Option<Pulls>,
     /// Decides who may hold a session, and what it may publish and read.
     policy: Arc<dyn DynPolicy<EndpointId>>,
-    /// Decides who may pull under [`Access::Authorized`], asked at the ticket's path.
+    /// Decides who may pull without open pulls, asked at the ticket's path.
     pull_policy: Option<Arc<dyn DynPolicy<EndpointId>>>,
+    /// The longest a session admitted with a token lasts.
+    max_session: Option<Duration>,
+    /// Changes when the JWT key file does, which decides the token sessions again.
+    key_changes: Option<watch::Receiver<u64>>,
+    /// Checks the key file for changes while any clone of the handler lives.
+    #[debug(skip)]
+    _key_watch: Option<Arc<AbortOnDropHandle<()>>>,
     /// Cancelled when the router shuts down, which closes every session.
     shutdown: CancellationToken,
 }
 
 impl IrohSessions {
-    /// Creates the handler for `cluster`, deciding sessions with [`relay_policy`].
+    /// Creates the handler for `cluster`, which refuses every session until it gets a policy.
+    ///
+    /// Set the policies with [`with_policies`](Self::with_policies), as the
+    /// relay does, or with [`with_policy`](Self::with_policy).
     ///
     /// With `pulls` set, a session that names a ticket in its path pulls the
-    /// ticket's broadcast, as a browser's does, if the pulls'
-    /// [`Access`](crate::pull::Access) lets it: see
+    /// ticket's broadcast, as a browser's does, if the pulls let it: see
     /// [`with_pull_policy`](Self::with_pull_policy). A session that may not
     /// pull, or would exceed the pulls' [`Limits`](crate::pull::Limits), is
     /// refused.
@@ -63,8 +83,11 @@ impl IrohSessions {
         Self {
             cluster,
             pulls,
-            policy: Arc::new(relay_policy()),
+            policy: Arc::new(Closed),
             pull_policy: None,
+            max_session: None,
+            key_changes: None,
+            _key_watch: None,
             shutdown: CancellationToken::new(),
         }
     }
@@ -74,25 +97,61 @@ impl IrohSessions {
     /// The relay asks it after a client's MoQ SETUP. A rejection closes the
     /// session with the rejection's code. An authorization's grant bounds
     /// what the client publishes into the cluster and what it reads from it,
-    /// and the session closes when the authorization expires. The relay does
-    /// not decide again: a client whose session closed reconnects.
+    /// and the session closes when the authorization expires. A client whose
+    /// session closed reconnects.
     #[must_use]
     pub fn with_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
         self.policy = Arc::new(policy);
         self
     }
 
-    /// Returns this handler with `policy` deciding who may pull under [`Access::Authorized`].
+    /// Returns this handler with `policy` deciding who may pull without open pulls.
     ///
     /// The relay asks it about the session's peer and token at the path of the
     /// ticket's broadcast, and the session may pull if the authorization lets
-    /// it read that path. Without one, no session pulls under
-    /// [`Access::Authorized`]. It should require a token, as a
+    /// it read that path. Without one, no session pulls unless the pulls are
+    /// open. It should require a token, as a
     /// [`Verify`](moq_ext_access::policy::Verify) without a fallback does,
     /// since an open policy would let every session pull.
     #[must_use]
     pub fn with_pull_policy(mut self, policy: impl Policy<EndpointId>) -> Self {
         self.pull_policy = Some(Arc::new(policy));
+        self
+    }
+
+    /// Returns this handler with the policies, the session bound and the key file of `policies`.
+    ///
+    /// A session that presented a token lasts at most
+    /// [`max_session`](crate::Config::max_session). When the key file
+    /// changes, which the handler checks once a second, every live session
+    /// that presented a token is decided again, and closed if its grant
+    /// changed or its token no longer verifies. Call it within a tokio
+    /// runtime, which runs the check.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_policies(mut self, policies: &crate::Policies) -> Self {
+        self.policy = policies.iroh.clone();
+        self.pull_policy.clone_from(&policies.pull_tokens);
+        self.max_session = Some(policies.max_session);
+        if let Some(keys) = policies.key_file.clone() {
+            self.key_changes = Some(keys.changes());
+            match tokio::runtime::Handle::try_current() {
+                Ok(runtime) => {
+                    let watch = runtime.spawn(async move {
+                        let mut interval = tokio::time::interval(KEY_CHECK);
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        loop {
+                            interval.tick().await;
+                            keys.refresh();
+                        }
+                    });
+                    self._key_watch = Some(Arc::new(AbortOnDropHandle::new(watch)));
+                }
+                Err(_) => {
+                    warn!("no tokio runtime: the key file is read again only when a token arrives")
+                }
+            }
+        }
         self
     }
 
@@ -113,11 +172,22 @@ impl IrohSessions {
             session,
             driver,
             authorization,
+            bounded,
+            recheck,
+            key_changes,
             pull,
         } = self.admit(connection).await?;
         // Held while the session runs.
         let _pull = pull.map(|(pull, name)| crate::hold_pull(pull, name));
-        self.run(session, driver, &authorization).await;
+        self.run(
+            session,
+            driver,
+            &authorization,
+            bounded,
+            &recheck,
+            key_changes,
+        )
+        .await;
         Ok(())
     }
 
@@ -138,23 +208,77 @@ impl IrohSessions {
         let session = SessionRequest::from_handshake(&handshake);
         let path = session.path().to_owned();
         let token = session.token().map(str::to_owned);
-        let request = PeerRequest::new(peer, session, Event::Connect);
-        let authorization =
-            match moq_ext_access::policy::decide_within(&*self.policy, &request, DECIDE_TIMEOUT)
-                .await
-            {
-                Ok(authorization) => authorization,
-                Err(rejection) => {
-                    info!(
-                        reason = rejection.reason(),
-                        code = %rejection.code(),
-                        "the policy rejected the iroh client",
-                    );
-                    handshake.close(rejection.code().clone());
-                    return Err(AcceptError::from_err(rejection));
+        // A ticket the relay pulls for the session, read under `name`.
+        let ticket = name
+            .as_deref()
+            .filter(|_| self.pulls.is_some())
+            .and_then(|name| name.parse::<BroadcastTicket>().ok());
+        let dialed = PeerRequest::new(peer, session.clone(), Event::Connect);
+        // Marked seen before the decision, so a key change during it is not
+        // missed, and one before it does not decide the session again at once.
+        let mut key_changes = self.key_changes.clone();
+        if let Some(changes) = key_changes.as_mut() {
+            changes.mark_unchanged();
+        }
+        let admitted = match &ticket {
+            None => self.decide(&dialed).await.map(|authorization| {
+                let recheck = (authorization.grant.clone(), dialed.clone());
+                (authorization, false, vec![recheck])
+            }),
+            Some(ticket) => {
+                self.decide_ticket(peer, &dialed, token.as_deref(), ticket)
+                    .await
+            }
+        };
+        let (mut authorization, reads_ticket, decided) = match admitted {
+            Ok(admitted) => admitted,
+            Err(rejection) => {
+                info!(
+                    reason = rejection.reason(),
+                    code = %rejection.code(),
+                    "the policy rejected the iroh client",
+                );
+                handshake.close(rejection.code().clone());
+                return Err(AcceptError::from_err(rejection));
+            }
+        };
+        // A session with a token is bounded, and decided again when the keys change.
+        let mut recheck = Vec::new();
+        let mut bounded = false;
+        if token.is_some() {
+            if let Some(bound) = self.max_session {
+                let latest = std::time::SystemTime::now() + bound;
+                bounded = authorization.expires.is_none_or(|expires| latest < expires);
+                if bounded {
+                    authorization.expires = Some(latest);
                 }
-            };
-        let pull = match self.start_pull(peer, token, name.as_deref()).await {
+            }
+            recheck = decided
+                .into_iter()
+                .map(|(grant, request)| Decided {
+                    request: PeerRequest::new(
+                        *request.peer(),
+                        request_of(&request),
+                        Event::Reauthorize,
+                    ),
+                    grant,
+                })
+                .collect();
+        }
+        let pull = match &ticket {
+            Some(ticket) => {
+                self.start_pull(
+                    peer,
+                    token,
+                    name.as_deref().unwrap_or_default(),
+                    ticket,
+                    reads_ticket,
+                )
+                .await
+            }
+            None => Ok(None),
+        };
+        let pull = match pull {
             Ok(pull) => pull,
             Err(err) => {
                 info!(error = %err, "refusing the iroh client's pull");
@@ -167,107 +291,317 @@ impl IrohSessions {
             }
         };
         let grant = &authorization.grant;
-        let publish = self
-            .cluster
-            .origin
-            .scope("", &grant.publish)
+        // An empty half of the grant scopes to nothing, which moq refuses, so
+        // the session then gets no origin for it.
+        let publish = (!grant.publish.is_empty())
+            .then(|| self.cluster.origin.scope("", &grant.publish))
+            .transpose()
             .map_err(AcceptError::from_err)?;
-        // A session that names a ticket reads the pulled broadcast at that name.
-        let serving = name
-            .as_deref()
-            .filter(|_| self.pulls.is_some())
-            .and_then(|name| crate::pull::mounted(&self.cluster, name))
-            .map_or_else(
-                || self.cluster.origin.consume(),
-                |cluster| cluster.origin.consume(),
-            )
-            .scope("", &grant.subscribe)
+        // A session that names a ticket reads the pulled broadcast at that
+        // name, if the decision at the ticket's path lets it read there.
+        let mut reads = grant.subscribe.clone();
+        let source = match (&ticket, name.as_deref()) {
+            (Some(_), Some(name)) => {
+                if reads_ticket && let Ok(alias) = Pattern::literal(name) {
+                    reads.extend([alias]);
+                }
+                crate::pull::mounted(&self.cluster, name)
+            }
+            _ => None,
+        };
+        let serving = (!reads.is_empty())
+            .then(|| {
+                source
+                    .map_or_else(
+                        || self.cluster.origin.consume(),
+                        |cluster| cluster.origin.consume(),
+                    )
+                    .scope("", &reads)
+            })
+            .transpose()
             .map_err(AcceptError::from_err)?;
-        let (session, driver) = tokio::time::timeout(
-            moq_transport_iroh::HANDSHAKE_TIMEOUT,
-            handshake
-                .with_publisher(serving)
-                .with_subscriber(publish)
-                .ok(),
-        )
-        .await
-        .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
-        .map_err(AcceptError::from_err)?;
-        info!(%path, grant = ?authorization.grant, expires = ?authorization.expires, "iroh client admitted");
+        let mut handshake = handshake;
+        if let Some(serving) = serving {
+            handshake = handshake.with_publisher(serving);
+        }
+        if let Some(publish) = publish {
+            handshake = handshake.with_subscriber(publish);
+        }
+        let (session, driver) =
+            tokio::time::timeout(moq_transport_iroh::HANDSHAKE_TIMEOUT, handshake.ok())
+                .await
+                .map_err(|_| AcceptError::from_err(moq_net::Error::Timeout))?
+                .map_err(AcceptError::from_err)?;
+        info!(%path, grant = ?authorization.grant, reads_ticket, expires = ?authorization.expires, "iroh client admitted");
         Ok(Admitted {
             session,
             driver,
             authorization,
+            bounded,
+            recheck,
+            key_changes,
             pull,
         })
     }
 
-    /// Starts the pull of the ticket a session named, if pulls are on and `name` is a ticket.
+    /// Asks the session policy about `request` within the decide timeout.
+    async fn decide(&self, request: &PeerRequest) -> policy::Decision {
+        moq_ext_access::policy::decide_within(&*self.policy, request, DECIDE_TIMEOUT).await
+    }
+
+    /// Decides a session that names `ticket`, which the relay pulls for it.
     ///
-    /// Under [`Access::Authorized`] the pull policy decides, at the ticket's
-    /// path with the session's `token`, and must grant reading that path.
+    /// Two decisions. The session's own rights are decided at the path it
+    /// dialed, as any session's are, and a rejection there only leaves it
+    /// without them. Whether it reads the ticket's broadcast is decided at the
+    /// ticket's path, which must admit the session, and only its subscribe
+    /// half counts. Returns the session's authorization, whether it reads the
+    /// ticket, and each decision that admitted it with its request.
+    async fn decide_ticket(
+        &self,
+        peer: EndpointId,
+        dialed: &PeerRequest,
+        token: Option<&str>,
+        ticket: &BroadcastTicket,
+    ) -> Result<(Authorization, bool, Vec<(Grant, PeerRequest)>), policy::Rejection> {
+        let at_ticket = PeerRequest::new(peer, ticket_request(ticket, token), Event::Connect);
+        let mount = self.decide(&at_ticket).await?;
+        let reads_ticket = mount.grant.allows_subscribe(ticket.path().as_str());
+        let mut decided = vec![(mount.grant.clone(), at_ticket)];
+        let own = match self.decide(dialed).await {
+            Ok(own) => {
+                decided.push((own.grant.clone(), dialed.clone()));
+                own
+            }
+            Err(rejection) => {
+                debug!(
+                    reason = rejection.reason(),
+                    "the ticket's session gets no rights at the dialed path"
+                );
+                Authorization::default()
+            }
+        };
+        let expires = [mount.expires, own.expires].into_iter().flatten().min();
+        Ok((
+            Authorization {
+                grant: own.grant,
+                expires,
+            },
+            reads_ticket,
+            decided,
+        ))
+    }
+
+    /// Starts the pull of `ticket`, which the session named as `name`.
+    ///
+    /// Without [open pulls](Pulls::with_open_pulls) the pull policy decides,
+    /// at the ticket's path with the session's `token`, and must grant
+    /// reading that path. With them the session must read the ticket's path,
+    /// which `reads_ticket` says.
     async fn start_pull(
         &self,
         peer: EndpointId,
         token: Option<String>,
-        name: Option<&str>,
+        name: &str,
+        ticket: &BroadcastTicket,
+        reads_ticket: bool,
     ) -> Result<Option<(PullGuard, String)>, crate::Error> {
-        let Some((pulls, name)) = self.pulls.as_ref().zip(name) else {
+        let Some(pulls) = self.pulls.as_ref() else {
             return Ok(None);
         };
-        let Ok(ticket) = name.parse::<BroadcastTicket>() else {
-            return Ok(None);
+        let denied = || {
+            e!(crate::Error::PullDenied {
+                path: ticket.path().clone()
+            })
         };
-        if pulls.access() == Access::Authorized {
-            let denied = || {
-                e!(crate::Error::PullDenied {
-                    path: ticket.path().clone()
-                })
-            };
-            let policy = self.pull_policy.as_deref().ok_or_else(denied)?;
-            let mut at_ticket = SessionRequest::new(ticket.path().as_str());
-            if let Some(token) = token {
-                at_ticket = at_ticket.with_token(token);
+        if pulls.open_pulls() {
+            if !reads_ticket {
+                return Err(denied());
             }
-            let request = PeerRequest::new(peer, at_ticket, Event::Connect);
+        } else {
+            let policy = self.pull_policy.as_deref().ok_or_else(denied)?;
+            let request = PeerRequest::new(
+                peer,
+                ticket_request(ticket, token.as_deref()),
+                Event::Connect,
+            );
             let decision =
                 moq_ext_access::policy::decide_within(policy, &request, DECIDE_TIMEOUT).await;
             if !decision.is_ok_and(|auth| auth.grant.allows_subscribe(ticket.path().as_str())) {
                 return Err(denied());
             }
         }
-        let pull = pulls.start(Client::Peer(peer), name, &ticket)?;
+        let pull = pulls.start(Client::Peer(peer), name, ticket)?;
         Ok(Some((pull, name.to_owned())))
     }
 
     /// Runs an admitted session until it ends, its authorization expires, or the relay shuts down.
+    ///
+    /// When the key file changes, the decisions in `recheck` are made again,
+    /// and the session closes if one is rejected or its grant changed. A
+    /// `bounded` session expires at the relay's `--max-session` bound before
+    /// its token does, so the relay then asks the client to reconnect.
     async fn run(
         &self,
         session: moq_net::Session,
         driver: moq_net::Driver,
         authorization: &Authorization,
+        bounded: bool,
+        recheck: &[Decided],
+        key_changes: Option<watch::Receiver<u64>>,
     ) {
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
         let expiry = expiry(authorization);
         tokio::pin!(expiry);
-        let close = tokio::select! {
-            err = &mut run => {
-                debug!(error = %err, "iroh session ended");
-                return;
-            }
-            () = self.shutdown.cancelled() => moq_net::Error::Cancel,
-            () = &mut expiry => {
-                info!("the iroh client's authorization expired, closing its session");
-                moq_net::Error::Expired
+        let mut key_changes = key_changes.filter(|_| !recheck.is_empty());
+        let ending = loop {
+            let changed = async {
+                match key_changes.as_mut() {
+                    Some(changes) => changes.changed().await.is_ok(),
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                err = &mut run => {
+                    debug!(error = %err, "iroh session ended");
+                    return;
+                }
+                () = self.shutdown.cancelled() => break Ending::Close(moq_net::Error::Cancel),
+                () = &mut expiry => {
+                    if bounded {
+                        info!("the iroh client's session reached --max-session, asking it to reconnect");
+                        break Ending::Reconnect;
+                    }
+                    info!("the iroh client's authorization expired, closing its session");
+                    break Ending::Close(moq_net::Error::Expired);
+                }
+                live = changed => {
+                    if !live {
+                        key_changes = None;
+                        continue;
+                    }
+                    if let Some(ending) = self.decide_again(recheck).await {
+                        break ending;
+                    }
+                }
             }
         };
+        if matches!(ending, Ending::Reconnect) {
+            let goaway = moq_net::goaway::Goaway::new().with_timeout(Some(DRAIN_DEADLINE));
+            match session.goaway(goaway) {
+                // The driver closes the session at the deadline, if the client did not.
+                Ok(()) => tokio::select! {
+                    _ = tokio::time::timeout(DRAIN_DEADLINE + CLOSE_GRACE, &mut run) => {
+                        debug!("the drained iroh session ended");
+                        return;
+                    }
+                    () = self.shutdown.cancelled() => {}
+                },
+                Err(err) => debug!(error = %err, "could not send the GOAWAY"),
+            }
+        }
+        let code = match ending {
+            Ending::Close(code) => code,
+            Ending::Reconnect => moq_net::Error::Cancel,
+        };
         // The driver keeps running, so the session can tell its peer.
-        session.abort(close);
+        session.abort(code);
         if tokio::time::timeout(CLOSE_GRACE, run).await.is_err() {
             warn!(grace = ?CLOSE_GRACE, "iroh session did not close in time");
         }
     }
+}
+
+impl IrohSessions {
+    /// Makes the decisions in `recheck` again, and returns how to end the session if one changed.
+    ///
+    /// See [`ending_for`] for how a changed decision ends the session.
+    async fn decide_again(&self, recheck: &[Decided]) -> Option<Ending> {
+        for decided in recheck {
+            let decision = moq_ext_access::policy::decide_within(
+                &*self.policy,
+                &decided.request,
+                DECIDE_TIMEOUT,
+            )
+            .await;
+            match (&decision, ending_for(&decision, &decided.grant)) {
+                (_, None) => debug!("the key file changed, and the token still verifies"),
+                (Err(rejection), Some(ending)) => {
+                    info!(
+                        reason = rejection.reason(),
+                        code = %rejection.code(),
+                        "the key file changed and the token no longer verifies, closing the session",
+                    );
+                    return Some(ending);
+                }
+                (Ok(authorization), Some(ending)) => {
+                    info!(
+                        grant = ?authorization.grant,
+                        "the key file changed the token's grant, asking the client to reconnect",
+                    );
+                    return Some(ending);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Returns the request of a session that dialed `ticket`'s path, presenting `token`.
+fn ticket_request(ticket: &BroadcastTicket, token: Option<&str>) -> SessionRequest {
+    let request = SessionRequest::new(ticket.path().as_str());
+    match token {
+        Some(token) => request.with_token(token),
+        None => request,
+    }
+}
+
+/// Returns the session request a policy saw in `request`.
+fn request_of(request: &PeerRequest) -> SessionRequest {
+    let session = SessionRequest::new(request.path());
+    match request.token() {
+        Some(token) => session.with_token(token),
+        None => session,
+    }
+}
+
+/// How the relay ends a session that it no longer serves as it admitted it.
+#[derive(Debug)]
+enum Ending {
+    /// Closes the session with this code.
+    ///
+    /// A client takes [`Expired`](moq_net::Error::Expired) and
+    /// [`Unauthorized`](moq_net::Error::Unauthorized) as a refusal of its token.
+    Close(moq_net::Error),
+    /// Sends a GOAWAY, so the client dials a new session with the same token.
+    ///
+    /// The old session serves until the new one is up, or until
+    /// [`DRAIN_DEADLINE`].
+    Reconnect,
+}
+
+/// Returns how to end a session admitted with `admitted`, given the decision made again now.
+///
+/// A rejection closes the session with the rejection's code, which the
+/// client takes as a refusal of its token. A token that still verifies is
+/// never a refusal: a changed grant, wider or narrower, asks the client to
+/// reconnect, and its new session gets the new grant. A narrower grant thus
+/// keeps serving the admitted one until the new session is up, at most
+/// [`DRAIN_DEADLINE`]. An unchanged grant keeps the session.
+fn ending_for(decision: &policy::Decision, admitted: &Grant) -> Option<Ending> {
+    match decision {
+        Err(rejection) => Some(Ending::Close(rejection.code().clone())),
+        Ok(authorization) if authorization.grant != *admitted => Some(Ending::Reconnect),
+        Ok(_) => None,
+    }
+}
+
+/// A decision about a live session, as the relay makes it again when the key file changes.
+struct Decided {
+    request: PeerRequest,
+    /// The grant the decision gave when the session was admitted.
+    grant: Grant,
 }
 
 /// An iroh client's session after its handshake, before it runs.
@@ -275,6 +609,12 @@ struct Admitted {
     session: moq_net::Session,
     driver: moq_net::Driver,
     authorization: Authorization,
+    /// Whether the session expires at the relay's max-session bound, before its token does.
+    bounded: bool,
+    /// The decisions to make again when the key file changes, empty without a token.
+    recheck: Vec<Decided>,
+    /// Sees the key changes since the session was decided.
+    key_changes: Option<watch::Receiver<u64>>,
     /// The pull of the ticket the session named, with that name.
     pull: Option<(PullGuard, String)>,
 }
@@ -354,20 +694,114 @@ pub(crate) fn requested_name(path: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.into_owned())
 }
 
-/// Returns the relay's default policy for iroh clients.
+/// Returns the policy of an open relay for iroh clients.
 ///
-/// It admits every client to read the whole cluster and to publish its own
-/// `live/` broadcasts and its room broadcasts, at the paths that name its
-/// endpoint id. Use it as the fallback of a [`Verify`](moq_ext_access::policy::Verify)
-/// to let a token widen what a client may publish.
+/// It admits every client to read the whole cluster and to publish at its
+/// own paths: its own `live/` broadcasts and its room broadcasts, at the
+/// paths that name its endpoint id.
 #[must_use]
 pub fn relay_policy() -> impl Policy<EndpointId> + Clone {
-    iroh_live_node::layout::policy((LiveLayout::default(), RoomsLayout))
+    layout::policy((LiveLayout::default(), RoomsLayout))
+}
+
+/// Returns the own paths of `peer`: `live/<peer>/**` and `rooms/*/<peer>/**`.
+pub(crate) fn own_paths(peer: EndpointId) -> Patterns {
+    layout::grant(&(LiveLayout::default(), RoomsLayout), peer).publish
+}
+
+/// Returns the policy for iroh clients without a token on a private relay.
+///
+/// A client gets `anonymous`, the public patterns rooted at `/`, and with
+/// `own_paths` also publishes at its own paths. With neither, every client
+/// is refused.
+pub(crate) fn anonymous_policy(
+    anonymous: &moq_auth::Permissions,
+    own_paths: bool,
+) -> Arc<dyn DynPolicy<EndpointId>> {
+    if anonymous.is_empty() && !own_paths {
+        return Arc::new(policy::from_fn(|_: &PeerRequest| {
+            Err(policy::Rejection::new(
+                "this relay admits only token holders, and the session presented no token",
+            ))
+        }));
+    }
+    let grant = Grant {
+        subscribe: anonymous.subscribe.clone(),
+        publish: anonymous.publish.clone(),
+    };
+    Arc::new(policy::from_fn(move |request: &PeerRequest| {
+        let mut grant = grant.clone();
+        if own_paths {
+            grant
+                .publish
+                .extend(self::own_paths(*request.peer()).iter().cloned());
+        }
+        Ok(grant.into())
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decide(policy: &dyn DynPolicy<EndpointId>, peer: EndpointId) -> Option<Grant> {
+        let request = PeerRequest::new(peer, SessionRequest::default(), Event::Connect);
+        n0_future::future::block_on(DynPolicy::decide(policy, &request))
+            .ok()
+            .map(|authorization| authorization.grant)
+    }
+
+    #[test]
+    fn the_anonymous_policy_follows_the_patterns_and_own_paths() {
+        let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
+        let own = format!("live/{id}/cam");
+        let none = moq_auth::Permissions::default();
+        assert!(decide(&*anonymous_policy(&none, false), id).is_none());
+        let grant = decide(&*anonymous_policy(&none, true), id).expect("admitted");
+        assert!(grant.allows_publish(&own));
+        assert!(grant.allows_publish(&format!("rooms/topic/{id}/cam")));
+        assert!(!grant.allows_subscribe(&own));
+        let demo = moq_auth::Permissions::new(
+            "demo/**".parse::<Pattern>().unwrap(),
+            "demo/**".parse::<Pattern>().unwrap(),
+        );
+        let grant = decide(&*anonymous_policy(&demo, false), id).expect("admitted");
+        assert!(grant.allows_publish("demo/cam") && grant.allows_subscribe("demo/cam"));
+        assert!(!grant.allows_publish(&own) && !grant.allows_subscribe(&own));
+        let grant = decide(&*anonymous_policy(&demo, true), id).expect("admitted");
+        assert!(grant.allows_publish(&own) && grant.allows_publish("demo/cam"));
+        let other = iroh::SecretKey::from_bytes(&[6; 32]).public();
+        assert!(!grant.allows_publish(&format!("live/{other}/cam")));
+    }
+
+    /// A key change that changes a token's grant reconnects its session, one that rejects the token closes it.
+    #[test]
+    fn a_changed_grant_reconnects_and_a_rejection_closes() {
+        let admitted = Grant::publish_under(Pattern::subtree("tokens").unwrap());
+        let wider = admitted.union(&Grant::publish_under(Pattern::subtree("other").unwrap()));
+        let decided = |grant: &Grant| -> policy::Decision { Ok(grant.clone().into()) };
+        for now in [&wider, &Grant::everything(), &Grant::subscribe_only()] {
+            assert!(matches!(
+                ending_for(&decided(now), &admitted),
+                Some(Ending::Reconnect)
+            ));
+        }
+        // A narrower grant is not a refusal, since the token still verifies.
+        assert!(matches!(
+            ending_for(&decided(&admitted), &wider),
+            Some(Ending::Reconnect)
+        ));
+        assert!(ending_for(&decided(&admitted), &admitted).is_none());
+        let expired = policy::Rejection::new("expired").with_code(moq_net::Error::Expired);
+        assert!(matches!(
+            ending_for(&Err(expired), &admitted),
+            Some(Ending::Close(moq_net::Error::Expired))
+        ));
+        assert!(matches!(
+            ending_for(&Err(policy::Rejection::new("gone")), &admitted),
+            Some(Ending::Close(moq_net::Error::Unauthorized))
+        ));
+    }
 
     #[test]
     fn a_client_publishes_only_under_its_own_id() {

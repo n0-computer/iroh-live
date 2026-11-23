@@ -39,7 +39,9 @@ use n0_future::future;
 #[cfg(feature = "jwt")]
 pub use self::jwt::JwtVerifier;
 #[cfg(feature = "rcan")]
-pub use self::rcan::{MAX_LINK_BYTES, MAX_LINKS, MoqCapability, RcanVerifier, encode_chain};
+pub use self::rcan::{
+    Chain, ChainError, Expires, MAX_LINK_BYTES, MAX_LINKS, MoqCapability, RcanVerifier,
+};
 pub use self::{
     queue::{Pending, Queue},
     verify::{TokenVerifier, Verify},

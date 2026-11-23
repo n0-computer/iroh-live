@@ -46,7 +46,10 @@ use crate::{
 const RELAY_COST: u64 = 10;
 
 /// How to attach to a relay.
-#[derive(Debug, Clone)]
+///
+/// Its `Debug` output and the link's logs show [`url`](Self::url) without its
+/// query and fragment, which may hold a token.
+#[derive(derive_more::Debug, Clone)]
 #[non_exhaustive]
 pub struct RelayConfig {
     /// The relay to dial: `iroh://<endpoint-id>/<path>` or `https://host/<path>`.
@@ -54,6 +57,7 @@ pub struct RelayConfig {
     /// The path and query are the ones the session requests, such as a
     /// ticket the relay pulls. A `jwt` in the query is the connection
     /// credential, ahead of [`tokens`](Self::tokens).
+    #[debug("{}", redacted(url))]
     pub url: Url,
     /// The tokens the node presents to the relay, the first as the connection credential.
     ///
@@ -121,6 +125,7 @@ impl RelayConfig {
 
 /// The state of a relay link.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RelayStatus {
     /// Dialing for the first time.
     #[default]
@@ -129,8 +134,51 @@ pub enum RelayStatus {
     Connected,
     /// The session dropped, and the link redials with backoff.
     Reconnecting,
+    /// The relay refused the link's tokens, or closed its session over them.
+    ///
+    /// The relay refuses a link without a token it accepts, and closes a
+    /// session whose token expired or no longer verifies. A relay that only
+    /// renews a session, at its session length bound or after a key change
+    /// that changes the grant of a token that still verifies, sends a
+    /// GOAWAY instead: the link then dials a new session and reports no
+    /// refusal. The link keeps
+    /// redialing with backoff, since the relay's keys may change, and
+    /// presents the tokens set through [`RelayLink::tokens`]. The status
+    /// stays here until a session is up again. Only `iroh://` links report
+    /// it. An `https://` link reports [`Reconnecting`](Self::Reconnecting)
+    /// instead.
+    Refused(Refusal),
     /// The link was detached, or the node shut down.
     Detached,
+}
+
+/// Why a relay refused a link, as [`RelayStatus::Refused`] reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Refusal {
+    /// The relay does not admit the tokens, or a link without tokens.
+    ///
+    /// The token may be signed by a key the relay does not hold, or grant
+    /// too little, or the relay may admit only token holders.
+    Unauthorized,
+    /// A token expired. Set a fresh one through [`RelayLink::tokens`].
+    Expired,
+}
+
+impl Refusal {
+    /// Returns the refusal a MoQ error from the relay stands for, if it is one.
+    fn of(err: &moq_net::Error) -> Option<Self> {
+        match err {
+            moq_net::Error::Unauthorized
+            | moq_net::Error::Session(moq_net::SessionError::Unauthorized) => {
+                Some(Self::Unauthorized)
+            }
+            moq_net::Error::Expired | moq_net::Error::Session(moq_net::SessionError::Expired) => {
+                Some(Self::Expired)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A relay this node stays attached to.
@@ -164,6 +212,7 @@ pub struct RelayLink {
 #[derive(derive_more::Debug)]
 struct RelayInner {
     link: LinkId,
+    /// The relay's URL without its query and fragment, for logs.
     url: Url,
     status: Watchable<RelayStatus>,
     #[debug(skip)]
@@ -312,7 +361,7 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
             latest_sample: latest_sample.clone(),
         },
     )?;
-    let url = config.url.clone();
+    let url = redacted(&config.url);
     info!(%url, consume = config.consume, "attaching relay");
     let status = Watchable::new(RelayStatus::Connecting);
     let task = spawn_uplink(
@@ -351,6 +400,14 @@ pub(crate) fn attach(node: &Node, config: RelayConfig) -> Result<RelayLink, Erro
             tasks: Arc::downgrade(&node.tasks),
         }),
     })
+}
+
+/// Returns `url` without its query and fragment, which may hold a token, for logs.
+fn redacted(url: &Url) -> Url {
+    let mut url = url.clone();
+    url.set_query(None);
+    url.set_fragment(None);
+    url
 }
 
 /// Returns the endpoint id an `iroh://` relay URL names, or `None` for another scheme.
@@ -444,7 +501,7 @@ struct LinkParts {
 
 /// Spawns the task that runs a relay link's uplink.
 fn spawn_uplink(uplink: &Uplink, parts: LinkParts) -> tokio::task::JoinHandle<()> {
-    let span = info_span!("relay", url = %parts.config.url, link = %parts.link);
+    let span = info_span!("relay", url = %redacted(&parts.config.url), link = %parts.link);
     match uplink {
         Uplink::Iroh { relay, stop } => {
             tokio::spawn(iroh_uplink(parts, *relay, stop.clone()).instrument(span))
@@ -530,10 +587,11 @@ async fn tokio_uplink(
 /// Returns moq's connect policy for an iroh relay link.
 ///
 /// The link redials forever with backoff from [`REDIAL_MIN`] to
-/// [`REDIAL_MAX`]. An endpoint id names one node, so a GOAWAY that names no
-/// new address redials it once, which reaches a replacement started beside
-/// the draining process, and otherwise keeps the drained session until the
-/// relay closes it.
+/// [`REDIAL_MAX`]. A GOAWAY that names no new address redials the relay at
+/// once while the drained session serves, as a relay does that ends a
+/// session at its `--max-session` bound. A session drained before
+/// [`STABLE_SESSION`] instead serves until the relay closes it, so a relay
+/// that drains every session is not dialed in a loop.
 fn policy_config() -> reconnect::Config {
     let mut config = reconnect::Config::default();
     config.backoff.initial = REDIAL_MIN;
@@ -598,11 +656,19 @@ async fn iroh_uplink(parts: LinkParts, relay: EndpointId, stop: CancellationToke
         // Equal jitter, half the pause plus a random half, so relays that
         // dropped together do not redial together.
         let jittered = pause.mul_f64(jitter_factor());
-        match ended {
-            Ok(()) => info!(pause = ?jittered, "relay link ended, starting over"),
-            Err(err) => warn!(error = %err, pause = ?jittered, "relay link gave up, starting over"),
-        }
-        status.set(RelayStatus::Reconnecting).ok();
+        let refusal = match &ended {
+            Ok(()) => {
+                info!(pause = ?jittered, "relay link ended, starting over");
+                None
+            }
+            Err(err) => {
+                warn!(error = %err, pause = ?jittered, "relay link gave up, starting over");
+                err.refusal()
+            }
+        };
+        status
+            .set(refusal.map_or(RelayStatus::Reconnecting, RelayStatus::Refused))
+            .ok();
         tokio::select! {
             _ = stop.cancelled() => break,
             _ = shared.shutdown.cancelled() => break,
@@ -624,6 +690,16 @@ enum LinkFailure {
     Policy(reconnect::Failure),
     /// The relay could not be reached, or a redirect named no iroh relay.
     Dial(Error),
+}
+
+impl LinkFailure {
+    /// Returns the refusal this failure stands for, if the relay refused the handshake.
+    fn refusal(&self) -> Option<Refusal> {
+        match self {
+            Self::Moq(err) => Refusal::of(err),
+            Self::Policy(_) | Self::Dial(_) => None,
+        }
+    }
 }
 
 /// A session with the relay, as a dial hands it over.
@@ -704,16 +780,32 @@ impl IrohUplink {
                 Action::Migrating => info!("the relay sent a GOAWAY, migrating"),
                 Action::Retired => debug!("the drained relay session ended"),
                 Action::Offline(err) => {
-                    match err {
-                        Some(err) => warn!(error = %err, "relay session dropped, redialing"),
-                        None => warn!("relay session dropped, redialing"),
+                    let refusal = err.as_ref().and_then(LinkFailure::refusal);
+                    match (&err, refusal) {
+                        (Some(err), Some(_)) => {
+                            warn!(error = %err, "the relay closed the session for its tokens, redialing");
+                        }
+                        (Some(err), None) => {
+                            warn!(error = %err, "relay session dropped, redialing")
+                        }
+                        (None, _) => warn!("relay session dropped, redialing"),
                     }
                     self.offline();
-                    self.status.set(RelayStatus::Reconnecting).ok();
+                    let status = refusal.map_or(RelayStatus::Reconnecting, RelayStatus::Refused);
+                    self.status.set(status).ok();
                 }
                 Action::Retrying(err) => {
-                    warn!(error = %err, "relay dial failed, redialing");
-                    self.status.set(RelayStatus::Reconnecting).ok();
+                    let status = match err.refusal() {
+                        Some(refusal) => {
+                            warn!(error = %err, "the relay refused the link's tokens, redialing");
+                            RelayStatus::Refused(refusal)
+                        }
+                        None => {
+                            warn!(error = %err, "relay dial failed, redialing");
+                            RelayStatus::Reconnecting
+                        }
+                    };
+                    self.status.set(status).ok();
                 }
                 // Only a link that reports a fallback transport is asked to probe.
                 Action::Probe(_) | Action::Wait(_) => {}
@@ -801,14 +893,14 @@ async fn dial_relay(
 
 /// Judges a failed MoQ handshake the way moq-tokio judges its own dials.
 ///
-/// An auth rejection is the relay's answer for every address, so it settles
-/// the walk. Every other failure, a protocol violation included, is a failed
-/// dial that the walk retries.
+/// An auth rejection, of a token the relay refuses or one that expired, is
+/// the relay's answer for every address, so it settles the walk. Every other
+/// failure, a protocol violation included, is a failed dial that the walk
+/// retries.
 fn handshake_verdict(err: &moq_net::Error) -> Verdict {
-    match err {
-        moq_net::Error::Unauthorized
-        | moq_net::Error::Session(moq_net::SessionError::Unauthorized) => Verdict::Settled,
-        _ => Verdict::Retry,
+    match Refusal::of(err) {
+        Some(_) => Verdict::Settled,
+        None => Verdict::Retry,
     }
 }
 
@@ -860,6 +952,19 @@ mod tests {
     }
 
     #[test]
+    fn a_relay_url_is_logged_without_its_token() {
+        let id = SecretKey::generate().public();
+        let url: Url = format!("iroh://{id}/live?jwt=secret.token#jwt=other.secret")
+            .parse()
+            .expect("url");
+        assert_eq!(redacted(&url).as_str(), format!("iroh://{id}/live"));
+        let config = RelayConfig::new(url);
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("secret"), "{debug}");
+        assert!(debug.contains("/live"), "{debug}");
+    }
+
+    #[test]
     fn an_iroh_url_without_an_endpoint_id_is_invalid() {
         let url: Url = "iroh://relay.example/".parse().expect("url");
         let err = iroh_relay(&url).expect_err("no endpoint id");
@@ -880,7 +985,32 @@ mod tests {
     }
 
     #[test]
-    fn the_iroh_policy_redials_forever_and_hands_off_a_restart() {
+    fn a_refused_or_expired_token_settles_the_walk() {
+        for err in [
+            moq_net::Error::Unauthorized,
+            moq_net::Error::Expired,
+            moq_net::Error::Session(moq_net::SessionError::Unauthorized),
+            moq_net::Error::Session(moq_net::SessionError::Expired),
+        ] {
+            assert_eq!(handshake_verdict(&err), Verdict::Settled, "{err}");
+        }
+        assert_eq!(
+            handshake_verdict(&moq_net::Error::ProtocolViolation),
+            Verdict::Retry
+        );
+        assert_eq!(
+            LinkFailure::Moq(moq_net::Error::Expired).refusal(),
+            Some(Refusal::Expired)
+        );
+        assert_eq!(
+            LinkFailure::Moq(moq_net::Error::Unauthorized).refusal(),
+            Some(Refusal::Unauthorized)
+        );
+        assert_eq!(LinkFailure::Moq(moq_net::Error::Timeout).refusal(), None);
+    }
+
+    #[test]
+    fn the_iroh_policy_redials_forever_and_hands_off_after_a_goaway() {
         let config = policy_config();
         assert_eq!(config.backoff.timeout, None, "gives up after a while");
         assert_eq!(config.backoff.initial, REDIAL_MIN);

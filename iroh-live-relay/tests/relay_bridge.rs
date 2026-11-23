@@ -13,12 +13,12 @@ use iroh_live::{
     media::{PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition, VideoSource, video},
 };
 use iroh_live_node::{
-    Audience, Error, LinkKind, Reach, RelayConfig, RelayStatus,
+    Audience, Error, LinkKind, Reach, Refusal, RelayConfig, RelayStatus,
     test_util::{TIMEOUT, TestNode, announcement, endpoint, lookup, retracted, step},
 };
-use iroh_live_relay::pull::{Access, Client};
+use iroh_live_relay::{Config, pull::Client};
 use moq_auth::{Algorithm, Claims, Key, KeySet};
-use moq_ext_access::policy::Verify;
+use moq_ext_access::policy::{Chain, Expires, MoqCapability};
 use moq_net::origin;
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
@@ -107,14 +107,7 @@ impl TestRelay {
     /// A session that names a ticket in its path pulls the ticket's broadcast,
     /// token or not, as `--open-pulls` does.
     async fn start_pulling() -> Self {
-        Self::start_with(
-            true,
-            Some(Access::Open),
-            None,
-            None,
-            iroh::SecretKey::generate(),
-        )
-        .await
+        Self::start_with(true, Some(true), None, None, iroh::SecretKey::generate()).await
     }
 
     /// Starts a relay as [`start_keyed`](Self::start_keyed) does, which pulls for a token holder.
@@ -123,7 +116,7 @@ impl TestRelay {
     async fn start_keyed_pulling(keys: KeySet) -> Self {
         Self::start_with(
             true,
-            Some(Access::Authorized),
+            Some(false),
             None,
             Some(keys),
             iroh::SecretKey::generate(),
@@ -151,15 +144,73 @@ impl TestRelay {
 
     /// Starts a relay with the given options.
     ///
-    /// With `pulls`, the shipped admission pulls the tickets sessions name, for the sessions it lets.
-    /// With `port`, QUIC and the web listener bind that port, else QUIC binds any.
-    /// With `keys`, the shipped admission and the iroh sessions verify JWTs.
-    /// The relay's iroh endpoint id is the one of `secret_key`.
+    /// With `shipped`, the relay decides sessions as `iroh_live_relay::run`
+    /// does, from a [`Config`] that verifies JWTs with `keys` if set, and is
+    /// open otherwise. Without it, the relay lets anyone publish anywhere.
+    /// With `pulls`, the shipped admission pulls the tickets sessions name,
+    /// for the sessions it lets, with open pulls if it is `true`. With `port`, QUIC and the web listener bind
+    /// that port, else QUIC binds any. The relay's iroh endpoint id is the
+    /// one of `secret_key`.
     async fn start_with(
         shipped: bool,
-        pulls: Option<Access>,
+        pulls: Option<bool>,
         port: Option<u16>,
         keys: Option<KeySet>,
+        secret_key: iroh::SecretKey,
+    ) -> Self {
+        let keys_file = keys.as_ref().map(KeysFile::new);
+        let config = shipped.then(|| {
+            let mut config = Config::default();
+            config.auth_key = keys_file.as_ref().map(|file| file.0.clone());
+            config
+        });
+        Self::start_from(config, pulls, port, keys_file, secret_key).await
+    }
+
+    /// Starts a relay that decides sessions as `iroh_live_relay::run` does with `config`.
+    async fn start_config(config: Config, pulls: Option<bool>) -> Self {
+        Self::start_from(Some(config), pulls, None, None, iroh::SecretKey::generate()).await
+    }
+
+    /// Starts a relay as [`start_config`](Self::start_config) does, with HTTP.
+    ///
+    /// The relay serves moq-relay's HTTP routes, such as `/announced`, at
+    /// [`http_url`](Self::http_url).
+    async fn start_config_http(config: Config) -> Self {
+        Self::start_from(
+            Some(config),
+            None,
+            Some(free_port()),
+            None,
+            iroh::SecretKey::generate(),
+        )
+        .await
+    }
+
+    /// Starts a relay as [`start_config`](Self::start_config) does, which verifies JWTs with `keys`.
+    ///
+    /// `config` gets `--auth-key` for a file of `keys`, which the relay holds.
+    async fn start_config_keyed(keys: &KeySet, mut config: Config, pulls: Option<bool>) -> Self {
+        let file = KeysFile::new(keys);
+        config.auth_key = Some(file.0.clone());
+        Self::start_from(
+            Some(config),
+            pulls,
+            None,
+            Some(file),
+            iroh::SecretKey::generate(),
+        )
+        .await
+    }
+
+    /// Starts a relay with the policies of `config`, or one that admits anyone without it.
+    ///
+    /// `keys_file` is held for the relay's lifetime, for a test to rotate.
+    async fn start_from(
+        config: Option<Config>,
+        pulls: Option<bool>,
+        port: Option<u16>,
+        keys_file: Option<KeysFile>,
         secret_key: iroh::SecretKey,
     ) -> Self {
         let alpns = moq_transport_iroh::alpns()
@@ -178,18 +229,17 @@ impl TestRelay {
         lookup().add_endpoint_info(iroh.addr());
         let iroh_id = iroh.id();
 
-        let mut config = moq_relay::Config::default();
+        let mut relay_config = moq_relay::Config::default();
         let bind = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port.unwrap_or(0)));
-        config.listen.bind = Some(moq_tokio::listen::Bind::Addr(bind));
+        relay_config.listen.bind = Some(moq_tokio::listen::Bind::Addr(bind));
         if port.is_some() {
-            config.web.http.listen = Some(bind);
+            relay_config.web.http.listen = Some(bind);
         }
-        config.listen.tls.generate = vec!["localhost".into()];
-        if !shipped {
-            config.auth.public = vec![moq_net::Pattern::all()];
+        relay_config.listen.tls.generate = vec!["localhost".into()];
+        if config.is_none() {
+            relay_config.auth.public = vec![moq_net::Pattern::all()];
         }
-        let keys_file = keys.as_ref().map(KeysFile::new);
-        let mut relay = moq_relay::Relay::load(config)
+        let mut relay = moq_relay::Relay::load(relay_config)
             .await
             .expect("load relay")
             .with_signals(false);
@@ -198,35 +248,22 @@ impl TestRelay {
 
         // moq-tokio's server has no iroh backend, so iroh clients always come
         // in through a handler: the shipped admission, or one that admits all.
-        let (iroh_router, admit_task) = if shipped {
-            let pulls = pulls.map(|access| {
+        let (iroh_router, admit_task) = if let Some(config) = config {
+            // The composition `iroh_live_relay::run` uses.
+            let policies = config.policies().expect("a valid access config");
+            let pulls = pulls.map(|open| {
                 iroh_live_relay::pull::Pulls::new(iroh.clone(), cluster.clone())
                     .with_linger(PULL_LINGER)
-                    .with_access(access)
+                    .with_open_pulls(open)
             });
-            // As the shipped relay does: a browser session that names a
-            // ticket reads the pulled broadcast at that name.
             let admissions = relay.admissions().expect("no auth source configured");
-            let source = keys_file
-                .as_ref()
-                .map(|file| moq_auth::serve::Keys::Set(file.0.clone()));
             let admit_task = AbortOnDropHandle::new(tokio::spawn(iroh_live_relay::admit(
                 admissions,
                 pulls.clone(),
-                source,
+                policies.browsers.clone().expect("no auth server"),
             )));
-            let mut sessions = iroh_live_relay::IrohSessions::new(cluster.clone(), pulls);
-            if let Some(file) = &keys_file {
-                // As `iroh_live_relay::run` does: the key file, read again when it changes.
-                let verifier = iroh_live_relay::KeyFile::load(&file.0).expect("reads the keys");
-                sessions = sessions
-                    .with_policy(
-                        Verify::new(verifier.clone())
-                            .with_fallback(iroh_live_relay::relay_policy()),
-                    )
-                    .with_pull_policy(Verify::new(verifier));
-            }
-            let router = sessions
+            let router = iroh_live_relay::IrohSessions::new(cluster.clone(), pulls)
+                .with_policies(&policies)
                 .mount(iroh::protocol::Router::builder(iroh))
                 .spawn();
             (router, Some(admit_task))
@@ -1740,12 +1777,26 @@ fn signing_keys() -> KeySet {
     }
 }
 
+/// Signs `claims` with `keys`, expiring in an hour unless the claims set an expiry.
+///
+/// A private relay refuses tokens that never expire.
+fn signed(keys: &KeySet, mut claims: Claims) -> String {
+    if claims.expires.is_none() {
+        claims.expires = Some(
+            (std::time::SystemTime::now() + Duration::from_secs(3600))
+                .try_into()
+                .expect("after 1970"),
+        );
+    }
+    keys.sign(&claims).expect("signed")
+}
+
 /// Signs a token that lets its holder publish under `prefix/` and read everything.
 fn token_for(keys: &KeySet, prefix: &str) -> String {
     let claims = Claims::default()
         .with_publish([format!("{prefix}/**").parse().expect("a pattern")])
         .with_subscribe([moq_net::Pattern::all()]);
-    keys.sign(&claims).expect("signed")
+    signed(keys, claims)
 }
 
 /// Attaches `node` to `relay` with `token`.
@@ -1799,9 +1850,10 @@ async fn an_iroh_url_presents_the_token_in_its_query() {
     holder.shutdown().await;
 }
 
-/// With a key, an iroh client's valid token decides what it publishes.
+/// With a key, an iroh client's valid token decides what it publishes, and nothing more.
 ///
-/// A client without a token keeps the relay's rule.
+/// The relay is private, so a client without a token is refused, own paths
+/// included.
 #[tokio::test]
 async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1826,10 +1878,10 @@ async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
     assert!(
         !routed_soon(&relay.cluster.origin, own.path().as_str()).await,
-        "the token replaced the relay's rule, so the client's own path is outside it"
+        "without --auth-own-paths, the token grants only what it states"
     );
 
-    // Without a token, the relay's own rule applies.
+    // Without a token, a private relay refuses the client.
     let (_plain_endpoint, plain) = relay_node().await;
     let plain_own = plain
         .publish(
@@ -1845,7 +1897,7 @@ async fn an_iroh_client_with_a_valid_token_publishes_where_it_allows() {
         .expect("publish");
     let _plain_tokens = counter(plain_tokens.broadcast(), 0);
     let _plain_link = attach_with_token(&plain, &relay, None);
-    routed(&relay.cluster.origin.consume(), plain_own.path().as_str()).await;
+    assert!(!routed_soon(&relay.cluster.origin, plain_own.path().as_str()).await);
     assert!(!routed_soon(&relay.cluster.origin, "tokens/screen").await);
 
     holder.shutdown().await;
@@ -2008,7 +2060,7 @@ async fn an_iroh_clients_session_closes_when_its_token_expires() {
     let _ = tracing_subscriber::fmt::try_init();
     let keys = signing_keys();
     let relay = TestRelay::start_keyed(keys.clone()).await;
-    let token = expiring_token(&keys, Duration::from_secs(2));
+    let token = expiring_token(&keys, Duration::from_secs(5));
 
     let (_endpoint, holder) = relay_node().await;
     let cam = holder
@@ -2016,11 +2068,12 @@ async fn an_iroh_clients_session_closes_when_its_token_expires() {
         .expect("publish");
     let _cam = counter(cam.broadcast(), 0);
     let mut updates = relay.cluster.origin.consume().announced();
-    let _link = attach_with_token(&holder, &relay, Some(token));
+    let link = attach_with_token(&holder, &relay, Some(token));
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
     // The redial presents the same expired token, which the relay refuses.
     retracted(&mut updates, "tokens/cam").await;
     assert!(!routed_soon(&relay.cluster.origin, "tokens/cam").await);
+    status_becomes(&link, RelayStatus::Refused(Refusal::Expired)).await;
 
     holder.shutdown().await;
 }
@@ -2041,7 +2094,7 @@ async fn a_relay_link_presents_a_fresh_token_when_it_redials() {
     let _cam = counter(cam.broadcast(), 0);
     let mut updates = relay.cluster.origin.consume().announced();
     // The first token expires, so the relay closes the session.
-    let first = expiring_token(&keys, Duration::from_secs(2));
+    let first = expiring_token(&keys, Duration::from_secs(5));
     let link = attach_with_token(&holder, &relay, Some(first));
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
     let fresh = token_for(&keys, "tokens").parse().expect("not empty");
@@ -2065,7 +2118,7 @@ async fn an_https_relay_link_presents_a_fresh_token() {
         .publish("tokens/cam", Audience::Granted)
         .expect("publish");
     let _cam = counter(cam.broadcast(), 0);
-    let first = expiring_token(&keys, Duration::from_secs(2));
+    let first = expiring_token(&keys, Duration::from_secs(5));
     let link = connected(
         &holder,
         RelayConfig::new(relay.http_url()).with_token(first.parse().expect("not empty")),
@@ -2075,7 +2128,7 @@ async fn an_https_relay_link_presents_a_fresh_token() {
     let fresh = token_for(&keys, "tokens").parse().expect("not empty");
     link.tokens().set(vec![fresh]);
     // Past the first token's expiry, the relay still routes the broadcast.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
     routed(&relay.cluster.origin.consume(), "tokens/cam").await;
     assert_eq!(link.status().get(), RelayStatus::Connected);
 
@@ -2120,9 +2173,9 @@ async fn a_relay_link_waits_for_a_relay_that_is_down_at_attach() {
     holder.shutdown().await;
 }
 
-/// With a key, a browser without a token keeps the public rule: names of one segment only.
+/// With a key and no public patterns, a browser without a token is refused.
 #[tokio::test]
-async fn a_browser_without_a_token_keeps_the_public_rule_under_a_key() {
+async fn a_private_relay_refuses_anonymous_browsers() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start_keyed(signing_keys()).await;
 
@@ -2133,17 +2186,18 @@ async fn a_browser_without_a_token_keeps_the_public_rule_under_a_key() {
     let _studio = browser
         .route("studio/cam", origin::RouteOptions::default())
         .expect("broadcast");
-    let _session = established(
-        noq_client()
-            .with_publisher(browser.consume())
-            .connect(relay.url()),
-    )
-    .await;
-    routed(&relay.cluster.origin.consume(), "screen").await;
-    assert!(
-        !routed_soon(&relay.cluster.origin, "studio/cam").await,
-        "a session without a token published two segments"
-    );
+    let connection = noq_client()
+        .with_publisher(browser.consume())
+        .connect(relay.url());
+    // The client's half of the handshake may complete before the refusal.
+    // Held, since dropping the connection would close the session.
+    let _session = tokio::time::timeout(TIMEOUT, connection.established()).await;
+    for path in ["screen", "studio/cam"] {
+        assert!(
+            !routed_soon(&relay.cluster.origin, path).await,
+            "a session without a token published {path}"
+        );
+    }
     drop(browser);
 }
 
@@ -2151,7 +2205,7 @@ async fn a_browser_without_a_token_keeps_the_public_rule_under_a_key() {
 fn reader_token(keys: &KeySet, prefix: &str) -> String {
     let claims =
         Claims::default().with_subscribe([format!("{prefix}/**").parse().expect("a pattern")]);
-    keys.sign(&claims).expect("signed")
+    signed(keys, claims)
 }
 
 /// Dials `relay` as a browser at the ticket `name`, with `token` if set, and holds the connection.
@@ -2235,7 +2289,7 @@ async fn an_iroh_client_pulls_under_a_key_only_with_a_token() {
         .parse()
         .expect("a valid URL");
     let everything = Claims::default().with_subscribe([moq_net::Pattern::all()]);
-    let token = keys.sign(&everything).expect("signed");
+    let token = signed(&keys, everything);
     let config = RelayConfig::new(url).with_token(token.parse().expect("not empty"));
     let _holder = holder.attach_relay(config).expect("attach");
     assert!(
@@ -2256,14 +2310,8 @@ async fn an_iroh_client_pulls_under_a_key_only_with_a_token() {
 #[tokio::test]
 async fn an_iroh_client_pulls_nothing_from_a_relay_without_a_key() {
     let _ = tracing_subscriber::fmt::try_init();
-    let relay = TestRelay::start_with(
-        true,
-        Some(Access::Authorized),
-        None,
-        None,
-        iroh::SecretKey::generate(),
-    )
-    .await;
+    let relay =
+        TestRelay::start_with(true, Some(false), None, None, iroh::SecretKey::generate()).await;
     let (publisher, broadcast, ticket) = start_publisher("guarded").await;
     let name = ticket.to_string();
 
@@ -2280,4 +2328,703 @@ async fn an_iroh_client_pulls_nothing_from_a_relay_without_a_key() {
     client.shutdown().await;
     drop(broadcast);
     publisher.shutdown().await;
+}
+
+/// Returns the config of a relay with a public area: sessions without a token read and publish `demo/**`.
+fn public_area() -> Config {
+    let mut config = Config::default();
+    config.auth_public = vec!["demo/**".parse().expect("a pattern")];
+    config
+}
+
+/// Returns the config of a private relay that verifies the chains `principal` issued.
+fn principal_config(principal: &iroh::SecretKey) -> Config {
+    let mut config = Config::default();
+    config.rcan_principals = vec![iroh_live_relay::RcanPrincipal::new(principal.public())];
+    config
+}
+
+/// Returns a capability that reads everything on the relay, as a membership does.
+fn membership() -> MoqCapability {
+    MoqCapability::new("").with_subscribe(moq_net::Pattern::all())
+}
+
+/// Returns a chain from `principal` through a fresh account key to `device`, carrying `capability`.
+///
+/// The device link expires `ttl` from now, the account's link in an hour.
+fn delegated_chain(
+    principal: &iroh::SecretKey,
+    device: iroh::EndpointId,
+    capability: MoqCapability,
+    ttl: Duration,
+) -> String {
+    let account = iroh::SecretKey::generate();
+    Chain::issue(
+        principal.as_signing_key(),
+        account.public().as_verifying_key(),
+        capability,
+        Expires::valid_for(Duration::from_secs(3600)),
+    )
+    .delegate(
+        account.as_signing_key(),
+        device.as_verifying_key(),
+        None,
+        Expires::valid_for(ttl),
+    )
+    .expect("the account holds the chain")
+    .to_token()
+}
+
+/// Publishes a counter at `node`'s own path `live/<id>/<name>` and returns the path.
+fn publish_own(node: &iroh_live::Node, name: &str) -> (String, Box<dyn std::any::Any>) {
+    let publication = node
+        .publish(
+            LiveLayout::default().path(node.id(), name).expect("a path"),
+            Audience::Granted,
+        )
+        .expect("publish");
+    let path = publication.path().to_string();
+    let counter = counter(publication.broadcast(), 0);
+    (path, Box::new((publication, counter)))
+}
+
+/// Publishes a counter at `path` and returns what keeps it alive.
+fn publish_at(node: &iroh_live::Node, path: &str) -> Box<dyn std::any::Any> {
+    let publication = node.publish(path, Audience::Granted).expect("publish");
+    let counter = counter(publication.broadcast(), 0);
+    Box::new((publication, counter))
+}
+
+/// Waits until `link` reports `status`.
+async fn status_becomes(link: &iroh_live_node::RelayLink, status: RelayStatus) {
+    let mut watcher = link.status();
+    step(
+        &format!("the relay link never reported {status:?}"),
+        async {
+            while watcher.get() != status {
+                watcher.updated().await.expect("link gone");
+            }
+        },
+    )
+    .await;
+}
+
+/// Reports whether `node` subscribes to `path` through its relays within two seconds.
+async fn reads_soon(node: &iroh_live::Node, path: &str) -> bool {
+    tokio::time::timeout(Duration::from_secs(2), node.subscribe(path, Reach::Relays))
+        .await
+        .is_ok_and(|subscription| subscription.is_ok())
+}
+
+/// A private relay refuses an iroh client without a token, own paths included, and the link says so.
+#[tokio::test]
+async fn a_private_relay_refuses_anonymous_iroh_clients() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_keyed(signing_keys()).await;
+    let (_endpoint, client) = relay_node().await;
+    let (own, _own) = publish_own(&client, "cam");
+    let link = attach_with_token(&client, &relay, None);
+    status_becomes(&link, RelayStatus::Refused(Refusal::Unauthorized)).await;
+    assert!(!routed_soon(&relay.cluster.origin, &own).await);
+    client.shutdown().await;
+}
+
+/// A private relay with a public area gives sessions without a token exactly that area.
+#[tokio::test]
+async fn a_public_area_serves_sessions_without_a_token() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_config_keyed(&signing_keys(), public_area(), None).await;
+
+    let (_publisher_endpoint, publisher) = relay_node().await;
+    let _stage = publish_at(&publisher, "demo/stage");
+    let (own, _own) = publish_own(&publisher, "cam");
+    let _publisher_link = connected(&publisher, RelayConfig::iroh(relay.iroh_id)).await;
+    routed(&relay.cluster.origin.consume(), "demo/stage").await;
+    assert!(
+        !routed_soon(&relay.cluster.origin, &own).await,
+        "a client without a token published at its own path"
+    );
+
+    // A browser without a token publishes in the area only, and reads it.
+    let browser = moq_tokio::origin::spawn();
+    let _area = browser
+        .route("demo/browser", origin::RouteOptions::default())
+        .expect("broadcast");
+    let _outside = browser
+        .route("screen", origin::RouteOptions::default())
+        .expect("broadcast");
+    let reader = moq_tokio::origin::spawn();
+    let _session = established(
+        noq_client()
+            .with_publisher(browser.consume())
+            .with_subscriber(reader.clone())
+            .connect(relay.url()),
+    )
+    .await;
+    routed(&relay.cluster.origin.consume(), "demo/browser").await;
+    assert!(!routed_soon(&relay.cluster.origin, "screen").await);
+    announced_at(&reader, "demo/stage").await;
+
+    // An iroh reader without a token reads the area and nothing else.
+    let (_reader_endpoint, viewer) = relay_node().await;
+    let _viewer_link = connected(&viewer, RelayConfig::iroh(relay.iroh_id)).await;
+    assert!(reads_soon(&viewer, "demo/stage").await);
+    assert!(!reads_soon(&viewer, &own).await);
+
+    publisher.shutdown().await;
+    viewer.shutdown().await;
+}
+
+/// `--auth-public-own-paths` lets an iroh client without a token publish at its own paths, and read nothing more.
+#[tokio::test]
+async fn public_own_paths_admit_publishing_and_no_reads() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let mut config = Config::default();
+    config.auth_public_own_paths = true;
+    let relay = TestRelay::start_config_keyed(&keys, config, None).await;
+
+    let (_endpoint, client) = relay_node().await;
+    let (own, _own) = publish_own(&client, "cam");
+    let _elsewhere = publish_at(&client, "demo/cam");
+    let _link = connected(&client, RelayConfig::iroh(relay.iroh_id)).await;
+    routed(&relay.cluster.origin.consume(), &own).await;
+    assert!(!routed_soon(&relay.cluster.origin, "demo/cam").await);
+
+    // A token holder's broadcast stays out of the anonymous client's reach.
+    let (_holder_endpoint, holder) = relay_node().await;
+    let _held = publish_at(&holder, "tokens/cam");
+    let _holder_link = attach_with_token(&holder, &relay, Some(token_for(&keys, "tokens")));
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    assert!(!reads_soon(&client, "tokens/cam").await);
+
+    client.shutdown().await;
+    holder.shutdown().await;
+}
+
+/// A subscribe-only token publishes at the client's own paths only under `--auth-own-paths`.
+#[tokio::test]
+async fn a_reader_token_publishes_at_own_paths_only_when_the_relay_allows_it() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    for own_paths in [false, true] {
+        let mut config = Config::default();
+        config.auth_own_paths = own_paths;
+        let relay = TestRelay::start_config_keyed(&keys, config, None).await;
+        let (_endpoint, client) = relay_node().await;
+        let (own, _own) = publish_own(&client, "cam");
+        let _other = publish_at(&client, "tokens/cam");
+        let link = attach_with_token(&client, &relay, Some(reader_token(&keys, "live")));
+        status_becomes(&link, RelayStatus::Connected).await;
+        assert_eq!(
+            routed_soon(&relay.cluster.origin, &own).await,
+            own_paths,
+            "own paths with --auth-own-paths {own_paths}"
+        );
+        assert!(!routed_soon(&relay.cluster.origin, "tokens/cam").await);
+        client.shutdown().await;
+    }
+}
+
+/// A token that never expires is refused unless the relay allows it, for iroh clients and browsers.
+#[tokio::test]
+async fn a_token_that_never_expires_is_refused_unless_allowed() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let claims = Claims::default()
+        .with_publish(["tokens/**".parse().expect("a pattern")])
+        .with_subscribe([moq_net::Pattern::all()]);
+    let forever = keys.sign(&claims).expect("signed");
+    for allowed in [false, true] {
+        let mut config = Config::default();
+        config.allow_unexpiring_tokens = allowed;
+        let relay = TestRelay::start_config_keyed(&keys, config, None).await;
+        let (_endpoint, client) = relay_node().await;
+        let _cam = publish_at(&client, "tokens/cam");
+        let _link = attach_with_token(&client, &relay, Some(forever.clone()));
+        assert_eq!(
+            routed_soon(&relay.cluster.origin, "tokens/cam").await,
+            allowed,
+            "an iroh client with --allow-unexpiring-tokens {allowed}"
+        );
+
+        let browser = moq_tokio::origin::spawn();
+        let _screen = browser
+            .route("tokens/screen", origin::RouteOptions::default())
+            .expect("broadcast");
+        let mut url = relay.url();
+        url.query_pairs_mut().append_pair("jwt", &forever);
+        let connection = noq_client().with_publisher(browser.consume()).connect(url);
+        let _session = tokio::time::timeout(TIMEOUT, connection.established()).await;
+        assert_eq!(
+            routed_soon(&relay.cluster.origin, "tokens/screen").await,
+            allowed,
+            "a browser with --allow-unexpiring-tokens {allowed}"
+        );
+        client.shutdown().await;
+    }
+}
+
+/// A device with a delegated chain pushes at its own path and reads another member's broadcast.
+///
+/// This is also the end-to-end test of an `rcan1:` token on a relay link.
+#[tokio::test]
+async fn a_delegated_chain_admits_an_iroh_client_to_a_private_relay() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let team = iroh::SecretKey::generate();
+    let mut config = principal_config(&team);
+    config.auth_own_paths = true;
+    let relay = TestRelay::start_config(config, None).await;
+
+    let (_camera_endpoint, camera) = relay_node().await;
+    let (own, _own) = publish_own(&camera, "cam");
+    let chain = delegated_chain(&team, camera.id(), membership(), Duration::from_secs(600));
+    let _camera_link = attach_with_token(&camera, &relay, Some(chain));
+    routed(&relay.cluster.origin.consume(), &own).await;
+
+    let (_viewer_endpoint, viewer) = relay_node().await;
+    let chain = delegated_chain(&team, viewer.id(), membership(), Duration::from_secs(600));
+    let _viewer_link = attach_with_token(&viewer, &relay, Some(chain));
+    assert!(reads_soon(&viewer, &own).await, "a member could not read");
+
+    camera.shutdown().await;
+    viewer.shutdown().await;
+}
+
+/// A chain is bound to the endpoint its last link names, so another endpoint cannot present it.
+#[tokio::test]
+async fn a_chain_presented_by_another_endpoint_is_refused() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let team = iroh::SecretKey::generate();
+    let relay = TestRelay::start_config(principal_config(&team), None).await;
+    let (_endpoint, thief) = relay_node().await;
+    let stolen = delegated_chain(
+        &team,
+        iroh::SecretKey::generate().public(),
+        membership(),
+        Duration::from_secs(600),
+    );
+    let link = attach_with_token(&thief, &relay, Some(stolen));
+    status_becomes(&link, RelayStatus::Refused(Refusal::Unauthorized)).await;
+    thief.shutdown().await;
+}
+
+/// A principal limited to a root admits no chain whose capability lies outside it.
+#[tokio::test]
+async fn a_chain_outside_its_principals_root_is_refused() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let team = iroh::SecretKey::generate();
+    let mut config = Config::default();
+    config.rcan_principals =
+        vec![iroh_live_relay::RcanPrincipal::new(team.public()).with_root("spaces/team")];
+    let relay = TestRelay::start_config(config, None).await;
+
+    let (_endpoint, outsider) = relay_node().await;
+    let chain = delegated_chain(&team, outsider.id(), membership(), Duration::from_secs(600));
+    let link = attach_with_token(&outsider, &relay, Some(chain));
+    status_becomes(&link, RelayStatus::Refused(Refusal::Unauthorized)).await;
+
+    // Inside the root, the same principal's chain admits.
+    let (_member_endpoint, member) = relay_node().await;
+    let space = MoqCapability::new("spaces/team")
+        .with_subscribe(moq_net::Pattern::all())
+        .with_publish(moq_net::Pattern::all());
+    let _cam = publish_at(&member, "spaces/team/cam");
+    let chain = delegated_chain(&team, member.id(), space, Duration::from_secs(600));
+    let _member_link = attach_with_token(&member, &relay, Some(chain));
+    routed(&relay.cluster.origin.consume(), "spaces/team/cam").await;
+
+    outsider.shutdown().await;
+    member.shutdown().await;
+}
+
+/// A relay with a key file and a principal admits an iroh client with either kind of token.
+#[tokio::test]
+async fn a_relay_with_a_key_and_a_principal_takes_either() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let team = iroh::SecretKey::generate();
+    let relay = TestRelay::start_config_keyed(&keys, principal_config(&team), None).await;
+
+    let (_jwt_endpoint, jwt_holder) = relay_node().await;
+    let _jwt_cam = publish_at(&jwt_holder, "tokens/jwt");
+    let _jwt_link = attach_with_token(&jwt_holder, &relay, Some(token_for(&keys, "tokens")));
+    routed(&relay.cluster.origin.consume(), "tokens/jwt").await;
+
+    let (_chain_endpoint, chain_holder) = relay_node().await;
+    let _chain_cam = publish_at(&chain_holder, "tokens/chain");
+    let capability = MoqCapability::new("tokens").with_publish(moq_net::Pattern::all());
+    let chain = delegated_chain(
+        &team,
+        chain_holder.id(),
+        capability,
+        Duration::from_secs(600),
+    );
+    let _chain_link = attach_with_token(&chain_holder, &relay, Some(chain));
+    routed(&relay.cluster.origin.consume(), "tokens/chain").await;
+
+    jwt_holder.shutdown().await;
+    chain_holder.shutdown().await;
+}
+
+/// A browser cannot present a chain: it has no key the relay could check it against.
+#[tokio::test]
+async fn a_browser_with_a_chain_is_refused() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let team = iroh::SecretKey::generate();
+    let mut config = principal_config(&team);
+    config.auth_public_subscribe = vec!["demo/**".parse().expect("a pattern")];
+    let relay = TestRelay::start_config(config, None).await;
+    let browser = moq_tokio::origin::spawn();
+    let _cam = browser
+        .route("tokens/cam", origin::RouteOptions::default())
+        .expect("broadcast");
+    let capability = MoqCapability::new("tokens").with_publish(moq_net::Pattern::all());
+    let chain = delegated_chain(
+        &team,
+        iroh::SecretKey::generate().public(),
+        capability,
+        Duration::from_secs(600),
+    );
+    let mut url = relay.url();
+    url.query_pairs_mut().append_pair("jwt", &chain);
+    let connection = noq_client().with_publisher(browser.consume()).connect(url);
+    let _session = tokio::time::timeout(TIMEOUT, connection.established()).await;
+    assert!(!routed_soon(&relay.cluster.origin, "tokens/cam").await);
+}
+
+/// A chain's session closes when its device link expires, and a redial with the same chain is refused.
+#[tokio::test]
+async fn an_expired_chain_closes_the_session() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let team = iroh::SecretKey::generate();
+    let relay = TestRelay::start_config(principal_config(&team), None).await;
+    let (_endpoint, device) = relay_node().await;
+    let _cam = publish_at(&device, "tokens/cam");
+    let capability = MoqCapability::new("tokens").with_publish(moq_net::Pattern::all());
+    let chain = delegated_chain(&team, device.id(), capability, Duration::from_secs(5));
+    let mut updates = relay.cluster.origin.consume().announced();
+    let link = attach_with_token(&device, &relay, Some(chain));
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    retracted(&mut updates, "tokens/cam").await;
+    status_becomes(&link, RelayStatus::Refused(Refusal::Expired)).await;
+    device.shutdown().await;
+}
+
+/// A live iroh session whose token the rotated key file no longer verifies closes within seconds.
+#[tokio::test]
+async fn a_key_file_change_closes_sessions_whose_token_no_longer_verifies() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let old = signing_keys();
+    let relay = TestRelay::start_keyed(old.clone()).await;
+    let (_endpoint, holder) = relay_node().await;
+    let _cam = publish_at(&holder, "tokens/cam");
+    let mut updates = relay.cluster.origin.consume().announced();
+    let link = attach_with_token(&holder, &relay, Some(token_for(&old, "tokens")));
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+
+    // A key file written again with the same key keeps the session.
+    let file = relay.keys_file.as_ref().expect("keyed");
+    file.rotate(&old);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(link.status().get(), RelayStatus::Connected);
+
+    file.rotate(&signing_keys());
+    retracted(&mut updates, "tokens/cam").await;
+    status_becomes(&link, RelayStatus::Refused(Refusal::Unauthorized)).await;
+    holder.shutdown().await;
+}
+
+/// A session with a token lasts at most `--max-session`, and the client gets back in with the same token.
+///
+/// The relay asks the client to reconnect, so the link never reports a refusal.
+#[tokio::test]
+async fn a_token_session_lasts_at_most_max_session() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let mut config = Config::default();
+    config.max_session = Duration::from_secs(2);
+    let relay = TestRelay::start_config_keyed(&keys, config, None).await;
+    let (_endpoint, holder) = relay_node().await;
+    let _cam = publish_at(&holder, "tokens/cam");
+    let mut updates = relay.cluster.origin.consume().announced();
+    let link = attach_with_token(&holder, &relay, Some(token_for(&keys, "tokens")));
+    let statuses = record_statuses(&link);
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    retracted(&mut updates, "tokens/cam").await;
+    // The token still verifies, so the redial gets back in.
+    routed(&relay.cluster.origin.consume(), "tokens/cam").await;
+    status_becomes(&link, RelayStatus::Connected).await;
+    let seen = statuses.seen();
+    assert!(
+        !seen
+            .iter()
+            .any(|status| matches!(status, RelayStatus::Refused(_))),
+        "a session at its max-session bound looked like a refusal: {seen:?}"
+    );
+    holder.shutdown().await;
+}
+
+/// Every status a relay link reported, recorded while it lives.
+struct Statuses {
+    seen: Arc<std::sync::Mutex<Vec<RelayStatus>>>,
+    _task: AbortOnDropHandle<()>,
+}
+
+impl Statuses {
+    /// Returns the statuses recorded so far.
+    fn seen(&self) -> Vec<RelayStatus> {
+        self.seen.lock().expect("poisoned").clone()
+    }
+}
+
+/// Starts recording every status `link` reports.
+fn record_statuses(link: &iroh_live_node::RelayLink) -> Statuses {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut watcher = link.status();
+    let record = seen.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            record.lock().expect("poisoned").push(watcher.get());
+            if watcher.updated().await.is_err() {
+                return;
+            }
+        }
+    });
+    Statuses {
+        seen,
+        _task: AbortOnDropHandle::new(task),
+    }
+}
+
+/// Returns a token that reads exactly `path` and publishes `publish`, if set.
+fn exact_reader_token(keys: &KeySet, path: &str, publish: Option<&str>) -> String {
+    let mut claims = Claims::default().with_subscribe([path.parse().expect("a pattern")]);
+    if let Some(publish) = publish {
+        claims = claims.with_publish([publish.parse().expect("a pattern")]);
+    }
+    signed(keys, claims)
+}
+
+/// Attaches `node` to `relay` at the ticket `name`, with `token` if set.
+fn attach_at_ticket(
+    node: &iroh_live::Node,
+    relay: &TestRelay,
+    name: &str,
+    token: Option<String>,
+) -> iroh_live_node::RelayLink {
+    let url = format!("iroh://{}/{name}", relay.iroh_id)
+        .parse()
+        .expect("a valid URL");
+    let mut config = RelayConfig::new(url);
+    if let Some(token) = token {
+        config = config.with_token(token.parse().expect("not empty"));
+    }
+    node.attach_relay(config).expect("attach")
+}
+
+/// An iroh client pulls and reads a ticket with a token for the ticket's path only, a JWT or a chain.
+#[tokio::test]
+async fn an_iroh_client_pulls_with_a_token_for_the_ticket_path_only() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let team = iroh::SecretKey::generate();
+    let relay = TestRelay::start_config_keyed(&keys, principal_config(&team), Some(false)).await;
+    let (publisher, broadcast, ticket) = start_publisher("guarded").await;
+    let name = ticket.to_string();
+    let path = ticket.path().to_string();
+
+    let (_jwt_endpoint, jwt_holder) = relay_node().await;
+    let token = exact_reader_token(&keys, &path, None);
+    let _jwt_link = attach_at_ticket(&jwt_holder, &relay, &name, Some(token));
+    assert!(
+        wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
+        "the relay did not pull for a token of the ticket's path"
+    );
+    let subscription = step(
+        "subscribe through the ticket",
+        jwt_holder.subscribe(name.clone(), Reach::Relays),
+    )
+    .await
+    .expect("the JWT holder reads the mounted broadcast");
+    first_frame(&subscription.broadcast(), "catalog.json").await;
+
+    let (_chain_endpoint, chain_holder) = relay_node().await;
+    let capability = MoqCapability::new(path.as_str()).with_subscribe(moq_net::Pattern::all());
+    let chain = delegated_chain(
+        &team,
+        chain_holder.id(),
+        capability,
+        Duration::from_secs(600),
+    );
+    let _chain_link = attach_at_ticket(&chain_holder, &relay, &name, Some(chain));
+    let subscription = step(
+        "subscribe through the ticket",
+        chain_holder.subscribe(name.clone(), Reach::Relays),
+    )
+    .await
+    .expect("the chain holder reads the mounted broadcast");
+    first_frame(&subscription.broadcast(), "catalog.json").await;
+
+    jwt_holder.shutdown().await;
+    chain_holder.shutdown().await;
+    drop(broadcast);
+    publisher.shutdown().await;
+}
+
+/// A ticket's session publishes only what the path it dialed allows, and reads only the mount.
+///
+/// The decision at the ticket's path adds reading the pulled broadcast and
+/// nothing else, so a token that publishes `live/**` cannot publish through
+/// the session, which dialed the ticket's string.
+#[tokio::test]
+async fn a_ticket_session_gets_no_rights_from_the_ticket_path_but_reading_it() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let keys = signing_keys();
+    let relay = TestRelay::start_config_keyed(&keys, Config::default(), Some(false)).await;
+    let (publisher, broadcast, ticket) = start_publisher("guarded").await;
+    let name = ticket.to_string();
+    let path = ticket.path().to_string();
+
+    // Elsewhere in the cluster, which the ticket's session must not read.
+    let (_other_endpoint, other) = relay_node().await;
+    let _elsewhere = publish_at(&other, "tokens/elsewhere");
+    let _other_link = attach_with_token(&other, &relay, Some(token_for(&keys, "tokens")));
+    routed(&relay.cluster.origin.consume(), "tokens/elsewhere").await;
+
+    let (_endpoint, client) = relay_node().await;
+    // Next to the pulled broadcast, which `live/**` covers when decided at the root.
+    let forged = live_path(ticket.peer(), "forged");
+    let _forged = publish_at(&client, &forged);
+    let _foreign = publish_at(
+        &client,
+        &live_path(iroh::SecretKey::generate().public(), "cam"),
+    );
+    let token = exact_reader_token(&keys, &path, Some("live/**"));
+    let _link = attach_at_ticket(&client, &relay, &name, Some(token));
+    let subscription = step(
+        "subscribe through the ticket",
+        client.subscribe(name.clone(), Reach::Relays),
+    )
+    .await
+    .expect("the client reads the mounted broadcast");
+    first_frame(&subscription.broadcast(), "catalog.json").await;
+    assert!(!routed_soon(&relay.cluster.origin, &forged).await);
+    assert!(!reads_soon(&client, "tokens/elsewhere").await);
+
+    client.shutdown().await;
+    other.shutdown().await;
+    drop(broadcast);
+    publisher.shutdown().await;
+}
+
+/// With `--open-pulls` on a private relay, a session pulls only where the relay admits it to read.
+#[tokio::test]
+async fn open_pulls_on_a_private_relay_need_admission() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let team = iroh::SecretKey::generate();
+    let (publisher, broadcast, ticket) = start_publisher("guarded").await;
+    let name = ticket.to_string();
+    let path = ticket.path().to_string();
+
+    // A public area outside `live/`: sessions without a token may not pull.
+    let mut config = principal_config(&team);
+    config.auth_public_subscribe = vec!["demo/**".parse().expect("a pattern")];
+    config.open_pulls = true;
+    let relay = TestRelay::start_config(config, Some(true)).await;
+    let (_endpoint, anonymous) = relay_node().await;
+    let _link = attach_at_ticket(&anonymous, &relay, &name, None);
+    let _browser = browser_at(&relay, &name, None).await;
+    assert!(
+        !routed_soon(&relay.cluster.origin, &path).await,
+        "the relay pulled for a session that may not read the ticket's path"
+    );
+    anonymous.shutdown().await;
+
+    // A public area that reads everything: any session may pull.
+    let mut config = principal_config(&team);
+    config.auth_public_subscribe = vec![moq_net::Pattern::all()];
+    config.open_pulls = true;
+    let relay = TestRelay::start_config(config, Some(true)).await;
+    let _browser = browser_at(&relay, &name, None).await;
+    assert!(
+        wait_for_broadcast(&pulled(&relay.cluster, &name), &name, true).await,
+        "the relay did not pull for an admitted reader"
+    );
+
+    drop(broadcast);
+    publisher.shutdown().await;
+}
+
+/// Fetches `path` from the relay's HTTP listener and returns the status code and the body.
+async fn http_get(relay: &TestRelay, path: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, relay.noq_addr.port()));
+    let mut stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connects to the HTTP listener");
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("writes the request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .await
+        .expect("reads the response");
+    let status = response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .expect("a status line");
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default();
+    (status, body)
+}
+
+/// moq-relay's HTTP routes go through the same admission as WebTransport sessions.
+#[tokio::test]
+async fn the_http_routes_follow_the_access_mode() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let team = iroh::SecretKey::generate();
+    let relay = TestRelay::start_config_http(principal_config(&team)).await;
+    let _stage = relay
+        .cluster
+        .origin
+        .route("demo/stage", origin::RouteOptions::default())
+        .expect("a route");
+    for path in [
+        "/announced",
+        "/announced/demo",
+        "/fetch/demo/stage/catalog.json",
+    ] {
+        let (status, body) = http_get(&relay, path).await;
+        assert!(
+            (400..500).contains(&status),
+            "{path} answered {status} without a token: {body}"
+        );
+    }
+
+    let mut config = principal_config(&team);
+    config.auth_public_subscribe = vec!["demo/**".parse().expect("a pattern")];
+    let relay = TestRelay::start_config_http(config).await;
+    let _stage = relay
+        .cluster
+        .origin
+        .route("demo/stage", origin::RouteOptions::default())
+        .expect("a route");
+    let _private = relay
+        .cluster
+        .origin
+        .route(
+            live_path(iroh::SecretKey::generate().public(), "cam").as_str(),
+            origin::RouteOptions::default(),
+        )
+        .expect("a route");
+    let (status, body) = http_get(&relay, "/announced").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body.lines().collect::<Vec<_>>(), ["demo/stage"], "{body}");
 }
