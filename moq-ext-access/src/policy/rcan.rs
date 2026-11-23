@@ -29,6 +29,13 @@ const PREFIX: &str = "rcan1:";
 /// The prefixes are relative to [`root`](Self::root), as in a moq-auth JWT,
 /// and each covers its path and every path beneath it. One capability permits
 /// another when its paths cover the other's.
+///
+/// On the wire each prefix is spelled as the subtree pattern it covers,
+/// `foo/**` or `**`, which verifiers from before prefixes read the same way.
+/// A chain from such a verifier's era whose members are literal paths, such
+/// as `bob/cam` or `""`, does not verify: rcan checks a link's signature over
+/// the capability written again, and a literal is now written as its
+/// subtree. Such a chain must be issued again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "Wire", try_from = "Wire")]
 pub struct MoqCapability {
@@ -99,9 +106,18 @@ enum Wire {
 }
 
 impl From<MoqCapability> for Wire {
+    /// Spells each prefix as the subtree pattern it covers, `foo/**` or `**`.
+    ///
+    /// Verifiers that read members as patterns then grant the same subtree,
+    /// and rcan checks a link's signature over the payload written again, so
+    /// a chain must read back to the bytes it was signed as.
     fn from(capability: MoqCapability) -> Self {
-        let strings =
-            |prefixes: &Prefixes| prefixes.iter().map(|p| p.as_str().to_owned()).collect();
+        let strings = |prefixes: &Prefixes| {
+            prefixes
+                .iter()
+                .map(|prefix| prefix.pattern().to_string())
+                .collect()
+        };
         Self::Access {
             publish: strings(&capability.publish),
             subscribe: strings(&capability.subscribe),
@@ -135,14 +151,20 @@ impl TryFrom<Wire> for MoqCapability {
 
 /// Parses a prefix of a capability's wire form.
 ///
-/// Chains issued when grants were patterns spell a subtree `foo/**`, and
-/// every path `**`. Those read as the prefixes `foo` and the empty prefix,
-/// and any other wildcard is refused.
+/// A subtree is spelled `foo/**`, and every path `**`. Those read as the
+/// prefixes `foo` and the empty prefix. Any other wildcard is refused,
+/// including `/**`, which names no subtree. Other text parses as a prefix.
 fn wire_prefix(text: &str) -> Result<Prefix, InvalidPrefix> {
-    match text {
-        "**" => Ok(Prefix::all()),
-        _ => text.strip_suffix("/**").unwrap_or(text).parse(),
+    let head = match text.strip_suffix("/**") {
+        Some(head) if !head.is_empty() => head,
+        _ if text == "**" => "",
+        _ => text,
+    };
+    // A wildcard left in the head names something other than one subtree.
+    if head.contains('*') {
+        return Err(InvalidPrefix::Wildcard(text.to_owned()));
     }
+    head.parse()
 }
 
 /// A [`TokenVerifier`] of rcan capability chains that a principal issued.

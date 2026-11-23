@@ -322,6 +322,15 @@ fn a_verifier_at_the_empty_root_admits_any_root() {
     assert!(authorization.grant.allows_publish("fleet/cam"));
 }
 
+/// Returns a capability's wire form under `spaces/alice`, publishing `publish`.
+fn wire_publishing(publish: &[&str]) -> Wire {
+    Wire::Access {
+        root: "spaces/alice".to_owned(),
+        publish: publish.iter().map(|text| (*text).to_owned()).collect(),
+        subscribe: Vec::new(),
+    }
+}
+
 #[test]
 fn a_chain_spelled_in_subtree_patterns_reads_as_prefixes() {
     let wire = Wire::Access {
@@ -333,10 +342,81 @@ fn a_chain_spelled_in_subtree_patterns_reads_as_prefixes() {
     assert_eq!(capability.publish, Prefixes::from(prefix("device")));
     assert_eq!(capability.subscribe, Prefixes::all());
 
-    let wildcard = Wire::Access {
-        root: "spaces/alice".to_owned(),
-        publish: vec!["device/*/cam".to_owned()],
-        subscribe: Vec::new(),
-    };
-    assert!(MoqCapability::try_from(wildcard).is_err());
+    for text in [
+        "device/*/cam",
+        "/**",
+        "foo/*/**",
+        "**/foo",
+        "*",
+        "foo/**/**",
+    ] {
+        assert!(
+            MoqCapability::try_from(wire_publishing(&[text])).is_err(),
+            "{text} was read as a prefix"
+        );
+    }
+}
+
+#[test]
+fn a_capability_is_written_as_subtree_patterns_and_reads_back_equal() {
+    let capability = MoqCapability::new("spaces/alice")
+        .with_publish(prefix("foo"))
+        .with_subscribe(Prefixes::all());
+    let Wire::Access {
+        publish, subscribe, ..
+    } = Wire::from(capability.clone());
+    assert_eq!(publish, ["foo/**"]);
+    assert_eq!(subscribe, ["**"]);
+    let read = MoqCapability::try_from(Wire::from(capability.clone())).expect("a capability");
+    assert_eq!(read, capability);
+}
+
+/// A capability as an earlier release wrote it, member for member.
+impl Capability for Wire {
+    fn permits(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+/// Encodes a chain of capabilities in their wire form, as [`encode_chain`] does.
+fn encode_wire_chain(chain: &[Rcan<Wire>]) -> String {
+    let bytes = postcard::to_stdvec(chain).expect("encoding into a vec cannot fail");
+    let encoded = data_encoding::BASE32_NOPAD
+        .encode(&bytes)
+        .to_ascii_lowercase();
+    format!("{PREFIX}{encoded}")
+}
+
+#[test]
+fn an_earlier_chain_in_subtree_patterns_verifies() {
+    let (alice, bob) = (key(1), key(2));
+    let link = Rcan::issuing_builder(&alice, bob.verifying_key(), wire_publishing(&["bob/**"]))
+        .sign(hours(1));
+    let grant = verify(&alice_verifier(), &bob, &encode_wire_chain(&[link]))
+        .expect("admitted")
+        .grant;
+    assert!(grant.allows_publish("spaces/alice/bob"));
+    assert!(grant.allows_publish("spaces/alice/bob/cam"));
+    assert!(!grant.allows_publish("spaces/alice/bobby"));
+}
+
+/// A literal member reads as a prefix, so it would cover its subtree, but its
+/// link is written back as `bob/cam/**` and fails its signature.
+#[test]
+fn an_earlier_chain_with_a_literal_member_rejects() {
+    let (alice, bob) = (key(1), key(2));
+    let issued = Rcan::issuing_builder(&alice, bob.verifying_key(), wire_publishing(&["bob/**"]))
+        .sign(hours(2));
+    let delegated = Rcan::delegating_builder(
+        &bob,
+        key(3).verifying_key(),
+        alice.verifying_key(),
+        wire_publishing(&["bob/cam"]),
+    )
+    .sign(hours(1));
+    let token = encode_wire_chain(&[issued, delegated]);
+    verify(&alice_verifier(), &key(3), &token).expect_err("rejected");
+
+    let read = MoqCapability::try_from(wire_publishing(&["bob/cam"])).expect("a capability");
+    assert_eq!(read.publish, Prefixes::from(prefix("bob/cam")));
 }

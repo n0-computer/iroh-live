@@ -237,4 +237,54 @@ mod tests {
             .verify_grant("garbage", "spaces/alice")
             .expect_err("not a token");
     }
+
+    /// Signs a token whose claims are `payload`, a JSON object, as written.
+    ///
+    /// Returns the token and a key set that verifies it. moq-auth only signs
+    /// claims it would read back, so a token spelled as an earlier release
+    /// wrote it is signed here with an Ed25519 key.
+    #[cfg(feature = "rcan")]
+    fn sign_raw(payload: &str) -> (KeySet, String) {
+        use data_encoding::BASE64URL_NOPAD;
+        use ed25519_dalek::{Signer, SigningKey};
+        use moq_auth::{EllipticCurve, Jwk, KeyMaterial};
+
+        let signer = SigningKey::from_bytes(&[7; 32]);
+        let material = KeyMaterial::OKP {
+            curve: EllipticCurve::Ed25519,
+            x: signer.verifying_key().to_bytes().to_vec(),
+            d: Some(signer.to_bytes().to_vec()),
+        };
+        let key = Jwk::new(Algorithm::EdDSA, material)
+            .import()
+            .expect("a key");
+        let header = BASE64URL_NOPAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
+        let body = BASE64URL_NOPAD.encode(payload.as_bytes());
+        let signed = format!("{header}.{body}");
+        let signature = BASE64URL_NOPAD.encode(&signer.sign(signed.as_bytes()).to_bytes());
+        let keys = KeySet {
+            keys: vec![Arc::new(key)],
+        };
+        (keys, format!("{signed}.{signature}"))
+    }
+
+    #[cfg(feature = "rcan")]
+    #[test]
+    fn a_subtree_claim_grants_its_subtree_and_another_wildcard_rejects() {
+        let (keys, token) = sign_raw(r#"{"root":"spaces/alice","publish":["bob/**"]}"#);
+        let grant = verify(&JwtVerifier::new(keys), &token, "/spaces/alice")
+            .expect("admitted")
+            .grant;
+        assert!(grant.allows_publish("spaces/alice/bob"));
+        assert!(grant.allows_publish("spaces/alice/bob/cam"));
+        assert!(!grant.allows_publish("spaces/alice/bobby"));
+
+        let (keys, token) = sign_raw(r#"{"root":"spaces/alice","publish":["*/cam"]}"#);
+        let rejection =
+            verify(&JwtVerifier::new(keys), &token, "/spaces/alice").expect_err("rejected");
+        assert!(
+            matches!(rejection.code(), moq_net::Error::Unauthorized),
+            "{rejection}"
+        );
+    }
 }
