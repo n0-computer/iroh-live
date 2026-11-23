@@ -381,8 +381,11 @@ pub(crate) async fn announced_by(
 fn live_route(event: &RouteEvent) -> Option<&moq_net::announce::Announce> {
     match event.kind {
         RouteKind::Start | RouteKind::Update | RouteKind::Restart => Some(&event.announce),
-        // End, Offline, and any kind moq adds later.
-        _ => None,
+        RouteKind::End | RouteKind::Offline => None,
+        kind => {
+            debug!(?kind, prefix = %event.announce.prefix, "unknown route kind, read as ended");
+            None
+        }
     }
 }
 

@@ -511,8 +511,16 @@ async fn tokio_uplink(
                 }
             }
             Phase::Connecting { failure } => debug!(error = ?failure, "relay connecting"),
-            Phase::Closed { failure } => {
-                debug!(error = ?failure, "relay link closed");
+            // A link that gave up, such as on a refused token, is worth a
+            // warning. One stopped locally is not.
+            Phase::Closed {
+                failure: Some(failure),
+            } => {
+                warn!(error = ?failure, "relay link closed for good");
+                break;
+            }
+            Phase::Closed { failure: None } => {
+                debug!("relay link closed");
                 break;
             }
         }
