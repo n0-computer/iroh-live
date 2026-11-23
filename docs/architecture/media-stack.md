@@ -37,10 +37,13 @@ H.265 needs a hardware encoder.
 it already encoded. `VideoSource::rpicam` reads raw pictures from the same
 program. See [Raspberry Pi](../how-to/raspberry-pi.md).
 
-`AudioSource::file` decodes a WAV or MP3 file with symphonia on its own thread,
-in real time, and fans the PCM out to every broadcast that reads it. Its
-`FileEnd` argument stops or restarts the file at its end. moq-audio has no
-container reader.
+`AudioSource::file` decodes a WAV, MP3 or MP4 (AAC) file with symphonia on its
+own thread, in real time, and fans the PCM out to every broadcast that reads
+it. Its `FileEnd` argument stops or restarts the file at its end. moq-audio has
+no container reader. `VideoSource::file` reads an MP4 file with symphonia and
+decodes its H.264 track with moq-video's decoder, handing over each picture
+when its timestamp is due, so the file plays like a camera. A looping file
+keeps its timestamps rising across passes.
 
 `VideoSource::test_pattern` and `AudioSource::test_pattern` are a matching
 pair: a sweeping bar, a frame counter, a clock, and a marker that flashes with

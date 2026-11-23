@@ -5597,6 +5597,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "derive_more",
+ "hang",
  "moq-audio",
  "moq-mux",
  "moq-net",
@@ -9548,8 +9549,10 @@ checksum = "a7edef6a96b696d4e0cab5ee9ebb7ca155ed95f30a6b45bbb8b97d2727f02424"
 dependencies = [
  "lazy_static",
  "symphonia-bundle-mp3",
+ "symphonia-codec-aac",
  "symphonia-codec-pcm",
  "symphonia-core",
+ "symphonia-format-isomp4",
  "symphonia-format-riff",
  "symphonia-metadata",
 ]
@@ -9610,6 +9613,18 @@ dependencies = [
  "log",
  "num-complex",
  "smallvec",
+]
+
+[[package]]
+name = "symphonia-format-isomp4"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e681a70e1870d34e02abf1dbc51e4267c3f1827801474e8870be8c689fc4dc3"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core",
+ "symphonia-metadata",
 ]
 
 [[package]]

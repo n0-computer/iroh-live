@@ -76,7 +76,8 @@ rcan = ["iroh-live-node/rcan"]
 rooms = ["dep:iroh-live-rooms"]
 # Camera, screen, and microphone capture.
 capture = ["media", "moq-ext-publisher/capture", "moq-ext-sources/capture"]
-# Decoding WAV and MP3 files into an `AudioSource`.
+# Decoding media files into an `AudioSource` (WAV, MP3, MP4 AAC) and a
+# `VideoSource` (MP4 H.264).
 file = ["media", "moq-ext-sources/file"]
 # Speaker output.
 playback = ["media", "moq-ext-player/playback"]

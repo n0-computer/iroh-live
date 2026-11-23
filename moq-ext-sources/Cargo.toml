@@ -26,8 +26,10 @@ tokio = { version = "1.54.1", features = ["sync", "time", "rt"] }
 tokio-util = "0.7.20"
 tracing = "0.1.44"
 
-# Reads audio files. moq-audio has no container reader.
-symphonia = { version = "0.6", default-features = false, features = ["pcm", "mp3", "wav"], optional = true }
+# Reads media files. moq-audio and moq-video have no container reader.
+symphonia = { version = "0.6", default-features = false, features = ["pcm", "mp3", "wav", "isomp4", "aac"], optional = true }
+# The catalog entry that opens moq-video's decoder for a file's H.264 track.
+hang = { workspace = true, optional = true }
 
 [dev-dependencies]
 moq-mux = { workspace = true }
@@ -37,8 +39,10 @@ tokio = { version = "1.54.1", features = ["full"] }
 default = ["pattern"]
 # A generated test picture and a tone.
 pattern = ["dep:moq-mux"]
-# Decodes WAV and MP3 files in real time.
-file = ["dep:symphonia"]
+# Decodes media files in real time: audio from WAV, MP3 and MP4 (AAC), and
+# video from MP4 (H.264). OpenH264 decodes the video where no hardware
+# decoder does.
+file = ["dep:symphonia", "dep:hang", "moq-video/openh264"]
 # Camera, screen and microphone capture. Off for a build that only publishes
 # frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
 capture = ["moq-video/capture", "moq-audio/capture"]

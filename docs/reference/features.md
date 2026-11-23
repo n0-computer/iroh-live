@@ -16,7 +16,7 @@ No feature is on by default.
 | `playback` | Speaker output, `AudioMode::Play` | `media` | all |
 | `render` | GPU rendering of decoded frames through wgpu, re-exported as `media::wgpu` | `media` | all |
 | `record` | `RemoteBroadcast::mux_source`, for moq-mux exports | `media` | all |
-| `file` | `AudioSource::file`, WAV and MP3 files | `media` | all |
+| `file` | `AudioSource::file` for WAV, MP3 and MP4 (AAC) files, and `VideoSource::file` for MP4 (H.264) files, decoded in real time | `media` | all |
 | `sound-server` | Audio devices through PipeWire or PulseAudio, not only ALSA | `media` | Linux |
 | `aec` | Echo cancellation for the microphone | `capture`, and the player's speaker output | all |
 | `pipewire` | PipeWire's shared camera as the default camera, and the desktop portal's screen picker with `PortalGrant`, which keeps its grant across runs. Links `libpipewire-0.3` | `media`, and capture in the media crates | Linux |

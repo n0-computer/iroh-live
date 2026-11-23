@@ -42,6 +42,8 @@ previews can read it.
   current-thread runtime entered, and hands it the sender. It is for
   thread-bound platform objects.
 - `rpicam(config)` reads raw pictures from `rpicam-vid` on a Raspberry Pi.
+- `file(path, at_end, size)` decodes the H.264 video of an MP4 file in real
+  time, scaled to `size` or at the file's own size.
 
 `FrameSender::push` never blocks: a new video frame replaces one not yet taken.
 `FrameSender::demand()` reports whether anything wants the frames: a rendition
@@ -80,7 +82,7 @@ encoded, such as the one `rpicam_h264(config)` returns. On a Raspberry Pi,
 `AudioSource` has these constructors:
 
 - `microphone(config)` opens a microphone from moq-audio's `capture::Config`.
-- `file(path, at_end)` decodes a WAV or MP3 in real time. The `FileEnd` says
+- `file(path, at_end)` decodes a WAV, MP3 or MP4 (AAC) in real time. The `FileEnd` says
   whether it stops or restarts at the end of the file.
 - `tone(hz, layout)` and `test_pattern(layout)` generate sound.
 - `push(format)` returns a `FrameSender` for PCM the application produces.

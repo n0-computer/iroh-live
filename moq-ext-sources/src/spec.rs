@@ -83,7 +83,10 @@ pub enum VideoSourceSpec {
     Rpicam(RpicamMode),
     /// A generated picture, for publishing without a camera.
     Test(TestPattern),
-    /// A media file, imported rather than encoded.
+    /// A media file.
+    ///
+    /// [`open`](VideoSourceSpec::open) decodes its H.264 video into raw
+    /// pictures. A publisher can also import the encoded video as it is.
     File {
         /// Path to the file.
         path: PathBuf,
@@ -497,28 +500,25 @@ impl VideoSourceSpec {
     /// default display is [`screen_source`](crate::screen_source), the
     /// desktop portal on Wayland with the `pipewire` feature. The portal asks
     /// on each open unless [`VideoOpenOptions::with_portal_grants`] keeps its
-    /// grants. A test pattern defaults to 1280x720 at 30 fps.
+    /// grants. A test pattern defaults to 1280x720 at 30 fps. A file decodes
+    /// through [`VideoSource::file`], at the size the options ask for or its
+    /// own, and at its own rate.
     ///
     /// Cancellation safe, as [`VideoSource::capture`] is.
     ///
     /// # Errors
     ///
     /// Fails with [`Error::InvalidConfig`] for a source this build cannot
-    /// open, such as a camera without the `capture` feature or the portal off
-    /// Linux. Also fails for [`File`](Self::File) and for
-    /// [`RpicamMode::Encoded`], which carry encoded video and have no raw
-    /// source: import the file with moq-mux, or read `rpicam_h264` instead.
-    /// Fails with [`Error::Device`] if the device does not open.
+    /// open, such as a camera without the `capture` feature, a file without
+    /// the `file` feature, or the portal off Linux. Also fails for
+    /// [`RpicamMode::Encoded`], which carries encoded video and has no raw
+    /// source: read `rpicam_h264` instead. Fails with [`Error::Device`] if the
+    /// device or the file does not open.
     pub async fn open(&self, options: &VideoOpenOptions) -> Result<Option<VideoSource>, Error> {
         let source = match self {
             Self::None => return Ok(None),
             Self::Test(pattern) => test_pattern(*pattern, options)?,
-            Self::File { path, .. } => {
-                return Err(Error::invalid(format!(
-                    "{} is encoded video, not a raw source; import it with moq-mux instead",
-                    path.display()
-                )));
-            }
+            Self::File { path, looping } => video_file(path, *looping, options).await?,
             #[cfg(all(target_os = "linux", feature = "rpicam"))]
             Self::Rpicam(RpicamMode::Raw) => {
                 let rate = options.generated_rate().rounded().max(1);
@@ -668,6 +668,44 @@ fn portal(kind: PortalKind, _options: &VideoOpenOptions) -> Result<video::captur
     )))
 }
 
+/// Decodes the video file at `path`, at the size in `options` if they give both dimensions.
+#[cfg(feature = "file")]
+async fn video_file(
+    path: &Path,
+    looping: bool,
+    options: &VideoOpenOptions,
+) -> Result<VideoSource, Error> {
+    let size = match (options.width, options.height) {
+        (Some(width), Some(height)) => Some(video::Size::new(width, height)),
+        _ => None,
+    };
+    VideoSource::file(path, file_end(looping), size).await
+}
+
+/// Fails, since this build reads no files.
+#[cfg(not(feature = "file"))]
+#[expect(clippy::unused_async, reason = "the file build awaits")]
+async fn video_file(
+    path: &Path,
+    _looping: bool,
+    _options: &VideoOpenOptions,
+) -> Result<VideoSource, Error> {
+    Err(Error::invalid(format!(
+        "decoding {} needs a build with the `file` feature",
+        path.display()
+    )))
+}
+
+/// Returns what a file source does at the end of the file.
+#[cfg(feature = "file")]
+fn file_end(looping: bool) -> crate::FileEnd {
+    if looping {
+        crate::FileEnd::Restart
+    } else {
+        crate::FileEnd::Stop
+    }
+}
+
 /// Starts the test pattern `pattern` names, at the size and rate in `options`.
 #[cfg(feature = "pattern")]
 fn test_pattern(pattern: TestPattern, options: &VideoOpenOptions) -> Result<VideoSource, Error> {
@@ -740,12 +778,7 @@ async fn open_audio(spec: &AudioSourceSpec) -> Result<AudioSource, Error> {
         AudioSourceSpec::Test(TestTone::Tone) => AudioSource::tone(TEST_TONE_HZ, TEST_TONE_LAYOUT),
         #[cfg(feature = "file")]
         AudioSourceSpec::File { path, looping } => {
-            let at_end = if *looping {
-                crate::FileEnd::Restart
-            } else {
-                crate::FileEnd::Stop
-            };
-            AudioSource::file(path, at_end).await
+            AudioSource::file(path, file_end(*looping)).await
         }
         #[allow(
             unreachable_patterns,
@@ -800,9 +833,9 @@ mod tests {
         assert_eq!(image.size(), video::Size::new(320, 180));
     }
 
-    /// `none` opens nothing, and a file is encoded video with no raw source.
+    /// `none` opens nothing, and a missing file fails to open.
     #[tokio::test]
-    async fn none_and_files_open_no_raw_video() {
+    async fn none_opens_nothing_and_a_missing_file_fails() {
         let options = VideoOpenOptions::default();
         assert!(
             VideoSourceSpec::None
@@ -811,12 +844,29 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let file: VideoSourceSpec = "file:clip.mp4".parse().unwrap();
-        assert!(matches!(
-            file.open(&options).await,
-            Err(Error::InvalidConfig { .. })
-        ));
+        let file: VideoSourceSpec = "file:missing.mp4".parse().unwrap();
+        let expected = if cfg!(feature = "file") {
+            matches!(file.open(&options).await, Err(Error::Device { .. }))
+        } else {
+            matches!(file.open(&options).await, Err(Error::InvalidConfig { .. }))
+        };
+        assert!(expected);
         assert!(AudioSourceSpec::None.open().await.unwrap().is_none());
+    }
+
+    /// A video file opens as a raw source at the size the options ask for, and at its own rate.
+    #[cfg(feature = "file")]
+    #[tokio::test]
+    async fn a_video_file_opens_as_a_raw_source() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/source/test_data/clip.mp4");
+        let spec: VideoSourceSpec = format!("file:{}:loop", path.display()).parse().unwrap();
+        let options = VideoOpenOptions::default().with_size(video::Size::new(32, 24));
+        let source = spec.open(&options).await.unwrap().expect("a source");
+        assert_eq!(source.format().size, video::Size::new(32, 24));
+        assert_eq!(source.format().rate, video::FrameRate::new(10, 1).unwrap());
+        let frame = source.frames().next().await.expect("a frame");
+        assert_eq!(frame.size(), video::Size::new(32, 24));
     }
 
     /// The test tones open in every build with generated sources.

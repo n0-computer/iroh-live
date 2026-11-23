@@ -38,6 +38,8 @@ mod rpicam;
 mod scaled;
 mod sender;
 mod switch;
+#[cfg(feature = "file")]
+mod video_file;
 
 /// How many PCM frames a broadcast may lag before it loses the oldest.
 ///
@@ -411,6 +413,53 @@ impl VideoSource {
         Ok(source)
     }
 
+    /// Decodes the H.264 video of an MP4 file in real time, like a camera.
+    ///
+    /// Each picture comes when its timestamp is due on the wall clock, scaled
+    /// to `size`, or at the file's own size for `None`. The rate is the
+    /// file's. `at_end` says whether the source ends with the file or starts
+    /// it again; a looping file keeps its timestamps rising. The pictures are
+    /// CPU I420. The decoder is hardware where the build has one, else
+    /// OpenH264. The file's audio is [`AudioSource::file`]'s.
+    ///
+    /// Cancellation safe: dropping the future stops the decode thread.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the file cannot be read, holds no H.264 track, or no decoder
+    /// opens for it.
+    #[cfg(feature = "file")]
+    pub async fn file(
+        path: impl AsRef<Path>,
+        at_end: FileEnd,
+        size: Option<video::Size>,
+    ) -> Result<Self, Error> {
+        let path = path.as_ref().to_path_buf();
+        let probe = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || video_file::probe(&path))
+                .await
+                .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??
+        };
+        let format = VideoFormat {
+            size: size.unwrap_or(probe.size),
+            rate: probe.rate,
+        };
+        let (opened, ready) = tokio::sync::oneshot::channel();
+        let source = Self::spawn("file", format, move |sender| {
+            let opened = |result| {
+                let _ = opened.send(result);
+            };
+            video_file::play(&path, at_end, format.size, opened, |frame| {
+                sender.push(frame).is_ok()
+            })
+        })?;
+        ready
+            .await
+            .map_err(|_| Error::device_msg("the file decoder stopped before it opened"))??;
+        Ok(source)
+    }
+
     /// Starts the Raspberry Pi camera through `rpicam-vid`, for raw pictures.
     ///
     /// The width is rounded up to one libcamera writes without row padding, so
@@ -531,7 +580,7 @@ pub fn rpicam_h264(
     rpicam::open_encoded(config)
 }
 
-/// What an audio file source does when it reaches the end of the file.
+/// What a file source does when it reaches the end of the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileEnd {
     /// Ends the source.
@@ -662,8 +711,8 @@ impl AudioSource {
     /// Decodes an audio file in real time.
     ///
     /// `at_end` says whether the source ends with the file or starts it again.
-    /// Reads WAV and MP3. The file is probed before this returns,
-    /// and decoding starts on its own thread.
+    /// Reads WAV, MP3, and the AAC audio of an MP4 file. The file is probed
+    /// before this returns, and decoding starts on its own thread.
     ///
     /// Cancellation safe: dropping the future stops the decode thread.
     ///

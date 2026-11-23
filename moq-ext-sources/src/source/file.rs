@@ -1,4 +1,4 @@
-//! Decoding an audio file as a source.
+//! Decoding the audio of a media file as a source.
 //!
 //! `moq-audio` has no container reader, so this module demuxes and decodes a
 //! local file on its own thread, in real time, into the fan-out every attached
@@ -59,7 +59,7 @@ pub(crate) fn spawn(
 }
 
 /// Returns a device error that names `path`.
-fn file_error(path: &Path, source: impl std::fmt::Display) -> Error {
+pub(super) fn file_error(path: &Path, source: impl std::fmt::Display) -> Error {
     n0_error::e!(Error::Device {
         source: AnyError::from_string(format!("{}: {source}", path.display()))
     })
@@ -99,21 +99,7 @@ impl Probe {
 /// Looping reopens the file instead of seeking, so each pass starts where the
 /// probe did.
 fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), Error> {
-    let file = std::fs::File::open(path).map_err(|source| file_error(path, source))?;
-    let stream = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-        hint.with_extension(ext);
-    }
-    let format = symphonia::default::get_probe()
-        .probe(
-            &hint,
-            stream,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )
-        .map_err(|source| file_error(path, source))?;
-
+    let format = open_reader(path)?;
     let track = format
         .tracks()
         .iter()
@@ -121,6 +107,27 @@ fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), Error> {
         .cloned()
         .ok_or_else(|| file_error(path, "the file holds no audio track"))?;
     Ok((format, track))
+}
+
+/// Opens `path` and returns its container reader.
+///
+/// The file extension is a hint for the container, and the probe falls back
+/// to reading the start of the file.
+pub(super) fn open_reader(path: &Path) -> Result<Box<dyn FormatReader>, Error> {
+    let file = std::fs::File::open(path).map_err(|source| file_error(path, source))?;
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
+        hint.with_extension(ext);
+    }
+    symphonia::default::get_probe()
+        .probe(
+            &hint,
+            stream,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|source| file_error(path, source))
 }
 
 /// Returns the audio codec parameters of `track`.
@@ -351,6 +358,34 @@ mod tests {
                 "frame {index} decoded as {pair:?}, expected [{expected}, -{expected}]",
             );
         }
+    }
+
+    /// The AAC audio of an MP4 file decodes, beside its video track.
+    #[test]
+    fn the_aac_audio_of_an_mp4_file_decodes() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/source/test_data/clip.mp4");
+        let probe = probe(&path).expect("the clip opens");
+        assert_eq!(probe.sample_rate, 16_000);
+        assert_eq!(probe.layout, moq_audio::Layout::Mono);
+
+        let (fanout, mut rx) = tokio::sync::broadcast::channel(1024);
+        let decoded = std::thread::spawn(move || {
+            decode_loop(&path, FileEnd::Stop, &fanout, &CancellationToken::new())
+        });
+        let mut samples = 0;
+        while let Ok(frame) = rx.blocking_recv() {
+            samples += frame.data.len() / 4;
+        }
+        decoded
+            .join()
+            .expect("the decode thread")
+            .expect("decoding");
+        // One second at 16 kHz, give or take the encoder's padding.
+        assert!(
+            (15_000..=18_000).contains(&samples),
+            "decoded {samples} samples"
+        );
     }
 
     /// A file whose codec this build cannot decode fails the probe.
