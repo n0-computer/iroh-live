@@ -15,7 +15,10 @@ use std::{
     time::Duration,
 };
 
-use moq_ext_sources::{ByPtr, Error, SlotState, send_if_changed, stats::SharedCell};
+use moq_ext_sources::{
+    ByPtr, Error, SlotState, send_if_changed,
+    stats::{Rates, SharedCell},
+};
 use moq_net::track::Delay;
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -232,6 +235,8 @@ impl PlayerStatus {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PlaybackRecorder {
     pub(crate) video: SharedCell<Option<VideoPlaybackStats>>,
+    /// The last rates of shown pictures, which fill [`VideoPlaybackStats::fps`] while current.
+    pub(crate) video_rate: SharedCell<Option<Rates>>,
     pub(crate) audio: SharedCell<Option<AudioPlaybackStats>>,
     /// Written by the video task as it presents pictures.
     pub(crate) video_log: FrameLog,
@@ -489,8 +494,14 @@ impl Player {
                 stats.peak = 0.0;
             }
         }
+        let mut video_stats = self.stats.video.get();
+        if let Some(stats) = video_stats.as_mut() {
+            // The video task writes the rate only as pictures are shown.
+            let rate = self.stats.video_rate.get().filter(Rates::is_current);
+            stats.fps = rate.map(|rate| rate.events.round() as u32);
+        }
         PlaybackStats {
-            video: self.stats.video.get(),
+            video: video_stats,
             audio: audio_stats,
             latency: self.clock.delay(),
             network: self.broadcast.network().map(|signals| signals()),

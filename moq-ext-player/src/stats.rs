@@ -72,6 +72,9 @@ pub struct VideoPlaybackStats {
     /// The decoded picture size.
     pub size: Option<moq_video::Size>,
     /// Frames shown per second, over the last second.
+    ///
+    /// `None` before the first second of pictures, and from at most two
+    /// seconds after the last picture shown.
     pub fps: Option<u32>,
     /// How long one transport read and decode take together, smoothed.
     pub decode_time: Option<Duration>,

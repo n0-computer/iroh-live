@@ -2,8 +2,10 @@
 
 use std::{
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+use tokio::time::Instant;
 
 /// A value one task writes and anyone snapshots.
 ///
@@ -29,12 +31,13 @@ impl<T: Clone> SharedCell<T> {
 /// How long a [`RateMeter`] counts events before it reports.
 ///
 /// Frame rates are quoted per second. A meter reports only when an event
-/// arrives, so a stream that stops keeps its last rate.
+/// arrives, so a reader asks [`Rates::is_current`] whether a stream still runs.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 
 /// A counter of events that reports their rate once per window.
 ///
-/// Owned by the one task that sees the events, so it needs no lock.
+/// Owned by the one task that sees the events, so it needs no lock. It reads
+/// the clock through tokio, so a test with paused time drives it.
 #[derive(Debug)]
 pub struct RateMeter {
     window: Duration,
@@ -77,9 +80,17 @@ impl RateMeter {
 
     /// Counts one event at `now`, as [`tick`](Self::tick) does.
     fn tick_at(&mut self, amount: u64, now: Instant) -> Option<Rates> {
+        let elapsed = now.duration_since(self.started);
+        if elapsed >= self.window * Rates::CURRENT_FOR {
+            // The stream paused for so long that the last reading went stale.
+            // Averaging over the pause would report a rate far below the one
+            // the stream resumes at, so this event opens a new window instead,
+            // as the event that closes a window does.
+            *self = Self::starting(self.window, now);
+            return None;
+        }
         self.events += 1;
         self.amount += amount;
-        let elapsed = now.duration_since(self.started);
         if elapsed < self.window {
             return None;
         }
@@ -87,6 +98,8 @@ impl RateMeter {
         let rates = Rates {
             events: f64::from(self.events) / seconds,
             amount: self.amount as f64 / seconds,
+            at: now,
+            window: self.window,
         };
         // The window restarts at the reading, so time spent computing does not
         // add up across windows.
@@ -102,6 +115,35 @@ pub struct Rates {
     pub events: f64,
     /// The amount the events carried, per second.
     pub amount: f64,
+    /// When the window closed.
+    at: Instant,
+    /// The meter's window.
+    window: Duration,
+}
+
+impl Rates {
+    /// How many windows a reading stays current for.
+    ///
+    /// A steady stream closes a window about once per window, and a stream
+    /// slower than one event per window closes one with every event. Two
+    /// windows without a reading mean at least one window without an event,
+    /// so a stream reads as running only while it sends faster than one event
+    /// per two windows.
+    const CURRENT_FOR: u32 = 2;
+
+    /// Returns whether the stream still runs, as far as these rates tell.
+    ///
+    /// The rates go stale once the meter closed no window for two windows. A
+    /// reader shows a stale rate as unknown, since the stream stopped.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        self.is_current_at(Instant::now())
+    }
+
+    /// Returns whether the rates are current at `now`, as [`is_current`](Self::is_current) does.
+    fn is_current_at(&self, now: Instant) -> bool {
+        now.duration_since(self.at) < self.window * Self::CURRENT_FOR
+    }
 }
 
 /// An exponentially smoothed duration, for timings that jitter per call.
@@ -162,6 +204,39 @@ mod tests {
             .expect("a second has passed")
             .amount;
         assert!((77_000.0..78_000.0).contains(&bytes), "{bytes}");
+    }
+
+    /// Rates stay current while the stream runs and go stale once it stops.
+    #[test]
+    fn rates_go_stale_once_events_stop() {
+        let start = Instant::now();
+        let mut meter = RateMeter::starting(RATE_WINDOW, start);
+        let mut last = None;
+        // Three seconds at 20 events per second.
+        for event in 1..=60u32 {
+            let now = start + Duration::from_millis(50) * event;
+            if let Some(rates) = meter.tick_at(0, now) {
+                last = Some(rates);
+            }
+            let rates = last.filter(|rates| rates.is_current_at(now));
+            if now >= start + RATE_WINDOW {
+                let rates = rates.expect("a running stream has a rate");
+                assert!((19.0..21.0).contains(&rates.events), "{}", rates.events);
+            }
+        }
+        let rates = last.expect("the stream closed windows");
+        let stopped = start + Duration::from_secs(3);
+        assert!(rates.is_current_at(stopped + RATE_WINDOW));
+        assert!(!rates.is_current_at(stopped + RATE_WINDOW * 2));
+
+        // After a five-second pause the stream resumes at 20 events per second.
+        // The first reading covers only the time since the resume.
+        let resumed = stopped + Duration::from_secs(5);
+        let rates = (0..=40u32)
+            .find_map(|event| meter.tick_at(0, resumed + Duration::from_millis(50) * event))
+            .expect("the resumed stream closes a window");
+        assert_eq!(rates.at, resumed + RATE_WINDOW);
+        assert!((19.0..21.0).contains(&rates.events), "{}", rates.events);
     }
 
     #[test]
