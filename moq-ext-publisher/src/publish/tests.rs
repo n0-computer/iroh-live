@@ -369,98 +369,227 @@ async fn the_broadcast_hands_back_its_sources() {
     assert!(broadcast.video_source().is_none());
 }
 
-/// A producer's keyframe request makes the next frame it pushes a keyframe on every rendition.
-///
-/// The renditions key every ten seconds on their own, so the only keyframes
-/// after the opening one are the two requested ones, and each rendition's
-/// keyframe spacing is the spacing of the two frames pushed after a request.
-/// Each frame is pushed once both renditions published the previous one, so
-/// none is skipped and the requested frames are the ones keyed.
-#[tokio::test]
-async fn a_keyframe_request_keys_the_next_frame_on_every_rendition() {
-    let size = moq_video::Size::new(320, 180);
-    let rate = moq_video::FrameRate::new(30, 1).expect("a valid rate");
-    let (sender, source) = VideoSource::push(moq_ext_sources::VideoFormat { size, rate });
-    let clock = moq_mux::Clock::new();
-    let push = || {
-        let pixels = vec![0x80; moq_video::I420::len(size).expect("a valid size")];
-        let picture = moq_video::I420::new(size, pixels).expect("a whole picture");
-        let timestamp = clock.now();
-        let frame = moq_video::Frame::new(moq_video::Surface::I420(picture), timestamp);
-        sender.push(frame).expect("the source is open");
-        timestamp
-    };
+/// The spacing of the frames a keyframe test pushes once its renditions run, a little over 30 fps.
+const STEP: u64 = 34_000;
 
-    let names = ["full", "small"];
-    let renditions = names.map(|name| {
-        let mut rendition = crate::VideoRendition::new(name);
-        rendition.config.join = Duration::from_secs(10);
-        rendition
-    });
-    let [full, small] = renditions;
-    let small = small.with_size(moq_video::Size::new(160, 90));
+/// Returns a grey 320x180 frame stamped at `micros`.
+fn grey(micros: u64) -> moq_video::Frame {
+    let size = moq_video::Size::new(320, 180);
+    let pixels = vec![0x80; moq_video::I420::len(size).expect("a valid size")];
+    let picture = moq_video::I420::new(size, pixels).expect("a whole picture");
+    let timestamp = moq_net::Timestamp::from_micros(micros).expect("in range");
+    moq_video::Frame::new(moq_video::Surface::I420(picture), timestamp)
+}
+
+/// Returns the catalog's counters of every rendition in `names`.
+fn sent_all(broadcast: &LocalBroadcast, names: &[String]) -> Vec<hang::stats::Rendition> {
+    names.iter().map(|name| sent(broadcast, name)).collect()
+}
+
+/// Waits until `grew` holds for the counters of every rendition in `names` against `before`.
+async fn until_every(
+    broadcast: &LocalBroadcast,
+    names: &[String],
+    before: &[hang::stats::Rendition],
+    grew: impl Fn(&hang::stats::Rendition, &hang::stats::Rendition) -> bool,
+) {
+    tokio::time::timeout(TIMEOUT, async {
+        while !sent_all(broadcast, names)
+            .iter()
+            .zip(before)
+            .all(|(now, before)| grew(now, before))
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the renditions published in time");
+}
+
+/// Encodes the 320x180 source behind `sender` into `renditions`, and waits until every one publishes.
+///
+/// Then it asks for a keyframe and pushes one more frame, later than any
+/// rendition's frame interval, and waits until every rendition published a
+/// keyframe for it. Since only that frame carries the request, no frame of
+/// the start is still on its way after that. Returns the broadcast, the
+/// timestamp of that frame in microseconds, and the subscriptions that watch
+/// the renditions.
+async fn settled_ladder(
+    sender: &moq_ext_sources::FrameSender<moq_video::Frame>,
+    source: VideoSource,
+    renditions: Vec<crate::VideoRendition>,
+) -> (LocalBroadcast, u64, Vec<impl Sized>) {
+    let clock = moq_mux::Clock::new();
+    let names: Vec<String> = renditions
+        .iter()
+        .map(|rendition| rendition.name.clone())
+        .collect();
     let broadcast = LocalBroadcast::new();
     broadcast
-        .set_video(source, crate::VideoEncoding::ladder([full, small]))
+        .set_video(source, crate::VideoEncoding::ladder(renditions))
         .expect("a valid encoding");
-    let mut subscriptions = Vec::new();
+    let push_now = || {
+        let micros = super::micros(clock.now()) as u64;
+        sender.push(grey(micros)).expect("the source is open");
+        micros
+    };
+    let mut last = 0;
     tokio::time::timeout(TIMEOUT, async {
         while broadcast.stats().renditions.len() < names.len() {
-            push();
+            last = push_now();
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("the renditions start");
-    for name in names {
+    let mut subscriptions = Vec::new();
+    for name in &names {
         let track = &broadcast.stats().renditions[name].track;
         let track = broadcast.consume().track(track).expect("the track exists");
         subscriptions.push(track.subscribe(None));
     }
-    let published = || names.map(|name| sent(&broadcast, name).frames);
     tokio::time::timeout(TIMEOUT, async {
-        while published().contains(&0) {
-            push();
+        while sent_all(&broadcast, &names)
+            .iter()
+            .any(|sent| sent.frames == 0)
+        {
+            last = push_now();
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("both renditions encode");
-    // Let the encoders take the last frame of the start, so from here on each
-    // count that grows is the frame just pushed.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    .expect("every rendition encodes");
 
-    let mut keyed = Vec::new();
+    let before = sent_all(&broadcast, &names);
+    sender.request_keyframe();
+    let marker = last + 100_000;
+    sender.push(grey(marker)).expect("the source is open");
+    until_every(&broadcast, &names, &before, |now, before| {
+        now.keyframes > before.keyframes
+    })
+    .await;
+    (broadcast, marker, subscriptions)
+}
+
+/// Returns a rendition that keys every ten seconds on its own, so every other keyframe is a requested one.
+fn rarely_keyed(name: &str) -> crate::VideoRendition {
+    let mut rendition = crate::VideoRendition::new(name);
+    rendition.config.join = Duration::from_secs(10);
+    rendition
+}
+
+/// A producer's keyframe request makes the next frame it pushes a keyframe on every rendition.
+///
+/// Each frame is pushed once both renditions published the previous one, so
+/// none is skipped, and the keyframe spacing of each rendition is the spacing
+/// of the two requested frames.
+#[tokio::test]
+async fn a_keyframe_request_keys_the_next_frame_on_every_rendition() {
+    let size = moq_video::Size::new(320, 180);
+    let rate = moq_video::FrameRate::new(30, 1).expect("a valid rate");
+    let (sender, source) = VideoSource::push(moq_ext_sources::VideoFormat { size, rate });
+    let renditions = vec![
+        rarely_keyed("full"),
+        rarely_keyed("small").with_size(moq_video::Size::new(160, 90)),
+    ];
+    let names = ["full".to_string(), "small".to_string()];
+    let (broadcast, mut last, _subscriptions) = settled_ladder(&sender, source, renditions).await;
+    let start = sent_all(&broadcast, &names);
+
+    let requested = [3, 9];
     for index in 0..12 {
-        let before = published();
-        if index == 3 || index == 9 {
+        let before = sent_all(&broadcast, &names);
+        if requested.contains(&index) {
             sender.request_keyframe();
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        let timestamp = push();
-        if index == 3 || index == 9 {
-            keyed.push(timestamp);
-        }
-        tokio::time::timeout(TIMEOUT, async {
-            while published()
-                .iter()
-                .zip(before)
-                .any(|(now, before)| *now <= before)
-            {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+        last += STEP;
+        sender.push(grey(last)).expect("the source is open");
+        until_every(&broadcast, &names, &before, |now, before| {
+            now.frames > before.frames
         })
-        .await
-        .expect("both renditions publish the frame");
+        .await;
+        if requested.contains(&index) {
+            until_every(&broadcast, &names, &before, |now, before| {
+                now.keyframes > before.keyframes
+            })
+            .await;
+        }
     }
 
-    let spacing = Duration::from_micros((super::micros(keyed[1]) - super::micros(keyed[0])) as u64);
     let stats = broadcast.stats();
-    for name in names {
+    for (name, start) in names.iter().zip(start) {
+        assert_eq!(
+            sent(&broadcast, name).keyframes,
+            start.keyframes + 2,
+            "{name} keyed on the requested frames only"
+        );
         assert_eq!(
             stats.renditions[name].keyframe_interval,
-            Some(spacing),
+            Some(Duration::from_micros(6 * STEP)),
             "{name} keyed on the two requested frames"
         );
     }
+}
+
+/// A request before a frame that a rendition's frame-rate cap drops keys the next frame that rendition encodes.
+///
+/// The `half` rendition keeps a frame at most every 1/15 s, so of the frames
+/// [`STEP`] apart it drops the first after the start and keeps the second.
+/// The `full` rendition encodes every frame and shows when one was read.
+#[tokio::test]
+async fn a_keyframe_request_survives_a_frame_the_rate_cap_drops() {
+    let size = moq_video::Size::new(320, 180);
+    let rate = moq_video::FrameRate::new(30, 1).expect("a valid rate");
+    let (sender, source) = VideoSource::push(moq_ext_sources::VideoFormat { size, rate });
+    let capped = moq_video::FrameRate::new(15, 1).expect("a valid rate");
+    let renditions = vec![rarely_keyed("full"), rarely_keyed("half").with_rate(capped)];
+    let names = ["full".to_string(), "half".to_string()];
+    let (broadcast, marker, _subscriptions) = settled_ladder(&sender, source, renditions).await;
+    let [full, half] = [&names[0], &names[1]];
+    let start = sent_all(&broadcast, &names);
+
+    // Requested, and dropped by the half rendition.
+    sender.request_keyframe();
+    sender
+        .push(grey(marker + STEP))
+        .expect("the source is open");
+    until_every(&broadcast, &names[..1], &start[..1], |now, before| {
+        now.keyframes > before.keyframes
+    })
+    .await;
+    // Not requested, and the first frame the half rendition encodes after the request.
+    let before = sent_all(&broadcast, &names);
+    sender
+        .push(grey(marker + 2 * STEP))
+        .expect("the source is open");
+    until_every(&broadcast, &names, &before, |now, before| {
+        now.frames > before.frames
+    })
+    .await;
+    until_every(&broadcast, &names[1..], &start[1..], |now, before| {
+        now.keyframes > before.keyframes
+    })
+    .await;
+
+    assert_eq!(
+        sent(&broadcast, half).frames,
+        start[1].frames + 1,
+        "the half rendition dropped the requested frame"
+    );
+    assert_eq!(
+        sent(&broadcast, full).keyframes,
+        start[0].keyframes + 1,
+        "the full rendition keyed the requested frame only"
+    );
+    let stats = broadcast.stats();
+    assert_eq!(
+        stats.renditions[half].keyframe_interval,
+        Some(Duration::from_micros(2 * STEP)),
+        "the half rendition keyed the frame after the dropped one"
+    );
+    assert_eq!(
+        stats.renditions[full].keyframe_interval,
+        Some(Duration::from_micros(STEP)),
+        "the full rendition keyed the requested frame"
+    );
 }
