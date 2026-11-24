@@ -15,7 +15,7 @@ use std::{
 use bytes::Bytes;
 use mp4_atom::{
     Atom, Codec as Entry, DecodeAtom, DecodeMaybe, Encode, FourCC, Header, Meta, Moof, Moov,
-    ReadAtom, ReadFrom, Trak, Udta,
+    ReadFrom, Traf, Trak, Udta,
 };
 use n0_error::{AnyError, StdResultExt, anyerr};
 use tracing::{debug, warn};
@@ -26,13 +26,14 @@ const NON_SYNC: u32 = 0x0001_0000;
 /// The MPEG-4 object type of AAC in an `esds` box.
 const AAC_OBJECT_TYPE: u8 = 0x40;
 
-/// The boxes of a `moov` or `trak` that hold metadata, which the index does not read.
+/// The boxes that hold metadata, which the index does not read.
 ///
-/// mp4-atom 0.17 refuses a repeated `cprt`, `covr` or `desc` item in the
-/// `ilst` of `udta/meta`, though players accept it, and some files repeat
-/// them. [`read_moov`] drops these boxes before mp4-atom decodes the rest.
-/// A `traf` in a fragment can hold them too, and the index leaves those, as
-/// no encoder is known to write metadata there.
+/// mp4-atom 0.17 refuses a repeated `cprt`, `covr`, `desc`, `©too`, `name`
+/// or `day ` item in the `ilst` of `udta/meta`, a repeated child of `udta`,
+/// and a second `udta` or `meta` box, though players accept all of them,
+/// and some files repeat them. [`read_without_metadata`] drops these boxes
+/// from a `moov` or `moof` and from each `trak` or `traf` in it before
+/// mp4-atom decodes the rest.
 const METADATA: [FourCC; 2] = [Udta::KIND, Meta::KIND];
 
 /// One sample: where it lies, and when it decodes and presents, in microseconds.
@@ -76,7 +77,8 @@ impl Codec {
 pub(super) struct Track {
     pub(super) video: bool,
     pub(super) codec: Codec,
-    /// The picture size of a video track, from the SPS of an H.264 track and the sample entry of another.
+    /// The picture size of a video track, from the first SPS for H.264 and
+    /// otherwise from the sample entry.
     pub(super) width: u32,
     pub(super) height: u32,
     /// The sample rate and channel count of an audio track.
@@ -109,7 +111,7 @@ pub(super) fn index(reader: &mut (impl Read + Seek)) -> Result<Vec<Track>, AnyEr
     loop {
         let start = reader.stream_position()?;
         // Some files end in a few bytes after the last box, too few for a box
-        // header, such as a line break a download tool appended. A tail of 8
+        // header, such as a stray line break. A tail of 8
         // bytes or more reads as a box header, and fails only if its size
         // field is invalid or it claims to be a `moov` or `moof`.
         let tail = len.saturating_sub(start);
@@ -123,8 +125,8 @@ pub(super) fn index(reader: &mut (impl Read + Seek)) -> Result<Vec<Track>, AnyEr
             break;
         };
         match header.kind {
-            Moov::KIND => moov = Some(read_moov(&header, reader)?),
-            Moof::KIND => fragments.push((start, Moof::read_atom(&header, reader).anyerr()?)),
+            Moov::KIND => moov = Some(read_without_metadata::<Moov>(&header, reader)?),
+            Moof::KIND => fragments.push((start, read_without_metadata::<Moof>(&header, reader)?)),
             // An `mdat` that runs to the end of the file ends the boxes.
             _ => match header.size {
                 Some(size) => {
@@ -175,20 +177,32 @@ pub(super) fn index(reader: &mut (impl Read + Seek)) -> Result<Vec<Track>, AnyEr
             _ => declared,
         };
         // The SPS is exact where the sample entry may not be: some files
-        // declare 640x359 for a stream whose pictures are 640x360, a size
-        // encoders refuse, while the decoder's pictures follow the SPS.
+        // declare 640x359 for pictures of 640x360. The encoder refuses the
+        // odd height, while the decoder's pictures follow the SPS.
         let declared = visual.map_or((0, 0), |visual| {
             (u32::from(visual.width), u32::from(visual.height))
         });
         let (width, height) = match &codec {
-            Codec::H264(record) => moq_mux::codec::h264::config(record)
-                .ok()
-                .and_then(|config| config.coded_width.zip(config.coded_height))
-                .unwrap_or(declared),
+            Codec::H264(record) => match moq_mux::codec::h264::config(record) {
+                Ok(config) => config
+                    .coded_width
+                    .zip(config.coded_height)
+                    .unwrap_or(declared),
+                Err(err) => {
+                    debug!(
+                        track = id,
+                        ?declared,
+                        error = %err,
+                        "the avcC or its SPS does not parse, using the sample entry's picture size"
+                    );
+                    declared
+                }
+            },
             _ => declared,
         };
         if (width, height) != declared {
             debug!(
+                track = id,
                 ?declared,
                 sps = ?(width, height),
                 "the sample entry's picture size differs from the SPS, using the SPS"
@@ -484,15 +498,15 @@ fn fragment(
     Ok(offset)
 }
 
-/// Reads the body of the `moov` box that `header` opens, and decodes it without its metadata boxes.
-fn read_moov(header: &Header, reader: &mut impl Read) -> Result<Moov, AnyError> {
+/// Reads the body of the `moov` or `moof` box that `header` opens, and decodes it without its metadata boxes.
+fn read_without_metadata<T: Atom>(header: &Header, reader: &mut impl Read) -> Result<T, AnyError> {
     let mut body = Vec::new();
     match header.size {
         Some(size) => {
             // Reading through `take` grows the buffer only as far as the file goes.
             reader.take(size as u64).read_to_end(&mut body)?;
             if body.len() != size {
-                return Err(anyerr!("the moov box runs past the end of the file"));
+                return Err(anyerr!("the {} box runs past the end of the file", T::KIND));
             }
         }
         None => {
@@ -501,13 +515,13 @@ fn read_moov(header: &Header, reader: &mut impl Read) -> Result<Moov, AnyError> 
     }
     let body = without_metadata(&body)?;
     let header = Header {
-        kind: Moov::KIND,
+        kind: T::KIND,
         size: Some(body.len()),
     };
-    Moov::decode_atom(&header, &mut body.as_slice()).anyerr()
+    T::decode_atom(&header, &mut body.as_slice()).anyerr()
 }
 
-/// Returns the child boxes in `body` without the [`METADATA`] boxes, also dropped inside each `trak`.
+/// Returns the child boxes in `body` without the [`METADATA`] boxes, also dropped inside each `trak` and `traf`.
 fn without_metadata(mut body: &[u8]) -> Result<Vec<u8>, AnyError> {
     let mut kept = Vec::with_capacity(body.len());
     while let Some(header) = Header::decode_maybe(&mut body).anyerr()? {
@@ -519,7 +533,7 @@ fn without_metadata(mut body: &[u8]) -> Result<Vec<u8>, AnyError> {
         let trak;
         let child = match header.kind {
             kind if METADATA.contains(&kind) => continue,
-            Trak::KIND => {
+            Trak::KIND | Traf::KIND => {
                 trak = without_metadata(child)?;
                 trak.as_slice()
             }
@@ -866,6 +880,8 @@ mod tests {
         // Rebuild the `moov` and its `trak` with the metadata after their other children.
         let trak = mp4_box(b"trak", &[&trak_body[8..], &duplicate_metadata()].concat());
         let moov = mp4_box(b"moov", &[mvhd_box, trak, duplicate_metadata()].concat());
+        // If this starts failing, mp4-atom accepts repeated metadata now,
+        // and `read_without_metadata` can decode the box directly.
         assert!(matches!(
             <atom::Moov as atom::Decode>::decode(&mut moov.as_slice()),
             Err(atom::Error::DuplicateBox(_))
@@ -886,26 +902,80 @@ mod tests {
         assert_eq!(millis(&tracks[0].samples), [0, 100, 200]);
     }
 
+    /// A tail long enough for a box header that claims a `moov` past the end of the file fails the index.
+    #[test]
+    fn a_long_junk_tail_fails() {
+        let mut data = mdat(3);
+        moov(stbl(3), Vec::new()).encode(&mut data).unwrap();
+        data.extend_from_slice(&[0, 0, 1, 0, b'm', b'o', b'o', b'v', 0, 0]);
+        assert!(index(&mut Cursor::new(data)).is_err());
+    }
+
+    /// Repeated metadata items in a `traf` do not fail the fragment.
+    #[test]
+    fn duplicate_metadata_in_a_fragment_is_skipped() {
+        let mut mfhd = Vec::new();
+        atom::Mfhd::default().encode(&mut mfhd).unwrap();
+        let mut traf = Vec::new();
+        atom::Traf::default().encode(&mut traf).unwrap();
+        let traf = mp4_box(b"traf", &[&traf[8..], &duplicate_metadata()].concat());
+        let moof = mp4_box(b"moof", &[mfhd, traf].concat());
+        assert!(matches!(
+            <atom::Moof as atom::Decode>::decode(&mut moof.as_slice()),
+            Err(atom::Error::DuplicateBox(_))
+        ));
+
+        let mut reader = moof.as_slice();
+        let header = <Header as atom::Decode>::decode(&mut reader).unwrap();
+        let moof: Moof = read_without_metadata(&header, &mut reader).unwrap();
+        assert_eq!(moof.traf.len(), 1);
+    }
+
+    /// Returns the position of the box `kind` in `data` at or after `from`.
+    fn find(data: &[u8], from: usize, kind: &[u8; 4]) -> usize {
+        from + data[from..]
+            .windows(4)
+            .position(|window| window == kind)
+            .expect("the clip has the box")
+    }
+
+    /// Changes the height that the clip's `avc1` sample entry declares from 48 to 47.
+    fn declare_height_47(data: &mut [u8]) {
+        // The width and height follow the `avc1` kind after 24 bytes of
+        // reserved fields, data reference index and pre-defined fields. The
+        // `ftyp` names `avc1` as a brand too, so the search starts at `stsd`.
+        let kind = find(data, find(data, 0, b"stsd"), b"avc1");
+        let height = kind + 4 + 26;
+        assert_eq!(data[height..height + 2], 48u16.to_be_bytes());
+        data[height..height + 2].copy_from_slice(&47u16.to_be_bytes());
+    }
+
+    /// Returns the picture size of the first video track in `data`.
+    fn video_size(data: Vec<u8>) -> (u32, u32) {
+        let tracks = index(&mut Cursor::new(data)).unwrap();
+        let video = tracks.iter().find(|track| track.video).unwrap();
+        (video.width, video.height)
+    }
+
     /// An H.264 track takes its picture size from the SPS, not from a sample entry that disagrees.
     #[test]
     fn the_sps_sets_the_picture_size() {
         let mut data = include_bytes!("../test_data/clip.mp4").to_vec();
-        // The width and height follow the `avc1` kind after 24 bytes of
-        // reserved fields, data reference index and pre-defined fields. The
-        // `ftyp` names `avc1` as a brand too, so the search starts at `stsd`.
-        let find = |from: usize, kind: &[u8]| {
-            from + data[from..]
-                .windows(4)
-                .position(|window| window == kind)
-                .expect("the clip has an avc1 sample entry")
-        };
-        let kind = find(find(0, b"stsd"), b"avc1");
-        let height = kind + 4 + 26;
-        assert_eq!(data[height..height + 2], 48u16.to_be_bytes());
-        data[height..height + 2].copy_from_slice(&47u16.to_be_bytes());
+        declare_height_47(&mut data);
+        assert_eq!(video_size(data), (64, 48));
+    }
 
-        let tracks = index(&mut Cursor::new(data)).unwrap();
-        let video = tracks.iter().find(|track| track.video).unwrap();
-        assert_eq!((video.width, video.height), (64, 48));
+    /// An SPS that does not parse leaves the picture size the sample entry declares.
+    #[test]
+    fn a_malformed_sps_keeps_the_declared_size() {
+        let mut data = include_bytes!("../test_data/clip.mp4").to_vec();
+        declare_height_47(&mut data);
+        // After the `avcC` kind come 6 bytes of fields, the 2-byte length of
+        // the first SPS, and its NAL header. Zeros then fail its first
+        // Exp-Golomb code.
+        let avcc = find(&data, 0, b"avcC");
+        let len = usize::from(u16::from_be_bytes([data[avcc + 10], data[avcc + 11]]));
+        data[avcc + 13..avcc + 12 + len].fill(0);
+        assert_eq!(video_size(data), (64, 47));
     }
 }
