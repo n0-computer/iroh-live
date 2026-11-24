@@ -134,6 +134,17 @@ struct Job {
 }
 
 impl Job {
+    /// Reports the slot running, with `rendition` publishing pre-encoded frames.
+    fn report_pre_encoded(&self, rendition: &str) {
+        self.reporter.slot(SlotState::Running);
+        self.reporter.rendition(
+            rendition,
+            status::RenditionState::Encoding {
+                encoder: "pre-encoded".to_string(),
+            },
+        );
+    }
+
     /// Stops the predecessor, then locks the track names.
     ///
     /// Returns `None` if `stop` fires first. Tracks the predecessor left for
@@ -380,35 +391,41 @@ impl SourceClock {
     }
 }
 
-/// A pre-encoded stream of timestamped frames, and the importer that publishes it.
-struct FrameImport {
-    frames: BoxStream<Result<EncodedFrame, Error>>,
-    import: moq_mux::import::Track,
-    /// The offset from the stream's timestamps to the broadcast clock, in microseconds.
-    offset: Option<i128>,
-}
-
-impl FrameImport {
-    fn new(frames: BoxStream<Result<EncodedFrame, Error>>, import: moq_mux::import::Track) -> Self {
-        Self {
-            frames,
-            import,
-            offset: None,
-        }
-    }
-
-    /// Publishes the next frame and returns its size, or `None` once the stream ends.
-    async fn next(&mut self, clock: &moq_mux::Clock) -> Result<Option<usize>, Error> {
-        let Some(frame) = self.frames.next().await.transpose()? else {
-            return Ok(None);
+/// Publishes `frames` through `import` until they end or `stop` is cancelled.
+///
+/// Reports the slot running and `rendition` encoding at the first frame,
+/// and hands the track and the size of each frame to `per_frame`. Returns
+/// how many frames went out.
+async fn pump_frames(
+    job: &Job,
+    rendition: &str,
+    mut frames: BoxStream<Result<EncodedFrame, Error>>,
+    mut import: moq_mux::import::Track,
+    stop: &CancellationToken,
+    mut per_frame: impl FnMut(&mut moq_mux::import::Track, usize) -> Result<(), Error>,
+) -> Result<u64, Error> {
+    let mut offset = None;
+    let mut published = 0u64;
+    loop {
+        let frame = tokio::select! {
+            frame = frames.next() => frame.transpose()?,
+            () = stop.cancelled() => None,
         };
+        let Some(frame) = frame else { break };
         let size = frame.data.len();
-        let timestamp = wall_map(&mut self.offset, clock, &frame);
-        self.import
+        let timestamp = wall_map(&mut offset, &job.clock, &frame);
+        import
             .decode(frame.data, Some(timestamp))
             .map_err(Error::decoder)?;
-        Ok(Some(size))
+        if published == 0 {
+            job.report_pre_encoded(rendition);
+        }
+        published += 1;
+        per_frame(&mut import, size)?;
     }
+    // Dropping the finished track releases it.
+    let _finished = import.finish().map_err(Error::catalog)?;
+    Ok(published)
 }
 
 /// Returns the broadcast timestamp of `frame`, a frame of a pre-encoded stream.

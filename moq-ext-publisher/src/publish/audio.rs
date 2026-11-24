@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 #[cfg(feature = "capture")]
 use super::status::Reporter;
 use super::{
-    FrameImport, Job, SourceClock, encoding::audio_track_name, report_encoded_end,
+    Job, SourceClock, encoding::audio_track_name, pump_frames, report_encoded_end,
     status::RenditionState,
 };
 use crate::stats::AudioEncodeStats;
@@ -96,33 +96,12 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedAudio, stop: Cancel
         let init = moq_mux::import::AudioInit::new(format, config);
         let import = moq_mux::import::Track::audio(request, job.catalog.reserve(), init)
             .map_err(Error::catalog)?;
-        let mut import = FrameImport::new(frames, import);
         info!(track = %name, "publishing pre-encoded audio");
-        let mut published = 0u64;
-        loop {
-            let next = tokio::select! {
-                next = import.next(&job.clock) => next?,
-                () = stop.cancelled() => None,
-            };
-            if next.is_none() {
-                break;
-            }
-            if published == 0 {
-                job.reporter.slot(SlotState::Running);
-                job.reporter.rendition(
-                    &name,
-                    RenditionState::Encoding {
-                        encoder: "pre-encoded".to_string(),
-                    },
-                );
-            }
-            published += 1;
-            import.import.cut(None).map_err(Error::decoder)?;
+        pump_frames(&job, &name, frames, import, &stop, |track, _| {
             stats.update(|stats| stats.frames += 1);
-        }
-        // Dropping the finished track releases it.
-        let _finished = import.import.finish().map_err(Error::catalog)?;
-        Ok(published)
+            track.cut(None).map_err(Error::decoder)
+        })
+        .await
     }
     .await;
     if !stop.is_cancelled() {
