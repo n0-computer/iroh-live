@@ -72,6 +72,8 @@ record = ["media", "moq-ext-player/record"]
 # Token verifiers in `iroh_live::node::policy`: JWTs and rcan chains.
 jwt = ["iroh-live-node/jwt"]
 rcan = ["iroh-live-node/rcan"]
+# qlog traces of every connection, written into `QLOGDIR` if set.
+qlog = ["iroh-live-node/qlog"]
 # Re-exports `iroh-live-rooms` as `iroh_live::rooms`.
 rooms = ["dep:iroh-live-rooms"]
 # Camera, screen, and microphone capture.

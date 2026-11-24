@@ -27,6 +27,7 @@ No feature is on by default.
 | `rooms` | `iroh_live::rooms`, the `iroh-live-rooms` crate | | all |
 | `jwt` | `policy::JwtVerifier`, which verifies moq-relay's JWTs | | all |
 | `rcan` | `policy::RcanVerifier`, which verifies rcan capability chains | | all |
+| `qlog` | A qlog trace of every QUIC connection, written into the directory `QLOGDIR` names. Without `QLOGDIR`, nothing is written | | all |
 
 Without `media`, `iroh-live` is the node, tickets, layouts and calls, with no
 codec dependency.
@@ -54,6 +55,7 @@ reach.
 | `rpicam` | yes | `--video rpicam` (Linux) |
 | `vaapi`, `nvidia` | yes | Hardware encode and decode (Linux) |
 | `v4l2` | yes | `--encoder v4l2` and the matching decoder (Linux) |
+| `qlog` | no | A qlog trace of every connection into `QLOGDIR` |
 
 On Linux, the default build needs `libpipewire` and `libclang`, see
 [Install](../getting-started/install.md#build-irl-from-source).
@@ -69,10 +71,27 @@ define them:
 | `moq-ext-player` | `playback`, `render`, `record`, `aec`, `vaapi`, `nvidia`, `v4l2` | none |
 | `moq-ext-sources` | `pattern`, `file`, `capture`, `sound-server`, `aec`, `pipewire`, `rpicam`, `serde` | `pattern` |
 | `moq-ext-access` | `jwt`, `rcan` | none |
-| `iroh-live-node` | `jwt`, `rcan`, forwarded to `moq-ext-access` | none |
+| `iroh-live-node` | `jwt`, `rcan`, forwarded to `moq-ext-access`, and `qlog`, forwarded to `iroh` | none |
 
 `moq-ext-publisher` and `moq-ext-player` encode and decode with no feature at
 all. They cannot open a device or draw until `capture`, `playback` or
 `render` is on. The `test-util` features of `iroh-live-node`,
 `moq-ext-player` and `iroh-live-rooms` hold test helpers and are not a public
 API.
+
+## qlog
+
+With `qlog` on, every endpoint bound with `MoqPreset` or `EndpointConfig`, or
+given `Congestion::transport_config`, writes one qlog file per QUIC connection
+into the directory the `QLOGDIR` environment variable names. The directory is
+created if missing, and without `QLOGDIR` nothing is written. Each file is
+named `iroh-live-<unix ms>-<connection id>-<client|server>.qlog`, and tools
+such as [qvis](https://qvis.quictools.info/) show its packets, losses,
+congestion window and RTT. The traces show where a stalled connection stops
+sending, and they grow with the traffic, so leave `QLOGDIR` unset when not
+diagnosing.
+
+```sh
+cargo install --path iroh-live-cli --features qlog
+QLOGDIR=./qlog irl publish
+```
