@@ -680,24 +680,13 @@ impl AudioSource {
         if media_file::is_mp4(&path).await {
             return MediaFile::open(&path).await?.with_end(at_end).audio();
         }
-        let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
-        let weak = fanout.downgrade();
-        let stop = CancellationToken::new();
-        // Stops the decode thread if this future is dropped. A looping file
-        // would otherwise decode for the rest of the process.
-        let abandoned = stop.clone().drop_guard();
-        let format = {
-            let stop = stop.clone();
-            tokio::task::spawn_blocking(move || file::spawn(path, at_end, fanout, stop))
-                .await
-                .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??
-        };
-        abandoned.disarm();
-        let kind = AudioKind::Pcm {
-            format,
-            fanout: weak,
-        };
-        Ok(Self::new("file", kind, stop, Driver::Thread))
+        let probed = path.clone();
+        let format = tokio::task::spawn_blocking(move || file::probe(&probed))
+            .await
+            .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??;
+        Self::spawn("audio-file", format, move |sender| {
+            file::decode_loop(&path, at_end, &sender)
+        })
     }
 
     /// Returns a steady sine tone at `hz`, at 48 kHz in `layout`.
@@ -735,24 +724,10 @@ impl AudioSource {
             sample_rate: generator::TONE_RATE,
             layout,
         };
-        let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
-        let weak = fanout.downgrade();
-        let stop = CancellationToken::new();
-        {
-            let stop = stop.clone();
-            std::thread::Builder::new()
-                .name(name.into())
-                .spawn(move || generator::run_tone(hz, format, gate, fanout, stop))?;
-        }
-        Ok(Self::new(
-            name,
-            AudioKind::Pcm {
-                format,
-                fanout: weak,
-            },
-            stop,
-            Driver::Thread,
-        ))
+        Self::spawn(name, format, move |sender| {
+            generator::run_tone(hz, format, gate, &sender);
+            Ok(())
+        })
     }
 
     /// Returns a source fed by the returned sender.
@@ -763,17 +738,52 @@ impl AudioSource {
     /// the source.
     #[must_use]
     pub fn push(format: AudioFormat) -> (FrameSender<audio::Frame>, Self) {
+        Self::pcm("push", format, Driver::Pushed)
+    }
+
+    /// Runs `run` on a dedicated thread named `name` that feeds the source.
+    ///
+    /// As [`VideoSource::spawn`], for PCM in `format`. The source ends once
+    /// `run` returns and every clone of its sender is dropped. An error of
+    /// `run` is logged. `run` should return once [`FrameSender::push`]
+    /// reports [`SourceClosed`](crate::SourceClosed).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the thread cannot be started.
+    pub fn spawn<F>(name: &'static str, format: AudioFormat, run: F) -> Result<Self, Error>
+    where
+        F: FnOnce(FrameSender<audio::Frame>) -> Result<(), Error> + Send + 'static,
+    {
+        let (sender, source) = Self::pcm(name, format, Driver::Thread);
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || match run(sender) {
+                Ok(()) => debug!(source = name, "audio source ended"),
+                Err(err) => {
+                    warn!(
+                        source = name,
+                        error = format_args!("{err:#}"),
+                        "audio source failed"
+                    );
+                }
+            })?;
+        Ok(source)
+    }
+
+    /// Returns a PCM source in `format` and the sender that feeds it.
+    fn pcm(
+        label: &'static str,
+        format: AudioFormat,
+        driver: Driver,
+    ) -> (FrameSender<audio::Frame>, Self) {
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();
-        let source = Self::new(
-            "push",
-            AudioKind::Pcm {
-                format,
-                fanout: fanout.downgrade(),
-            },
-            stop.clone(),
-            Driver::Pushed,
-        );
+        let kind = AudioKind::Pcm {
+            format,
+            fanout: fanout.downgrade(),
+        };
+        let source = Self::new(label, kind, stop.clone(), driver);
         let sender = FrameSender::new(Arc::new(fanout), stop, source.inner.demand.clone());
         (sender, source)
     }
@@ -802,6 +812,36 @@ impl AudioSource {
     #[must_use]
     pub fn label(&self) -> &str {
         self.inner.label
+    }
+}
+
+#[cfg(all(test, any(feature = "pattern", feature = "file")))]
+impl AudioSource {
+    /// Returns a receiver of the PCM the source produces, while its producer runs.
+    pub(crate) fn subscribe_pcm(&self) -> Option<tokio::sync::broadcast::Receiver<audio::Frame>> {
+        match &self.inner.kind {
+            AudioKind::Pcm { fanout, .. } => fanout.upgrade().map(|fanout| fanout.subscribe()),
+            #[cfg(feature = "capture")]
+            AudioKind::Microphone(_) => None,
+        }
+    }
+}
+
+/// Sleeps until `due`, or returns `false` once `closed` reports the source gone.
+///
+/// Wakes every 50 ms to ask, so a dropped source does not hold its thread for
+/// a slow frame interval or a still picture that lasts seconds.
+#[cfg(any(feature = "pattern", feature = "file"))]
+fn sleep_until(due: std::time::Instant, closed: impl Fn() -> bool) -> bool {
+    loop {
+        if closed() {
+            return false;
+        }
+        let left = due.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        std::thread::sleep(left.min(std::time::Duration::from_millis(50)));
     }
 }
 

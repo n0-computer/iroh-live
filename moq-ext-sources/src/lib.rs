@@ -25,7 +25,7 @@
 //! | Camera, display, window | [`VideoSource::capture`], [`VideoSource::camera`], [`VideoSource::screen`] | `capture` |
 //! | Microphone | [`AudioSource::microphone`] | `capture` |
 //! | Raspberry Pi camera through `rpicam-vid` | [`VideoSource::rpicam`], `rpicam_h264` | `rpicam` (Linux) |
-//! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
+//! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`], [`AudioSource::spawn`] | always |
 //! | Any of the above, switched while published | [`VideoSource::switchable`] | always |
 //!
 //! [`EncodedVideo`] and [`EncodedAudio`] are media that arrives encoded, from

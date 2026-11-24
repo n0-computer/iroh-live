@@ -21,13 +21,12 @@ use std::{
 
 use bytes::Bytes;
 use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use self::mp4::{Codec, Sample, Track};
 use super::{
-    AudioFormat, AudioKind, AudioSource, Driver, FileEnd, PCM_BUFFER, VideoFormat, VideoSource,
-    file::file_error, sender::PcmFanout,
+    AudioFormat, AudioSource, FileEnd, FrameSender, VideoFormat, VideoSource, file::file_error,
+    sleep_until,
 };
 use crate::{EncodedAudio, EncodedFrame, EncodedVideo, Error, audio, video};
 
@@ -48,9 +47,6 @@ const MIN_PASS: Duration = Duration::from_micros(1_000_000 / FALLBACK_FPS as u64
 /// fast until it caught up. After the move, the content resumes where it
 /// stopped.
 const MAX_BEHIND: Duration = Duration::from_secs(1);
-
-/// The longest a decode thread sleeps before it checks that its source is still wanted.
-const WAIT_SLICE: Duration = Duration::from_millis(50);
 
 /// The deepest reordering [`Reorder`] allows for, the size of the largest H.264 picture buffer.
 const MAX_HELD: usize = 16;
@@ -306,23 +302,10 @@ impl MediaFile {
             sample_rate: decoder.sample_rate(),
             layout: decoder.layout(),
         };
-        let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
-        let weak = fanout.downgrade();
-        let stop = CancellationToken::new();
         let file = self.clone();
-        let stopped = stop.clone();
-        std::thread::Builder::new()
-            .name("audio-file".into())
-            .spawn(move || {
-                if let Err(err) = file.decode_audio(decoder, &fanout, &stopped) {
-                    warn!(path = %file.path().display(), error = format_args!("{err:#}"), "audio file decode stopped");
-                }
-            })?;
-        let kind = AudioKind::Pcm {
-            format,
-            fanout: weak,
-        };
-        Ok(AudioSource::new("audio-file", kind, stop, Driver::Thread))
+        AudioSource::spawn("audio-file", format, move |sender| {
+            file.decode_audio(decoder, &sender)
+        })
     }
 
     /// Returns the avcC record of the video track, or the AudioSpecificConfig of the audio track.
@@ -409,7 +392,7 @@ impl MediaFile {
             let skipped = clock.skipped();
             let at = skipped + Duration::from_micros(Reorder::micros(&frame));
             let due = clock.instant(at);
-            if !wait_until(due, &closed) {
+            if !sleep_until(due.into_std(), &closed) {
                 return Ok(false);
             }
             clock.catch_up(skipped, due);
@@ -463,12 +446,11 @@ impl MediaFile {
         Ok(())
     }
 
-    /// Decodes the audio track into `fanout`, each packet when it is due.
+    /// Decodes the audio track into `sender`, each packet when it is due.
     fn decode_audio(
         &self,
         mut decoder: moq_audio::decode::Decoder,
-        fanout: &PcmFanout,
-        stop: &CancellationToken,
+        sender: &FrameSender<audio::Frame>,
     ) -> Result<(), Error> {
         let clock = &self.shared.clock;
         let mut pass = None;
@@ -483,7 +465,7 @@ impl MediaFile {
             let skipped = clock.skipped();
             let timestamp = skipped + next.timestamp;
             let due = clock.instant(timestamp);
-            if !wait_until(due, &|| stop.is_cancelled()) {
+            if !sleep_until(due.into_std(), || sender.is_closed()) {
                 return Ok(());
             }
             clock.catch_up(skipped, due);
@@ -504,8 +486,12 @@ impl MediaFile {
                         .iter()
                         .flat_map(|sample| sample.to_le_bytes()),
                 );
-                // An error only means no broadcast is attached right now.
-                let _ = fanout.send(audio::Frame::new(data, to_timestamp(timestamp)?));
+                if sender
+                    .push(audio::Frame::new(data, to_timestamp(timestamp)?))
+                    .is_err()
+                {
+                    return Ok(());
+                }
             }
         }
         debug!(path = %self.path().display(), "audio file ended");
@@ -634,23 +620,6 @@ fn to_timestamp(at: Duration) -> Result<moq_net::Timestamp, Error> {
         .ok()
         .and_then(|micros| moq_net::Timestamp::from_micros(micros).ok())
         .ok_or_else(|| Error::device_msg(format!("a file time of {at:?} is out of range")))
-}
-
-/// Waits until `due`, in short slices, and returns `false` early once `closed` says so.
-///
-/// A variable-rate file holds a still picture for as long as it likes, and
-/// the decoder must not outlive its source by that long.
-fn wait_until(due: Instant, closed: &impl Fn() -> bool) -> bool {
-    loop {
-        if closed() {
-            return false;
-        }
-        let left = due.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return true;
-        }
-        std::thread::sleep(left.min(WAIT_SLICE));
-    }
 }
 
 /// Puts decoded pictures back into presentation order.

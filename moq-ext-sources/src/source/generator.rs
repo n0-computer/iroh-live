@@ -27,7 +27,7 @@ use moq_mux::Clock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use super::{AudioFormat, sender::PcmFanout};
+use super::{AudioFormat, FrameSender, sleep_until};
 use crate::{
     BouncePattern, audio,
     frames::FrameSlot,
@@ -130,26 +130,6 @@ impl Gate {
     }
 }
 
-/// Sleeps until `due`, or returns `false` once `stop` is cancelled.
-///
-/// Wakes at least every 100 ms to check `stop`, so a dropped source does not
-/// hold its thread for a whole slow frame interval.
-fn sleep_until(due: Instant, stop: &CancellationToken) -> bool {
-    loop {
-        if stop.is_cancelled() {
-            return false;
-        }
-        let now = Instant::now();
-        let Some(left) = due
-            .checked_duration_since(now)
-            .filter(|left| !left.is_zero())
-        else {
-            return true;
-        };
-        std::thread::sleep(left.min(Duration::from_millis(100)));
-    }
-}
-
 /// Paints the timing pattern into `slot` until `stop` is cancelled.
 pub(crate) fn run_pattern(
     size: Size,
@@ -204,7 +184,7 @@ fn run_frames(
     let started = Instant::now();
     for count in 0u64.. {
         let due = started + interval.mul_f64(count as f64);
-        if !sleep_until(due, stop) {
+        if !sleep_until(due, || stop.is_cancelled()) {
             break;
         }
         // Read the clock after the wait, so the frame shows its own time.
@@ -233,13 +213,12 @@ fn paint_gradient(rgba: &mut [u8], size: Size, count: u64) {
     }
 }
 
-/// Generates a gated sine at `hz` into `fanout` until `stop` is cancelled.
+/// Generates a gated sine at `hz` into `sender` until the source is gone.
 pub(crate) fn run_tone(
     hz: f64,
     format: AudioFormat,
     gate: Gate,
-    fanout: PcmFanout,
-    stop: CancellationToken,
+    sender: &FrameSender<audio::Frame>,
 ) {
     let clock = test_clock();
     let sample_rate = format.sample_rate.max(1);
@@ -252,7 +231,7 @@ pub(crate) fn run_tone(
     let mut sample = 0usize;
 
     for index in 0u64.. {
-        if !sleep_until(started + TONE_FRAME * index as u32, &stop) {
+        if !sleep_until(started + TONE_FRAME * index as u32, || sender.is_closed()) {
             break;
         }
         let start = origin + TONE_FRAME * index as u32;
@@ -271,8 +250,12 @@ pub(crate) fn run_tone(
         let Ok(timestamp) = moq_net::Timestamp::from_micros(start.as_micros() as u64) else {
             break;
         };
-        // An error only means no broadcast is attached.
-        let _ = fanout.send(audio::Frame::new(data.into(), timestamp));
+        if sender
+            .push(audio::Frame::new(data.into(), timestamp))
+            .is_err()
+        {
+            break;
+        }
     }
     debug!("test tone stopped");
 }
@@ -760,16 +743,13 @@ mod tests {
     /// The tone keeps pace with the clock and peaks below full scale.
     #[test]
     fn the_tone_keeps_up_with_the_clock() {
-        let (fanout, mut frames) = tokio::sync::broadcast::channel(64);
-        let stop = CancellationToken::new();
         let format = AudioFormat {
             sample_rate: TONE_RATE,
             layout: audio::Layout::Mono,
         };
-        let thread = {
-            let stop = stop.clone();
-            std::thread::spawn(move || run_tone(440.0, format, Gate::Continuous, fanout, stop))
-        };
+        let (sender, source) = crate::AudioSource::push(format);
+        let mut frames = source.subscribe_pcm().expect("the sender lives");
+        let thread = std::thread::spawn(move || run_tone(440.0, format, Gate::Continuous, &sender));
         // Compares media time with arrival time between the first and the last
         // frame, so starting and stopping the thread do not count.
         let started = Instant::now();
@@ -798,7 +778,7 @@ mod tests {
                 .map(|sample| f32::from_le_bytes(*sample).abs())
                 .fold(peak, f32::max);
         }
-        stop.cancel();
+        drop(source);
         thread.join().expect("the tone thread exits");
         let (first_media, first_at) = first.expect("the tone produced frames");
         let (last_media, last_at) = last.expect("the tone produced frames");

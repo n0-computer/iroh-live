@@ -8,7 +8,7 @@
 //! converts it itself, so there is one resampler instead of two.
 
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -22,41 +22,10 @@ use symphonia::core::{
     io::MediaSourceStream,
     meta::MetadataOptions,
 };
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use super::{AudioFormat, FileEnd, sender::PcmFanout};
+use super::{AudioFormat, FileEnd, FrameSender, sleep_until};
 use crate::Error;
-
-/// Opens `path` and decodes it into `fanout` on its own thread.
-///
-/// Decoding runs until the file ends or `stop` is cancelled. Returns the
-/// file's own sample rate and layout.
-///
-/// # Errors
-///
-/// Fails if the file cannot be read, holds no audio track, or uses a codec
-/// this build cannot decode.
-pub(crate) fn spawn(
-    path: PathBuf,
-    at_end: FileEnd,
-    fanout: PcmFanout,
-    stop: CancellationToken,
-) -> Result<AudioFormat, Error> {
-    let probe = probe(&path)?;
-    let format = AudioFormat {
-        sample_rate: probe.sample_rate,
-        layout: probe.layout,
-    };
-    std::thread::Builder::new()
-        .name("audio-file".into())
-        .spawn(move || {
-            if let Err(err) = decode_loop(&path, at_end, &fanout, &stop) {
-                warn!(path = %path.display(), error = format_args!("{err:#}"), "audio file decode stopped");
-            }
-        })?;
-    Ok(format)
-}
 
 /// Returns a device error that names `path`.
 pub(super) fn file_error(path: &Path, source: impl std::fmt::Display) -> Error {
@@ -143,30 +112,36 @@ fn decoder(path: &Path, track: &Track) -> Result<Box<dyn AudioDecoder>, Error> {
 }
 
 /// Reads the rate and layout of `path` and checks that its codec decodes.
-fn probe(path: &Path) -> Result<Probe, Error> {
+pub(super) fn probe(path: &Path) -> Result<AudioFormat, Error> {
     let (_, track) = open_track(path)?;
     decoder(path, &track)?;
-    Ok(Probe::of(&track))
+    let Probe {
+        sample_rate,
+        layout,
+    } = Probe::of(&track);
+    Ok(AudioFormat {
+        sample_rate,
+        layout,
+    })
 }
 
-/// Decodes `path` into `fanout` until the file ends or `stop` is cancelled.
+/// Decodes `path` into `sender` until the file ends or the source is gone.
 ///
 /// Restarts at the beginning for [`FileEnd::Restart`]. Decoding is paced to
 /// the wall clock, because timestamps come from the sample count. A decoder
 /// that raced ahead would publish a minute of audio in a second and then
 /// starve.
-fn decode_loop(
+pub(super) fn decode_loop(
     path: &Path,
     at_end: FileEnd,
-    fanout: &PcmFanout,
-    stop: &CancellationToken,
+    sender: &FrameSender<moq_audio::Frame>,
 ) -> Result<(), Error> {
     let started = Instant::now();
     let mut published = Duration::ZERO;
 
     loop {
-        let frames = decode_once(path, fanout, stop, started, &mut published)?;
-        if at_end == FileEnd::Stop || stop.is_cancelled() {
+        let frames = decode_once(path, sender, started, &mut published)?;
+        if at_end == FileEnd::Stop || sender.is_closed() {
             debug!(path = %path.display(), "audio file ended");
             return Ok(());
         }
@@ -184,8 +159,7 @@ fn decode_loop(
 /// Runs one pass over the file, returning how many frames it published.
 fn decode_once(
     path: &Path,
-    fanout: &PcmFanout,
-    stop: &CancellationToken,
+    sender: &FrameSender<moq_audio::Frame>,
     started: Instant,
     published: &mut Duration,
 ) -> Result<usize, Error> {
@@ -238,19 +212,16 @@ fn decode_once(
             moq_net::Timestamp::from_micros(published.as_micros() as u64)
                 .expect("a file plays for far less than the timestamp range"),
         );
-        if stop.is_cancelled() {
-            // The source went away.
+        if sender.push(frame).is_err() {
             return Ok(sent);
         }
-        // An error only means no broadcast is attached right now.
-        let _ = fanout.send(frame);
         sent += 1;
 
         let frames = interleaved.len() / channels.max(1) as usize;
         *published += Duration::from_secs_f64(frames as f64 / sample_rate as f64);
         // Keep in step with the wall clock. The fan-out absorbs a small lead.
-        if let Some(ahead) = published.checked_sub(started.elapsed()) {
-            std::thread::sleep(ahead);
+        if !sleep_until(started + *published, || sender.is_closed()) {
+            return Ok(sent);
         }
     }
     Ok(sent)
@@ -261,6 +232,19 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    /// Returns a sender, a receiver of what it pushes, and the source that keeps it open.
+    fn pcm(
+        format: AudioFormat,
+    ) -> (
+        FrameSender<moq_audio::Frame>,
+        tokio::sync::broadcast::Receiver<moq_audio::Frame>,
+        crate::AudioSource,
+    ) {
+        let (sender, source) = crate::AudioSource::push(format);
+        let rx = source.subscribe_pcm().expect("the sender lives");
+        (sender, rx, source)
+    }
 
     /// Returns a valid PCM WAV header that describes zero samples of audio.
     fn empty_wav() -> Vec<u8> {
@@ -313,10 +297,10 @@ mod tests {
         assert_eq!(probe.sample_rate, 48_000);
         assert_eq!(probe.layout, moq_audio::Layout::Stereo);
 
-        let (fanout, mut rx) = tokio::sync::broadcast::channel(1024);
+        let (sender, mut rx, _source) = pcm(probe);
         let decoded = std::thread::spawn({
             let path = path.clone();
-            move || decode_loop(&path, FileEnd::Stop, &fanout, &CancellationToken::new())
+            move || decode_loop(&path, FileEnd::Stop, &sender)
         });
 
         let mut samples: Vec<f32> = Vec::new();
@@ -393,13 +377,8 @@ mod tests {
         let (done, finished) = std::sync::mpsc::sync_channel(1);
         let looping = path.clone();
         std::thread::spawn(move || {
-            let (fanout, rx) = tokio::sync::broadcast::channel(16);
-            let result = decode_loop(
-                &looping,
-                FileEnd::Restart,
-                &fanout,
-                &CancellationToken::new(),
-            );
+            let (sender, rx, _source) = pcm(probe(&looping).expect("an empty WAV opens"));
+            let result = decode_loop(&looping, FileEnd::Restart, &sender);
             let _ = done.send((result.is_ok(), rx.is_empty()));
         });
 
