@@ -13,20 +13,44 @@ that `--video` and `--audio` take.
 irl publish                                   # default camera and microphone
 irl publish --video cam:/dev/video2 --audio none
 irl publish --video screen --audio system     # system audio is macOS only
-irl publish --video file:talk.mp4 --transcode
+irl publish --video file:talk.mp4:loop        # the file as it is, with its audio
+irl publish --video file:talk.mp4 --reencode --renditions 720p,360p
 irl publish --video none --audio file:music.mp3:loop
 ```
 
-A `file:` video source is republished without decoding. A plain MP4 or a
-looped file needs `--transcode`, which runs it through ffmpeg first. The
-[CLI reference](../reference/cli.md#sources) lists every source, and
-[Raspberry Pi](raspberry-pi.md) covers the Pi camera.
+The [CLI reference](../reference/cli.md#sources) lists every source, and
+[Raspberry Pi](raspberry-pi.md) covers the Pi camera. The next section
+explains the two ways to publish a file.
+
+## Publish a file
+
+`file:` takes an MP4 file, plain or fragmented, and plays it in real time,
+from the start again with `:loop`. Its audio comes along unless `--audio`
+names another source. By default the file's H.264 and AAC are published as
+they are. `--reencode` decodes them and encodes them like a camera, which
+`irl call` and `irl room` accept as well.
+
+Passthrough costs no CPU and keeps the file's quality, but it publishes one
+rendition at the file's size and bitrate. Keyframes come only where the file
+has them, so a new viewer waits up to one GOP for a picture, and a viewer's
+request for a keyframe goes unanswered. Nothing adapts the bitrate to the
+path, and there are no pictures for a preview. `--reencode` lifts all of
+that, at the cost of a decode and an encode, and is needed for
+`--renditions`, a size, `--preview`, and for files in other codecs than
+H.264 and AAC.
+
+From Rust, `MediaFile` does the same. `MediaFile::open` reads the file's
+index, `info()` reports its codecs, size, rate and GOP, and the file hands
+out either encoded streams for `set_encoded_video` and `set_encoded_audio`
+or decoded sources for `set_video` and `set_audio`. Every stream of one file
+plays against one clock, so audio and video stay in sync and loop together.
+The `publish-file` example shows both ways.
 
 ## From Rust
 
 This program publishes the camera, or the screen with `screen` as its first
-argument. A second argument names a WAV or MP3 file to play instead of the
-microphone. It needs the `capture` and `file` features.
+argument. A second argument names a WAV, MP3 or MP4 file whose audio plays
+instead of the microphone. It needs the `capture` and `file` features.
 
 ```rust,no_run
 use iroh::protocol::Router;
@@ -112,9 +136,8 @@ feeds it.
   that the application makes. A video producer can call
   `FrameSender::request_keyframe()` before a push to make that frame a
   keyframe on every rendition.
-- A video file is republished without decoding, through moq-mux's importer.
-  `irl` does this in `iroh-live-cli/src/import.rs`. There is no
-  `VideoSource` for files.
+- `MediaFile` publishes an MP4 file as it is or decodes it, see
+  [Publish a file](#publish-a-file).
 - `rpicam_h264` publishes the Raspberry Pi camera's own H.264, see
   [Raspberry Pi](raspberry-pi.md).
 

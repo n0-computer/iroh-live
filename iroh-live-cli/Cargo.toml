@@ -20,7 +20,6 @@ clap = { version = "4.6.7", features = ["derive"] }
 derive_more = { version = "2.1.1", features = ["debug", "display"] }
 dirs = "7"
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
-hang = { workspace = true }
 iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["capture", "file", "playback", "render", "rooms", "record"] }
 moq-net = { workspace = true }

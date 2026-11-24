@@ -266,9 +266,11 @@ fn capture_framerate(
 /// Returns whether the backend behind `spec` acts on a requested frame rate.
 ///
 /// The AVFoundation camera backend ignores it and warns. We skip the default
-/// there to avoid that warning, but still pass an explicit `--fps`.
+/// there to avoid that warning, but still pass an explicit `--fps`. A file
+/// plays at its own rate.
 fn takes_framerate(spec: &VideoSourceSpec) -> bool {
-    !(cfg!(target_os = "macos") && matches!(spec, VideoSourceSpec::Camera(_)))
+    !(cfg!(target_os = "macos") && matches!(spec, VideoSourceSpec::Camera(_))
+        || matches!(spec, VideoSourceSpec::File { .. }))
 }
 
 /// Returns the rungs whose `@<fps>` differs from the capture rate.

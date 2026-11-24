@@ -49,7 +49,7 @@ kind. The platform picks the capture backend.
 | `app:<id>` | Every window of one application (macOS) |
 | `rpicam` | The Raspberry Pi camera through `rpicam-vid`, encoded by the Pi's hardware. Needs the `rpicam` feature |
 | `rpicam:raw` | The Raspberry Pi camera's raw pictures, encoded here. Needs the `rpicam` feature |
-| `file:<path>[:loop]` | A media file, republished without encoding |
+| `file:<path>[:loop]` | An MP4 file, plain or fragmented, published as it is, or decoded and encoded with `--reencode`. Its audio comes along unless `--audio` is given |
 | `test`, `test:timing` | The timing pattern: a sweeping bar, stripes, a frame counter, a clock, and a marker that flashes with the test tone's beep |
 | `test:gradient` | A moving gradient |
 | `test:bounce` | A white square bouncing left and right on a background that drifts through the hues |
@@ -59,7 +59,7 @@ kind. The platform picks the capture backend.
 |---|---|
 | `mic`, `mic:<id>` | A microphone. `mic` is the default |
 | `system` | Everything the machine plays (macOS) |
-| `file:<path>[:loop]` | An audio file, decoded and encoded |
+| `file:<path>[:loop]` | A WAV, MP3 or MP4 file, decoded and encoded |
 | `test`, `test:beeps` | A beep every second, in step with the timing pattern's marker |
 | `test:tone` | A continuous sine tone |
 | `none` | No audio |
@@ -84,7 +84,8 @@ Capture and encoding:
 | Flag | Description |
 |---|---|
 | `--video <SPEC>` | Video source (default: `cam`) |
-| `--audio <SPEC>` | Audio source (default: `mic`) |
+| `--audio <SPEC>` | Audio source (default: `mic`, or the audio of a `file:` video) |
+| `--reencode` | Decode a `file:` video and encode it like a camera. Without it the file's H.264 and AAC go out as they are, in one rendition, and `--renditions`, a size and the other encoding flags are refused |
 | `--test-source` | Publish `--video test --audio test`, overriding both flags |
 | `--codec <CODEC>` | `h264` (default) or `h265`. H.265 needs a hardware encoder |
 | `--encoder <KIND>` | `auto` (default), `hardware` (`hw`), `software` (`sw`), or one backend: `videotoolbox`, `mediafoundation`, `mediacodec`, `nvenc`, `vaapi`, `v4l2`, `openh264` |
@@ -106,14 +107,12 @@ Transport:
 | `--no-serve` | Accept no incoming sessions and print no ticket. Only useful with `--relay` |
 | `--no-qr` | Do not print the QR code |
 
-Window and file source:
+Window:
 
 | Flag | Description |
 |---|---|
-| `--preview` | Open a window that shows what is published |
+| `--preview` | Open a window that shows what is published. A `file:` video needs `--reencode` for it |
 | `--fullscreen` | Start the preview window in fullscreen |
-| `--format <FMT>` | Container of a `file:` video source: `fmp4` (default) or `avc3` |
-| `--transcode` | Re-mux or re-encode a `file:` video source through ffmpeg first. A plain MP4 and a looped file need it |
 
 A backend name is the only backend tried: if it is missing, the command fails
 and does not fall back to software. Some backends need a feature: `vaapi`,
@@ -321,10 +320,11 @@ Publish a camera as a two-rung ladder, captured at 60 frames per second:
 irl publish --video cam:/dev/video0 --renditions low:320x180,720p@60
 ```
 
-Publish a plain MP4:
+Publish an MP4 file as it is, looping, or re-encoded into a ladder:
 
 ```sh
-irl publish --video file:recording.mp4 --transcode
+irl publish --video file:recording.mp4:loop
+irl publish --video file:recording.mp4 --reencode --renditions 720p,360p
 ```
 
 Watch a broadcast:

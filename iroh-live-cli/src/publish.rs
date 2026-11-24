@@ -1,15 +1,15 @@
 //! `irl publish`: publishes a capture device or a media file over iroh.
 //!
 //! Capture sources are encoded into the renditions `--renditions` lists. A
-//! `file:` source is republished without re-encoding.
+//! `file:` source is published as it is, or decoded and encoded under
+//! `--reencode`.
 
-use iroh_live::{Node, layout::LiveLayout, media::LocalBroadcast, moq_net::broadcast};
+use iroh_live::{layout::LiveLayout, media::LocalBroadcast};
 use n0_error::{Result, anyerr};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{
     args::PublishArgs,
-    import::{FileImport, FileSource},
     shutdown::Teardown,
     source,
     source_spec::VideoSourceSpec,
@@ -18,26 +18,27 @@ use crate::{
 
 /// Runs the `publish` command.
 pub(crate) fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
+    if args.preview {
+        check_preview(&args)?;
+    }
+    publish_capture(&args, rt)
+}
+
+/// Refuses `--preview` for a source that arrives encoded, which has no pictures to draw.
+fn check_preview(args: &PublishArgs) -> Result {
     match args.capture.video_source() {
-        VideoSourceSpec::File { path, looping } => {
-            publish_file(FileSource::new(path, looping, &args)?, &args, rt)
-        }
-        // `rpicam:raw` captures raw frames, so it falls through to the
-        // capture path and can be previewed.
+        // `rpicam:raw` captures raw frames, so it can be previewed.
         #[cfg(all(target_os = "linux", feature = "rpicam"))]
-        VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Encoded) if args.preview => {
-            Err(anyerr!(
-                "--preview is not available for --video rpicam: rpicam-vid hands \
-                 over H.264 it has already encoded, so there are no raw frames to \
-                 draw. --video rpicam:raw captures pictures and can be previewed"
-            ))
-        }
-        _ => {
-            if args.transcode {
-                warn!("ignoring --transcode: it only applies to a file: video source");
-            }
-            publish_capture(&args, rt)
-        }
+        VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Encoded) => Err(anyerr!(
+            "--preview is not available for --video rpicam: rpicam-vid hands \
+             over H.264 it has already encoded, so there are no raw frames to \
+             draw. --video rpicam:raw captures pictures and can be previewed"
+        )),
+        VideoSourceSpec::File { .. } if !args.capture.reencode => Err(anyerr!(
+            "--preview needs --reencode for a file: without it the file is \
+             published as it is, and no pictures are decoded to draw"
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -73,56 +74,6 @@ fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
     // eframe takes the main thread. The guard keeps the runtime entered.
     let _guard = rt.enter();
     preview::run(node, broadcast, ticket, args)
-}
-
-/// Publishes a media file, republishing its tracks without decoding them.
-fn publish_file(source: FileSource, args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
-    if args.preview {
-        return Err(anyerr!(
-            "--preview is not available for a file source: its tracks are \
-             republished as they are, so there are no raw frames to draw"
-        ));
-    }
-
-    rt.block_on(run_file(source, args))
-}
-
-/// Publishes the file and holds it open until end of input or an interrupt.
-async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
-    let node = bind_node(args.transport.inbound()).await?;
-    let result = publish_import(&node, source, args).await;
-    Teardown::new(node).run().await;
-    result
-}
-
-/// Publishes the file on `node`. The caller shuts `node` down.
-async fn publish_import(node: &Node, source: FileSource, args: &PublishArgs) -> Result {
-    // The import creates its tracks once it has read the file's header, a
-    // moment after the broadcast is published. A reader that asks within that
-    // moment finds no catalog yet: `RemoteBroadcast` asks again until it
-    // appears, while other readers may give up.
-    let producer: broadcast::Producer =
-        LiveLayout::default().publish(node, &args.transport.name)?;
-    let import = match FileImport::open(producer.clone(), source).await {
-        Ok(import) => import,
-        Err(err) => {
-            // Withdraws the publication.
-            producer.close();
-            return Err(err);
-        }
-    };
-    transport::advertise(node, &args.transport)?;
-    info!(name = %args.transport.name, "publishing a file");
-
-    println!("press Ctrl+C to stop");
-    let result = tokio::select! {
-        result = import.run() => result,
-        result = crate::shutdown::ctrl_c() => result.map_err(Into::into),
-    };
-    // The node holds the broadcast open while it is published, so end it here.
-    producer.close();
-    result?;
-    Ok(())
 }
 
 /// Holds the broadcast and its sources open until the user interrupts.

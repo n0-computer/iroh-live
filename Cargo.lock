@@ -4407,7 +4407,6 @@ dependencies = [
  "derive_more",
  "dirs",
  "eframe",
- "hang",
  "iroh",
  "iroh-live",
  "libc",

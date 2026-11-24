@@ -45,8 +45,8 @@ rendition = "low"            # optional, the rendition to record
 ```
 
 A `[[send]]` block needs only `name`, and a `[[recv]]` block needs `name` and
-`ticket`. `[[send]]` does not take a `file:` video source. An unknown key is an
-error.
+`ticket`. A `[[send]]` block with a `file:` video takes `reencode = true` to
+decode it. An unknown key is an error.
 
 A block that fails to start is reported, and the rest of the session runs.
 Ctrl+C ends the session and finishes every recording before the endpoint

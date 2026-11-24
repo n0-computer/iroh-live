@@ -76,12 +76,20 @@ pub(crate) struct CaptureArgs {
     #[arg(long, default_value = DEFAULT_VIDEO, verbatim_doc_comment)]
     pub(crate) video: VideoSourceSpec,
 
-    /// Audio source.
+    /// Audio source. Default: `mic`, or the audio of a `file:` video.
     ///
     /// `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`, `test[:beeps|:tone]`,
     /// or `none`. Anything else is a device name, such as `hw:0,1`.
-    #[arg(long, default_value = DEFAULT_AUDIO, verbatim_doc_comment)]
-    pub(crate) audio: AudioSourceSpec,
+    #[arg(long, verbatim_doc_comment)]
+    pub(crate) audio: Option<AudioSourceSpec>,
+
+    /// Decode a `file:` video and encode it like a camera.
+    ///
+    /// Without it, the file's H.264 and AAC are published as they are: one
+    /// rendition with the file's keyframes and bitrate, at no CPU cost.
+    /// `--renditions`, a size and the other encoding flags need it.
+    #[arg(long)]
+    pub(crate) reencode: bool,
 
     /// Publish the test pattern and tone, as `--video test --audio test`.
     #[arg(long)]
@@ -155,9 +163,8 @@ impl Default for CaptureArgs {
             video: DEFAULT_VIDEO
                 .parse()
                 .expect("the default video source parses"),
-            audio: DEFAULT_AUDIO
-                .parse()
-                .expect("the default audio source parses"),
+            audio: None,
+            reencode: false,
             test_source: false,
             codec: VideoCodecArg::default(),
             encoder: Backend::default(),
@@ -184,11 +191,23 @@ impl CaptureArgs {
     }
 
     /// Returns `--audio`, or the test tone under `--test-source`.
+    ///
+    /// Without `--audio`, a `file:` video brings its own audio and anything
+    /// else the microphone.
     pub(crate) fn audio_source(&self) -> AudioSourceSpec {
         if self.test_source {
             return AudioSourceSpec::Test(TestTone::default());
         }
-        self.audio.clone()
+        match (&self.audio, &self.video) {
+            (Some(audio), _) => audio.clone(),
+            (None, VideoSourceSpec::File { path, looping }) => AudioSourceSpec::File {
+                path: path.clone(),
+                looping: *looping,
+            },
+            (None, _) => DEFAULT_AUDIO
+                .parse()
+                .expect("the default audio source parses"),
+        }
     }
 }
 
@@ -243,33 +262,14 @@ pub(crate) struct PublishArgs {
 
     /// Open a preview window of the published video.
     ///
-    /// Not for `file:` and `rpicam` sources, which arrive already encoded.
+    /// Not for `rpicam`, or a `file:` without `--reencode`, which arrive
+    /// already encoded.
     #[arg(long)]
     pub(crate) preview: bool,
 
     /// Start the preview window in fullscreen.
     #[arg(long)]
     pub(crate) fullscreen: bool,
-
-    /// Container of a `file:` video source.
-    #[arg(long, value_enum, default_value_t = ImportFormat::Fmp4)]
-    pub(crate) format: ImportFormat,
-
-    /// Pass a `file:` video source through ffmpeg first.
-    ///
-    /// Needed for a plain (non-fragmented) MP4 and for `file:<path>:loop`.
-    #[arg(long)]
-    pub(crate) transcode: bool,
-}
-
-/// The container a `file:` video source is read as.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-pub(crate) enum ImportFormat {
-    /// Fragmented MP4 / CMAF.
-    #[default]
-    Fmp4,
-    /// Raw H.264 Annex-B stream.
-    Avc3,
 }
 
 /// How a subscriber decodes and plays the video in a window.

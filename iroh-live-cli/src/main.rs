@@ -6,7 +6,6 @@ mod args;
 mod backend;
 mod call;
 mod devices;
-mod import;
 mod playback;
 mod publish;
 mod record;
@@ -157,5 +156,45 @@ mod tests {
     fn scanning_and_no_video_are_rejected_together() {
         Cli::try_parse_from(["irl", "watch", "--scan", "--no-video"])
             .expect_err("a scan needs a window to draw the camera in");
+    }
+
+    /// A `file:` video brings its own audio unless `--audio` names another.
+    #[test]
+    fn a_file_video_brings_its_audio() {
+        let cli = Cli::try_parse_from(["irl", "publish", "--video", "file:clip.mp4:loop"])
+            .expect("a file video parses");
+        let Command::Publish(args) = cli.command else {
+            panic!("expected publish");
+        };
+        assert!(!args.capture.reencode);
+        assert_eq!(
+            args.capture.audio_source().to_string(),
+            "file:clip.mp4:loop"
+        );
+
+        let cli = Cli::try_parse_from([
+            "irl",
+            "call",
+            "--video",
+            "file:clip.mp4",
+            "--reencode",
+            "--audio",
+            "none",
+        ])
+        .expect("a call takes a file and --reencode");
+        let Command::Call(args) = cli.command else {
+            panic!("expected call");
+        };
+        assert!(args.capture.reencode);
+        assert_eq!(args.capture.audio_source().to_string(), "none");
+    }
+
+    /// `--transcode` and `--format` went away with the passthrough that needed them.
+    #[test]
+    fn the_old_file_flags_are_gone() {
+        for flag in ["--transcode", "--format=fmp4"] {
+            Cli::try_parse_from(["irl", "publish", "--video", "file:clip.mp4", flag])
+                .expect_err("the flag no longer exists");
+        }
     }
 }
