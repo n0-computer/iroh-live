@@ -191,7 +191,7 @@ impl MediaFile {
     /// in another codec than H.264.
     pub fn encoded_video(&self) -> Result<EncodedVideo, Error> {
         Ok(EncodedVideo::Avc1 {
-            avcc: self.codec_record(true)?,
+            config: self.codec_record(true)?,
             frames: Box::pin(self.paced(true)),
         })
     }
@@ -340,11 +340,11 @@ impl MediaFile {
         tokio::time::sleep_until(due).await;
         clock.catch_up(skipped, due);
         let timestamp = skipped + next.timestamp;
-        Ok(EncodedFrame {
+        Ok(EncodedFrame::new(
             data,
-            timestamp: to_timestamp(timestamp)?,
-            at: clock.instant(timestamp).into_std(),
-        })
+            to_timestamp(timestamp)?,
+            clock.instant(timestamp).into_std(),
+        ))
     }
 
     /// Decodes the video track and hands each picture to `push` when it is due.
@@ -880,10 +880,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn passthrough_paces_to_the_decode_times() {
         let file = open("bframes.mp4").await;
-        let EncodedVideo::Avc1 { avcc, mut frames } = file.encoded_video().expect("H.264") else {
+        let EncodedVideo::Avc1 { config, mut frames } = file.encoded_video().expect("H.264") else {
             panic!("not avc1");
         };
-        assert_eq!(avcc[0], 1, "an avcC record starts with version 1");
+        assert_eq!(config[0], 1, "an avcC record starts with version 1");
         let start = Instant::now();
         let mut arrivals = Vec::new();
         while let Some(frame) = frames.next().await {

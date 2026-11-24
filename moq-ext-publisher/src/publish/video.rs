@@ -876,12 +876,12 @@ impl EncodedImport {
                     .map_err(Error::catalog)?,
                 }
             }
-            EncodedVideo::Avc1 { avcc, frames } => {
+            EncodedVideo::Avc1 { config, frames } => {
                 let request = producer
                     .reserve_track(ENCODED_RENDITION)
                     .ok_or_else(duplicate)?;
                 let init =
-                    moq_mux::import::VideoInit::new(moq_mux::import::VideoFormat::Avc1, avcc);
+                    moq_mux::import::VideoInit::new(moq_mux::import::VideoFormat::Avc1, config);
                 let import = moq_mux::import::Track::video(request, catalog.reserve(), init)
                     .map_err(Error::catalog)?;
                 Self::Avc1(FrameImport::new(frames, import))

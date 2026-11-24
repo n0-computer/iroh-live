@@ -104,12 +104,7 @@ pub(crate) async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>
     let spec = args.video_source();
     let ladder = rendition::ladder(&spec, args)?;
     if let VideoSourceSpec::File { path, looping } = &spec {
-        let end = if *looping {
-            FileEnd::Restart
-        } else {
-            FileEnd::Stop
-        };
-        let file = media_file(path, end).await?;
+        let file = media_file(path, FileEnd::looping(*looping)).await?;
         let source = file_video(&file, args).await?;
         return Ok(Some(OpenedVideo {
             source,

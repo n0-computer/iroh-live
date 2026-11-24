@@ -542,6 +542,14 @@ pub enum FileEnd {
     Restart,
 }
 
+impl FileEnd {
+    /// Returns [`Restart`](Self::Restart) for a file that loops, and [`Stop`](Self::Stop) otherwise.
+    #[must_use]
+    pub fn looping(looping: bool) -> Self {
+        if looping { Self::Restart } else { Self::Stop }
+    }
+}
+
 /// What an audio source produces.
 #[derive(Debug)]
 pub enum AudioKind {

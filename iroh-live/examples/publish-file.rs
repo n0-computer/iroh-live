@@ -49,13 +49,10 @@ async fn main() -> n0_error::Result {
     let router = node.mount(Router::builder(endpoint)).spawn();
     let broadcast: LocalBroadcast = layout.publish(&node, "file")?;
 
-    let end = if args.looping {
-        FileEnd::Restart
-    } else {
-        FileEnd::Stop
-    };
     // Reads the file's index; its streams share one clock and loop together.
-    let file = MediaFile::open(&args.path).await?.with_end(end);
+    let file = MediaFile::open(&args.path)
+        .await?
+        .with_end(FileEnd::looping(args.looping));
     info!(info = ?file.info(), "file opened");
     let has_audio = file.info().audio.is_some();
     if args.reencode {

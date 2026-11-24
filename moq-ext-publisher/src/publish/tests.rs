@@ -658,10 +658,12 @@ async fn a_file_passes_through() {
 async fn pre_encoded_streams_stay_aligned() {
     let clock = moq_mux::Clock::new();
     let start = std::time::Instant::now();
-    let frame = |millis: u64| moq_ext_sources::EncodedFrame {
-        data: bytes::Bytes::new(),
-        timestamp: moq_net::Timestamp::from_micros(millis * 1000).unwrap(),
-        at: start + Duration::from_millis(millis),
+    let frame = |millis: u64| {
+        moq_ext_sources::EncodedFrame::new(
+            bytes::Bytes::new(),
+            moq_net::Timestamp::from_micros(millis * 1000).unwrap(),
+            start + Duration::from_millis(millis),
+        )
     };
     let (mut video, mut audio) = (None, None);
     let video_at = super::wall_map(&mut video, &clock, &frame(0));

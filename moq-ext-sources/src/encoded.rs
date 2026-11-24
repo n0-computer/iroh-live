@@ -13,6 +13,7 @@ use crate::Error;
 
 /// One encoded frame and the time it presents at.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct EncodedFrame {
     /// The frame: one length-prefixed H.264 access unit, or one raw AAC frame.
     pub data: Bytes,
@@ -29,6 +30,18 @@ pub struct EncodedFrame {
     pub at: Instant,
 }
 
+impl EncodedFrame {
+    /// Creates a frame of `data` that presents at `timestamp`, which stands for the instant `at`.
+    #[must_use]
+    pub fn new(data: Bytes, timestamp: moq_net::Timestamp, at: Instant) -> Self {
+        Self {
+            data,
+            timestamp,
+            at,
+        }
+    }
+}
+
 /// Encoded video for `LocalBroadcast::set_encoded_video`.
 #[derive(derive_more::Debug)]
 #[non_exhaustive]
@@ -42,7 +55,7 @@ pub enum EncodedVideo {
     /// H.264 access units in decode order, length-prefixed as an MP4 file stores them.
     Avc1 {
         /// The H.264 configuration record (avcC) that opens the stream.
-        avcc: Bytes,
+        config: Bytes,
         /// The access units, which end with the first error.
         #[debug(skip)]
         frames: BoxStream<Result<EncodedFrame, Error>>,

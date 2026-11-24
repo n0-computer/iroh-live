@@ -518,12 +518,8 @@ impl VideoSourceSpec {
             Self::Test(pattern) => test_pattern(*pattern, options)?,
             #[cfg(feature = "file")]
             Self::File { path, looping } => {
-                let end = if *looping {
-                    crate::FileEnd::Restart
-                } else {
-                    crate::FileEnd::Stop
-                };
-                let file = crate::MediaFile::open(path).await?.with_end(end);
+                let file = crate::MediaFile::open(path).await?;
+                let file = file.with_end(crate::FileEnd::looping(*looping));
                 return file.video(Default::default()).await.map(Some);
             }
             #[cfg(not(feature = "file"))]
@@ -754,12 +750,7 @@ async fn open_audio(spec: &AudioSourceSpec) -> Result<AudioSource, Error> {
         AudioSourceSpec::Test(TestTone::Tone) => AudioSource::tone(TEST_TONE_HZ, TEST_TONE_LAYOUT),
         #[cfg(feature = "file")]
         AudioSourceSpec::File { path, looping } => {
-            let at_end = if *looping {
-                crate::FileEnd::Restart
-            } else {
-                crate::FileEnd::Stop
-            };
-            AudioSource::file(path, at_end).await
+            AudioSource::file(path, crate::FileEnd::looping(*looping)).await
         }
         #[allow(
             unreachable_patterns,
