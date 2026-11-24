@@ -3,7 +3,6 @@
 use moq_ext_sources::{
     AudioFormat, AudioKind, AudioSource, ByPtr, EncodedAudio, Error, SlotState, stats::SharedCell,
 };
-use n0_future::StreamExt;
 use tokio::sync::broadcast;
 #[cfg(feature = "capture")]
 use tokio::sync::oneshot;
@@ -12,7 +11,10 @@ use tracing::{debug, info, warn};
 
 #[cfg(feature = "capture")]
 use super::status::Reporter;
-use super::{Job, SourceClock, WallOffset, encoding::audio_track_name, status::RenditionState};
+use super::{
+    FrameImport, Job, SourceClock, encoding::audio_track_name, report_encoded_end,
+    status::RenditionState,
+};
 use crate::stats::AudioEncodeStats;
 
 /// Publishes `source` encoded as `encoding` until it ends or the slot stops.
@@ -70,9 +72,6 @@ pub(super) async fn run(
     }
 }
 
-/// The name of the track pre-encoded AAC goes out on.
-pub(super) const ENCODED_TRACK: &str = "aac";
-
 /// Publishes pre-encoded audio until it ends or the slot stops.
 ///
 /// Each frame goes out in a group of its own, as an encoder's would.
@@ -82,62 +81,52 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedAudio, stop: Cancel
     };
     let stats = job.stats.audio();
     let result = async {
-        let (format, config, mut frames) = match source {
-            EncodedAudio::Aac { config, frames } => {
-                (moq_mux::import::AudioFormat::Aac, config, frames)
-            }
-            _ => {
-                return Err(Error::invalid(
-                    "this kind of pre-encoded audio is not supported",
-                ));
-            }
+        let EncodedAudio::Aac { config, frames } = source else {
+            return Err(Error::invalid(
+                "this kind of pre-encoded audio is not supported",
+            ));
         };
-        stats.update(|stats| stats.codec = Some(format.to_string()));
+        let format = moq_mux::import::AudioFormat::Aac;
+        let name = format.to_string();
+        stats.update(|stats| stats.codec = Some(name.clone()));
         let request = job
             .producer
-            .reserve_track(ENCODED_TRACK)
+            .reserve_track(name.as_str())
             .ok_or_else(|| Error::broadcast(moq_net::Error::Duplicate))?;
         let init = moq_mux::import::AudioInit::new(format, config);
-        let mut import = moq_mux::import::Track::audio(request, job.catalog.reserve(), init)
+        let import = moq_mux::import::Track::audio(request, job.catalog.reserve(), init)
             .map_err(Error::catalog)?;
-        info!(track = ENCODED_TRACK, "publishing pre-encoded audio");
-        job.reporter.slot(SlotState::Running);
-        job.reporter.rendition(
-            ENCODED_TRACK,
-            RenditionState::Encoding {
-                encoder: "pre-encoded".to_string(),
-            },
-        );
-        let mut offset = WallOffset::default();
+        let mut import = FrameImport::new(frames, import);
+        info!(track = %name, "publishing pre-encoded audio");
+        let mut published = 0u64;
         loop {
-            let frame = tokio::select! {
-                frame = frames.next() => frame,
+            let next = tokio::select! {
+                next = import.next(&job.clock) => next?,
                 () = stop.cancelled() => None,
             };
-            let Some(frame) = frame else { break };
-            let timestamp = offset.map(&job.clock, &frame);
-            import
-                .decode(frame.data, Some(timestamp))
-                .map_err(Error::decoder)?;
-            import.cut(None).map_err(Error::decoder)?;
+            if next.is_none() {
+                break;
+            }
+            if published == 0 {
+                job.reporter.slot(SlotState::Running);
+                job.reporter.rendition(
+                    &name,
+                    RenditionState::Encoding {
+                        encoder: "pre-encoded".to_string(),
+                    },
+                );
+            }
+            published += 1;
+            import.import.cut(None).map_err(Error::decoder)?;
             stats.update(|stats| stats.frames += 1);
         }
         // Dropping the finished track releases it.
-        import.finish().map(drop).map_err(Error::catalog)
+        let _finished = import.import.finish().map_err(Error::catalog)?;
+        Ok(published)
     }
     .await;
-    if stop.is_cancelled() {
-        return;
-    }
-    match result {
-        Ok(()) => {
-            debug!("pre-encoded audio ended");
-            job.reporter.slot(SlotState::Ended);
-        }
-        Err(err) => {
-            warn!(error = format_args!("{err:#}"), "pre-encoded audio failed");
-            job.reporter.slot(SlotState::Failed(ByPtr::new(err)));
-        }
+    if !stop.is_cancelled() {
+        report_encoded_end(&job.reporter, result, "audio");
     }
 }
 

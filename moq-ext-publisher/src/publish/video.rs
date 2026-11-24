@@ -30,7 +30,7 @@ use std::{
 };
 
 use moq_ext_sources::{
-    ByPtr, EncodedFrame, EncodedVideo, Error, SlotState, VideoFrames, VideoSource,
+    EncodedVideo, Error, SlotState, VideoFrames, VideoSource,
     stats::{RateMeter, Smoothed},
 };
 use moq_video::encode;
@@ -39,9 +39,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::{
-    Job, SourceClock, WallOffset,
+    FrameImport, Job, SourceClock,
     cuts::{Cuts, asked as refresh_asked},
     encoding::{VideoEncoding, VideoRendition},
+    report_encoded_end,
     status::{RenditionState, Reporter},
 };
 use crate::stats::{FrameSizes, PublishRecorder, RenditionEntry};
@@ -833,23 +834,8 @@ pub(super) async fn run_encoded(mut job: Job, source: EncodedVideo, stop: Cancel
     }
     .await;
 
-    if stop.is_cancelled() {
-        return;
-    }
-    match result {
-        // A source that ends before any access unit never described itself.
-        // That is a failed camera, not a finished stream.
-        Ok(0) => reporter.slot(SlotState::Failed(ByPtr::new(Error::device_msg(
-            "the pre-encoded source ended before its first access unit",
-        )))),
-        Ok(units) => {
-            debug!(units, "pre-encoded source ended");
-            reporter.slot(SlotState::Ended);
-        }
-        Err(err) => {
-            warn!(error = format_args!("{err:#}"), "pre-encoded video failed");
-            reporter.slot(SlotState::Failed(ByPtr::new(err)));
-        }
+    if !stop.is_cancelled() {
+        report_encoded_end(&reporter, result, "video");
     }
 }
 
@@ -862,11 +848,7 @@ enum EncodedImport {
         import: moq_mux::codec::h264::Import,
     },
     /// Whole access units with their timestamps.
-    Avc1 {
-        frames: n0_future::boxed::BoxStream<EncodedFrame>,
-        import: moq_mux::import::Track,
-        offset: WallOffset,
-    },
+    Avc1(FrameImport),
 }
 
 impl EncodedImport {
@@ -900,12 +882,9 @@ impl EncodedImport {
                     .ok_or_else(duplicate)?;
                 let init =
                     moq_mux::import::VideoInit::new(moq_mux::import::VideoFormat::Avc1, avcc);
-                Self::Avc1 {
-                    frames,
-                    import: moq_mux::import::Track::video(request, catalog.reserve(), init)
-                        .map_err(Error::catalog)?,
-                    offset: WallOffset::default(),
-                }
+                let import = moq_mux::import::Track::video(request, catalog.reserve(), init)
+                    .map_err(Error::catalog)?;
+                Self::Avc1(FrameImport::new(frames, import))
             }
             _ => {
                 return Err(Error::invalid(
@@ -933,21 +912,7 @@ impl EncodedImport {
                 import.decode(frames).map_err(Error::decoder)?;
                 Ok(Some(sizes))
             }
-            Self::Avc1 {
-                frames,
-                import,
-                offset,
-            } => {
-                let Some(frame) = frames.next().await else {
-                    return Ok(None);
-                };
-                let size = frame.data.len();
-                let timestamp = offset.map(clock, &frame);
-                import
-                    .decode(frame.data, Some(timestamp))
-                    .map_err(Error::decoder)?;
-                Ok(Some(vec![size]))
-            }
+            Self::Avc1(import) => Ok(import.next(clock).await?.map(|size| vec![size])),
         }
     }
 
@@ -955,7 +920,7 @@ impl EncodedImport {
     fn track_name(&self) -> String {
         match self {
             Self::AnnexB { import, .. } => import.track().name().to_string(),
-            Self::Avc1 { import, .. } => import.name(),
+            Self::Avc1(import) => import.import.name(),
         }
     }
 
@@ -978,8 +943,8 @@ impl EncodedImport {
                 let _finished = import.finish().map_err(Error::catalog)?;
                 Ok(units)
             }
-            Self::Avc1 { import, .. } => {
-                let _finished = import.finish().map_err(Error::catalog)?;
+            Self::Avc1(import) => {
+                let _finished = import.import.finish().map_err(Error::catalog)?;
                 Ok(0)
             }
         }

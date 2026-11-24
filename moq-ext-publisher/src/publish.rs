@@ -13,12 +13,14 @@ use std::{
 };
 
 use moq_ext_json::ValueWriter;
-use moq_ext_sources::{AudioSource, EncodedAudio, EncodedFrame, EncodedVideo, Error, VideoSource};
+use moq_ext_sources::{
+    AudioSource, ByPtr, EncodedAudio, EncodedFrame, EncodedVideo, Error, SlotState, VideoSource,
+};
 use moq_net::Consume;
-use n0_future::task::AbortOnDropHandle;
+use n0_future::{StreamExt, boxed::BoxStream, task::AbortOnDropHandle};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, Span, debug, info, info_span};
+use tracing::{Instrument, Span, debug, info, info_span, warn};
 
 use self::status::{Medium, StatusCell};
 pub use self::{
@@ -378,27 +380,80 @@ impl SourceClock {
     }
 }
 
-/// Maps the timestamps of a pre-encoded stream onto the broadcast clock.
+/// A pre-encoded stream of timestamped frames, and the importer that publishes it.
+struct FrameImport {
+    frames: BoxStream<Result<EncodedFrame, Error>>,
+    import: moq_mux::import::Track,
+    /// The offset from the stream's timestamps to the broadcast clock, in microseconds.
+    offset: Option<i128>,
+}
+
+impl FrameImport {
+    fn new(frames: BoxStream<Result<EncodedFrame, Error>>, import: moq_mux::import::Track) -> Self {
+        Self {
+            frames,
+            import,
+            offset: None,
+        }
+    }
+
+    /// Publishes the next frame and returns its size, or `None` once the stream ends.
+    async fn next(&mut self, clock: &moq_mux::Clock) -> Result<Option<usize>, Error> {
+        let Some(frame) = self.frames.next().await.transpose()? else {
+            return Ok(None);
+        };
+        let size = frame.data.len();
+        let timestamp = wall_map(&mut self.offset, clock, &frame);
+        self.import
+            .decode(frame.data, Some(timestamp))
+            .map_err(Error::decoder)?;
+        Ok(Some(size))
+    }
+}
+
+/// Returns the broadcast timestamp of `frame`, a frame of a pre-encoded stream.
 ///
-/// The offset comes from the wall-clock instant of the stream's first frame,
+/// `offset` comes from the wall-clock instant of the stream's first frame,
 /// so two streams whose frames agree on their instants, such as the audio
 /// and video of one file, stay in sync whenever each starts. Later frames
 /// keep the stream's own spacing, B-frame order included.
-#[derive(Debug, Default)]
-struct WallOffset(Option<i128>);
+fn wall_map(
+    offset: &mut Option<i128>,
+    clock: &moq_mux::Clock,
+    frame: &EncodedFrame,
+) -> moq_net::Timestamp {
+    let source = micros(frame.timestamp) as i128;
+    let offset = *offset.get_or_insert_with(|| {
+        // Tokio's clock, which the producer of a file uses too.
+        let now = tokio::time::Instant::now().into_std();
+        let ahead = frame.at.saturating_duration_since(now).as_micros() as i128
+            - now.saturating_duration_since(frame.at).as_micros() as i128;
+        micros(clock.now()) as i128 + ahead - source
+    });
+    let mapped = u64::try_from(source + offset).unwrap_or(0);
+    moq_net::Timestamp::from_micros(mapped).unwrap_or(frame.timestamp)
+}
 
-impl WallOffset {
-    /// Returns the broadcast timestamp of `frame`.
-    fn map(&mut self, clock: &moq_mux::Clock, frame: &EncodedFrame) -> moq_net::Timestamp {
-        let source = micros(frame.timestamp) as i128;
-        let offset = *self.0.get_or_insert_with(|| {
-            let now = Instant::now();
-            let ahead = frame.at.saturating_duration_since(now).as_micros() as i128
-                - now.saturating_duration_since(frame.at).as_micros() as i128;
-            micros(clock.now()) as i128 + ahead - source
-        });
-        let mapped = u64::try_from(source + offset).unwrap_or(0);
-        moq_net::Timestamp::from_micros(mapped).unwrap_or(frame.timestamp)
+/// Reports how a pre-encoded stream that published `frames` frames, or failed, ended.
+///
+/// A stream that ends before its first frame never described itself. That
+/// is a failed source, not a finished stream.
+fn report_encoded_end(reporter: &status::Reporter, result: Result<u64, Error>, medium: &str) {
+    match result {
+        Ok(0) => reporter.slot(SlotState::Failed(ByPtr::new(Error::device_msg(format!(
+            "the pre-encoded {medium} ended before its first frame"
+        ))))),
+        Ok(frames) => {
+            debug!(frames, medium, "pre-encoded source ended");
+            reporter.slot(SlotState::Ended);
+        }
+        Err(err) => {
+            warn!(
+                error = format_args!("{err:#}"),
+                medium, "pre-encoded source failed"
+            );
+            reporter.slot(SlotState::Failed(ByPtr::new(err)));
+        }
     }
 }
 
@@ -603,13 +658,13 @@ impl LocalBroadcast {
     /// Publishes pre-encoded H.264 as the one video rendition, `video`, replacing the current video.
     ///
     /// The source is an Annex-B byte stream, such as `rpicam_h264` returns, or
-    /// the access units of a file with their timestamps, such as
-    /// `MediaFile::encoded_video` returns. The stream's own parameter sets
-    /// describe the rendition. Nothing is encoded, so there is one rendition,
-    /// keyframes come only where the source put them, and a subscriber's
-    /// request for one goes unanswered. A source that ends before its first
-    /// access unit shows as failed in [`status`](Self::status). Whatever
-    /// produces the frames stops when the broadcast drops the source.
+    /// the access units of a file, such as `MediaFile::encoded_video` returns,
+    /// which also lists the trade-offs of publishing without an encoder. The
+    /// stream's own parameter sets describe the rendition, so an Annex-B
+    /// stream should repeat them before every keyframe. A source that ends
+    /// before its first access unit shows as failed in
+    /// [`status`](Self::status). Whatever produces the frames stops when the
+    /// broadcast drops the source.
     ///
     /// # Errors
     ///
@@ -618,9 +673,8 @@ impl LocalBroadcast {
     /// # Panics
     ///
     /// Panics when called outside a Tokio runtime.
-    pub fn set_encoded_video(&self, source: impl Into<EncodedVideo>) -> Result<(), Error> {
+    pub fn set_encoded_video(&self, source: EncodedVideo) -> Result<(), Error> {
         self.check_open()?;
-        let source = source.into();
         info!(parent: &self.shared.span, "pre-encoded video set");
         self.replace(
             Medium::Video,
@@ -633,9 +687,9 @@ impl LocalBroadcast {
 
     /// Publishes pre-encoded audio as it is, replacing the current audio.
     ///
-    /// For the AAC of a file, as `MediaFile::encoded_audio` returns it. The
-    /// frames keep their codec and bitrate, and each goes out in a group of
-    /// its own.
+    /// For the AAC of a file, as `MediaFile::encoded_audio` returns it. Each
+    /// frame goes out in a group of its own. A source that ends before its
+    /// first frame shows as failed in [`status`](Self::status).
     ///
     /// # Errors
     ///
@@ -649,7 +703,7 @@ impl LocalBroadcast {
         info!(parent: &self.shared.span, "pre-encoded audio set");
         self.replace(
             Medium::Audio,
-            vec![audio::ENCODED_TRACK.to_string()],
+            vec![moq_mux::import::AudioFormat::Aac.to_string()],
             SlotSource::Encoded,
             move |job, stop| audio::run_encoded(job, source, stop),
         );
