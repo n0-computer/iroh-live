@@ -364,7 +364,9 @@ async fn the_broadcast_hands_back_its_sources() {
 
     // A pre-encoded stream has no raw source to hand back.
     broadcast
-        .set_encoded_video(n0_future::stream::empty())
+        .set_encoded_video(moq_ext_sources::EncodedVideo::AnnexB(Box::pin(
+            n0_future::stream::empty(),
+        )))
         .expect("open");
     assert!(broadcast.video_source().is_none());
 }
@@ -592,4 +594,127 @@ async fn a_keyframe_request_survives_a_frame_the_rate_cap_drops() {
         Some(Duration::from_micros(STEP)),
         "the full rendition keyed the requested frame"
     );
+}
+
+/// Returns the MP4 file `data` with its video track turned into a `free` box.
+///
+/// The box keeps its size, so every sample offset stays valid.
+#[cfg(feature = "file")]
+fn without_video(mut data: Vec<u8>) -> Vec<u8> {
+    let size = |data: &[u8], at: usize| {
+        u32::from_be_bytes(data[at..at + 4].try_into().expect("four bytes")) as usize
+    };
+    let mut moov = 0;
+    while &data[moov + 4..moov + 8] != b"moov" {
+        moov += size(&data, moov);
+    }
+    let mut child = moov + 8;
+    while child < moov + size(&data, moov) {
+        let trak = &data[child..child + size(&data, child)];
+        // `hdlr`, then a version, flags and a predefined word before the handler type.
+        let video = trak
+            .windows(16)
+            .any(|bytes| &bytes[..4] == b"hdlr" && &bytes[12..] == b"vide");
+        if &trak[4..8] == b"trak" && video {
+            data[child + 4..child + 8].copy_from_slice(b"free");
+        }
+        child += size(&data, child);
+    }
+    data
+}
+
+/// A file's H.264 and AAC publish as they are, B-frames included, and the slots end with the file.
+///
+/// A file without video publishes its audio alone.
+#[cfg(feature = "file")]
+#[tokio::test(start_paused = true)]
+async fn a_file_passes_through() {
+    let clips = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../moq-ext-sources/src/source/test_data");
+    let clip = std::fs::read(clips.join("clip.mp4")).expect("the clip reads");
+    let audio_only = std::env::temp_dir().join(format!(
+        "moq-ext-publisher-audio-only-{}.mp4",
+        std::process::id()
+    ));
+    std::fs::write(&audio_only, without_video(clip)).expect("the temp dir is writable");
+    for path in [
+        clips.join("clip.mp4"),
+        clips.join("bframes.mp4"),
+        audio_only.clone(),
+    ] {
+        let name = path.display();
+        let file = moq_ext_sources::MediaFile::open(&path)
+            .await
+            .expect("the clip opens");
+        let has_video = file.info().video.is_some();
+        let has_audio = file.info().audio.is_some();
+        if path == audio_only {
+            assert!(!has_video && has_audio, "{name} still has its video");
+        }
+        let broadcast = LocalBroadcast::new();
+        broadcast.set_encoded_file(&file).expect("H.264 or AAC");
+        // The catalog lists the renditions while they play, described by the file's records.
+        let catalog = || {
+            broadcast
+                .shared
+                .catalog
+                .lock()
+                .expect("poisoned")
+                .snapshot()
+        };
+        tokio::time::timeout(TIMEOUT, async {
+            while (has_video && catalog().video.renditions.is_empty())
+                || (has_audio && catalog().audio.renditions.is_empty())
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{name} published no rendition"));
+        let ended = |has: bool, state: &SlotState| {
+            if has {
+                *state == SlotState::Ended
+            } else {
+                *state == SlotState::Off
+            }
+        };
+        let mut status = broadcast.status();
+        tokio::time::timeout(
+            TIMEOUT,
+            status.wait_for(|status| {
+                ended(has_video, &status.video) && ended(has_audio, &status.audio)
+            }),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{name} did not end: {:?}", broadcast.status().borrow()))
+        .expect("the broadcast is alive");
+        if has_audio {
+            let frames = broadcast.stats().audio.expect("audio stats").frames;
+            assert!(frames > 10, "{name}: {frames} audio frames");
+        }
+    }
+    std::fs::remove_file(&audio_only).expect("the file was written");
+}
+
+/// Two pre-encoded streams that agree on their frames' instants keep their offset on the broadcast clock.
+///
+/// The audio's first frame arrives later than the video's, and presents 64 ms
+/// after it, as the audio of a file with an encoder delay does.
+#[tokio::test]
+async fn pre_encoded_streams_stay_aligned() {
+    let clock = moq_mux::Clock::new();
+    let start = std::time::Instant::now();
+    let frame = |millis: u64| {
+        moq_ext_sources::EncodedFrame::new(
+            bytes::Bytes::new(),
+            moq_net::Timestamp::from_micros(millis * 1000).unwrap(),
+            start + Duration::from_millis(millis),
+        )
+    };
+    let (mut video, mut audio) = (None, None);
+    let video_at = super::wall_map(&mut video, &clock, &frame(0));
+    std::thread::sleep(Duration::from_millis(30));
+    let audio_at = super::wall_map(&mut audio, &clock, &frame(64));
+    let apart = super::micros(audio_at) as i128 - super::micros(video_at) as i128;
+    assert!((apart - 64_000).abs() < 1_000, "{apart} us apart");
 }

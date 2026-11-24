@@ -40,7 +40,9 @@ program. See [Raspberry Pi](../how-to/raspberry-pi.md).
 `AudioSource::file` decodes a WAV or MP3 file with symphonia on its own thread,
 in real time, and fans the PCM out to every broadcast that reads it. Its
 `FileEnd` argument stops or restarts the file at its end. moq-audio has no
-container reader.
+container reader. An MP4 file goes through `MediaFile`, which reads the file
+with mp4-atom and either hands its H.264 and AAC to the broadcast as they
+are or decodes them with moq-video's and moq-audio's decoders.
 
 `VideoSource::test_pattern` and `AudioSource::test_pattern` are a matching
 pair: a sweeping bar, a frame counter, a clock, and a marker that flashes with

@@ -6,7 +6,6 @@ mod args;
 mod backend;
 mod call;
 mod devices;
-mod import;
 mod playback;
 mod publish;
 mod record;
@@ -157,5 +156,64 @@ mod tests {
     fn scanning_and_no_video_are_rejected_together() {
         Cli::try_parse_from(["irl", "watch", "--scan", "--no-video"])
             .expect_err("a scan needs a window to draw the camera in");
+    }
+
+    /// A `file:` video brings its own audio unless `--audio` names another.
+    #[test]
+    fn a_file_video_brings_its_audio() {
+        let cli = Cli::try_parse_from(["irl", "publish", "--video", "file:clip.mp4:loop"])
+            .expect("a file video parses");
+        let Command::Publish(args) = cli.command else {
+            panic!("expected publish");
+        };
+        assert!(!args.capture.reencode);
+        assert_eq!(
+            args.capture.audio_source().to_string(),
+            "file:clip.mp4:loop"
+        );
+    }
+
+    /// Parses `irl publish` with `flags` after a `file:` video.
+    fn publish_file(flags: &[&str]) -> Result<crate::args::PublishArgs, clap::Error> {
+        let base = ["irl", "publish", "--video", "file:clip.mp4"];
+        let cli = Cli::try_parse_from(base.iter().chain(flags))?;
+        let Command::Publish(args) = cli.command else {
+            panic!("expected publish");
+        };
+        Ok(*args)
+    }
+
+    /// A flag only an encoder acts on decodes the file, as `--reencode` does.
+    #[test]
+    fn encoding_flags_imply_reencode() {
+        for flags in [
+            &["--codec", "h265"][..],
+            &["--encoder", "hw"],
+            &["--renditions", "360p"],
+            &["--bitrate", "1000000"],
+            &["--fps", "25"],
+            &["--audio-codec", "pcm"],
+        ] {
+            let args = publish_file(flags).expect("the flags parse");
+            assert!(
+                args.capture.reencodes().expect("no --no-reencode"),
+                "{flags:?}"
+            );
+        }
+        let args = publish_file(&[]).expect("a file video parses");
+        assert!(!args.capture.reencodes().expect("no flags"));
+    }
+
+    /// `--no-reencode` refuses an encoding flag and contradicts `--reencode`.
+    #[test]
+    fn no_reencode_refuses_encoding_flags() {
+        let args = publish_file(&["--no-reencode", "--width", "640", "--codec", "h265"])
+            .expect("clap leaves the check to the source");
+        let err = args
+            .capture
+            .reencodes()
+            .expect_err("the flags need an encoder");
+        assert!(err.to_string().contains("--codec, --width"), "{err}");
+        publish_file(&["--no-reencode", "--reencode"]).expect_err("the two conflict");
     }
 }

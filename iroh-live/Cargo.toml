@@ -76,8 +76,9 @@ rcan = ["iroh-live-node/rcan"]
 rooms = ["dep:iroh-live-rooms"]
 # Camera, screen, and microphone capture.
 capture = ["media", "moq-ext-publisher/capture", "moq-ext-sources/capture"]
-# Decoding WAV and MP3 files into an `AudioSource`.
-file = ["media", "moq-ext-sources/file"]
+# Media files: `MediaFile` publishes an MP4's H.264 and AAC as they are or
+# decodes them, and `AudioSource::file` decodes WAV and MP3 too.
+file = ["media", "moq-ext-publisher/file", "moq-ext-sources/file"]
 # Speaker output.
 playback = ["media", "moq-ext-player/playback"]
 # Reach audio devices through PipeWire or PulseAudio rather than through their
@@ -110,6 +111,12 @@ required-features = ["capture"]
 name = "publish-pi"
 path = "examples/publish-pi.rs"
 required-features = ["rpicam"]
+
+# Publishes an MP4 file, as it is or re-encoded.
+[[example]]
+name = "publish-file"
+path = "examples/publish-file.rs"
+required-features = ["file"]
 
 [[example]]
 name = "subscribe_test"

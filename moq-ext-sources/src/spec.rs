@@ -83,7 +83,7 @@ pub enum VideoSourceSpec {
     Rpicam(RpicamMode),
     /// A generated picture, for publishing without a camera.
     Test(TestPattern),
-    /// A media file, imported rather than encoded.
+    /// An MP4 file, decoded by [`open`](Self::open) or passed through by `MediaFile`.
     File {
         /// Path to the file.
         path: PathBuf,
@@ -505,17 +505,27 @@ impl VideoSourceSpec {
     ///
     /// Fails with [`Error::InvalidConfig`] for a source this build cannot
     /// open, such as a camera without the `capture` feature or the portal off
-    /// Linux. Also fails for [`File`](Self::File) and for
-    /// [`RpicamMode::Encoded`], which carry encoded video and have no raw
-    /// source: import the file with moq-mux, or read `rpicam_h264` instead.
-    /// Fails with [`Error::Device`] if the device does not open.
+    /// Linux, or a file without the `file` feature. Also fails for
+    /// [`RpicamMode::Encoded`], which carries encoded video and has no raw
+    /// source: read `rpicam_h264` instead. Fails with [`Error::Device`] if the
+    /// device or the file does not open.
+    ///
+    /// A file decodes through [`MediaFile::video`](crate::MediaFile::video),
+    /// at its own size and rate, which the options do not change.
     pub async fn open(&self, options: &VideoOpenOptions) -> Result<Option<VideoSource>, Error> {
         let source = match self {
             Self::None => return Ok(None),
             Self::Test(pattern) => test_pattern(*pattern, options)?,
+            #[cfg(feature = "file")]
+            Self::File { path, looping } => {
+                let file = crate::MediaFile::open(path).await?;
+                let file = file.with_end(crate::FileEnd::looping(*looping));
+                return file.video(Default::default()).await.map(Some);
+            }
+            #[cfg(not(feature = "file"))]
             Self::File { path, .. } => {
                 return Err(Error::invalid(format!(
-                    "{} is encoded video, not a raw source; import it with moq-mux instead",
+                    "this build cannot decode {}; it needs the `file` feature",
                     path.display()
                 )));
             }
@@ -740,12 +750,7 @@ async fn open_audio(spec: &AudioSourceSpec) -> Result<AudioSource, Error> {
         AudioSourceSpec::Test(TestTone::Tone) => AudioSource::tone(TEST_TONE_HZ, TEST_TONE_LAYOUT),
         #[cfg(feature = "file")]
         AudioSourceSpec::File { path, looping } => {
-            let at_end = if *looping {
-                crate::FileEnd::Restart
-            } else {
-                crate::FileEnd::Stop
-            };
-            AudioSource::file(path, at_end).await
+            AudioSource::file(path, crate::FileEnd::looping(*looping)).await
         }
         #[allow(
             unreachable_patterns,
@@ -800,9 +805,9 @@ mod tests {
         assert_eq!(image.size(), video::Size::new(320, 180));
     }
 
-    /// `none` opens nothing, and a file is encoded video with no raw source.
+    /// `none` opens nothing.
     #[tokio::test]
-    async fn none_and_files_open_no_raw_video() {
+    async fn none_opens_nothing() {
         let options = VideoOpenOptions::default();
         assert!(
             VideoSourceSpec::None
@@ -811,12 +816,17 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let file: VideoSourceSpec = "file:clip.mp4".parse().unwrap();
-        assert!(matches!(
-            file.open(&options).await,
-            Err(Error::InvalidConfig { .. })
-        ));
         assert!(AudioSourceSpec::None.open().await.unwrap().is_none());
+    }
+
+    /// A `file:` video decodes at the file's size.
+    #[cfg(feature = "file")]
+    #[tokio::test]
+    async fn a_file_video_decodes() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/source/test_data/clip.mp4");
+        let spec: VideoSourceSpec = format!("file:{path}").parse().unwrap();
+        let source = spec.open(&Default::default()).await.unwrap().unwrap();
+        assert_eq!(source.format().size, video::Size::new(64, 48));
     }
 
     /// The test tones open in every build with generated sources.

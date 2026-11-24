@@ -158,7 +158,7 @@ impl Ladder {
 ///
 /// Fails if a rung does not parse or a frame rate is out of range.
 pub(crate) fn ladder(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Ladder> {
-    let rungs = rungs(args)?;
+    let rungs = rungs(spec, args)?;
     let framerate = capture_framerate(spec, args, &rungs)?;
     Ok(Ladder {
         encoding: VideoEncoding::ladder(renditions(args, &rungs)),
@@ -167,12 +167,21 @@ pub(crate) fn ladder(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Ladde
     })
 }
 
-/// Parses `--renditions`, or returns one unscaled rung when it is empty.
-fn rungs(args: &CaptureArgs) -> Result<Vec<Rung>> {
+/// Parses `--renditions`, or returns one rung when it is empty.
+///
+/// The one rung keeps the source's size. A file plays at its own size, so
+/// `--width` and `--height` size the rung instead.
+fn rungs(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Vec<Rung>> {
     if args.renditions.is_empty() {
+        let size = match (spec, args.width, args.height) {
+            (VideoSourceSpec::File { .. }, Some(width), Some(height)) => {
+                Some(Size::new(even(width), even(height)))
+            }
+            _ => None,
+        };
         return Ok(vec![Rung {
             name: SINGLE_RENDITION.to_string(),
-            size: None,
+            size,
             framerate: None,
         }]);
     }
@@ -266,9 +275,11 @@ fn capture_framerate(
 /// Returns whether the backend behind `spec` acts on a requested frame rate.
 ///
 /// The AVFoundation camera backend ignores it and warns. We skip the default
-/// there to avoid that warning, but still pass an explicit `--fps`.
+/// there to avoid that warning, but still pass an explicit `--fps`. A file
+/// plays at its own rate.
 fn takes_framerate(spec: &VideoSourceSpec) -> bool {
-    !(cfg!(target_os = "macos") && matches!(spec, VideoSourceSpec::Camera(_)))
+    !(cfg!(target_os = "macos") && matches!(spec, VideoSourceSpec::Camera(_))
+        || matches!(spec, VideoSourceSpec::File { .. }))
 }
 
 /// Returns the rungs whose `@<fps>` differs from the capture rate.
@@ -482,6 +493,22 @@ mod tests {
         assert!(rung("a@b@60").is_err());
         assert!(rung("@60").is_err());
         assert!(rung("high:@60").is_err());
+    }
+
+    /// A file plays at its own size, so `--width` and `--height` size its one rung.
+    #[test]
+    fn a_file_takes_its_size_from_width_and_height() {
+        let file: VideoSourceSpec = "file:clip.mp4".parse().unwrap();
+        let sized = CaptureArgs {
+            width: Some(640),
+            height: Some(360),
+            ..CaptureArgs::default()
+        };
+        assert_eq!(
+            rungs(&file, &sized).unwrap()[0].size,
+            Some(Size::new(640, 360))
+        );
+        assert_eq!(rungs(&TEST_SOURCE, &sized).unwrap()[0].size, None);
     }
 
     #[test]

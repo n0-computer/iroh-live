@@ -20,12 +20,17 @@
 //! | Moving gradient | [`VideoSource::test_gradient`] | `pattern` |
 //! | Bouncing square, also drawn on demand | [`VideoSource::test_bounce`], [`BouncePattern`] | `pattern` for the source |
 //! | Sine tone | [`AudioSource::tone`] | `pattern` |
-//! | WAV and MP3 file | [`AudioSource::file`] | `file` |
+//! | WAV, MP3 and MP4 audio file | [`AudioSource::file`] | `file` |
+//! | MP4 file, decoded or passed through | [`MediaFile`] | `file` |
 //! | Camera, display, window | [`VideoSource::capture`], [`VideoSource::camera`], [`VideoSource::screen`] | `capture` |
 //! | Microphone | [`AudioSource::microphone`] | `capture` |
 //! | Raspberry Pi camera through `rpicam-vid` | [`VideoSource::rpicam`], `rpicam_h264` | `rpicam` (Linux) |
-//! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`] | always |
+//! | Pushed by the application | [`VideoSource::push`], [`AudioSource::push`], [`VideoSource::spawn`], [`AudioSource::spawn`] | always |
 //! | Any of the above, switched while published | [`VideoSource::switchable`] | always |
+//!
+//! [`EncodedVideo`] and [`EncodedAudio`] are media that arrives encoded, from
+//! [`MediaFile`] or `rpicam_h264`, for a broadcast to publish without an
+//! encoder.
 //!
 //! [`VideoSource::scaled`] scales any of them to a fixed size as CPU I420,
 //! not for publishing.
@@ -75,6 +80,7 @@
 
 mod backend;
 mod bounce;
+mod encoded;
 mod error;
 pub mod frames;
 #[cfg(any(feature = "capture", all(target_os = "linux", feature = "rpicam")))]
@@ -93,11 +99,14 @@ use moq_video as video;
 pub use self::portal_grant::PortalGrant;
 #[cfg(feature = "capture")]
 pub use self::source::screen_source;
+#[cfg(feature = "file")]
+pub use self::source::{AudioInfo, MediaFile, MediaInfo, VideoFileConfig, VideoInfo};
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::source::{RpicamConfig, rpicam_h264};
 pub use self::{
     backend::{Backend, UnknownBackend},
     bounce::BouncePattern,
+    encoded::{EncodedAudio, EncodedFrame, EncodedVideo},
     error::{Error, SourceClosed},
     frames::VideoFrames,
     source::{

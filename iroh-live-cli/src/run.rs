@@ -375,7 +375,8 @@ mod tests {
         .expect("only `name` is required");
         let send = &config.send[0].capture;
         assert_eq!(send.video.to_string(), DEFAULT_VIDEO);
-        assert_eq!(send.audio.to_string(), DEFAULT_AUDIO);
+        assert!(send.audio.is_none());
+        assert_eq!(send.audio_source().to_string(), DEFAULT_AUDIO);
         assert_eq!(send.encoder, Backend::Auto);
         assert_eq!(send.codec, VideoCodecArg::H264);
         assert_eq!(send.audio_codec, AudioCodecArg::Opus);

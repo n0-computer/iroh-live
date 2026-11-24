@@ -2,7 +2,7 @@
 name = "moq-ext-sources"
 version = "0.1.0"
 edition = "2024"
-description = "Media sources for moq-video and moq-audio: test pattern, audio file, rpicam, push senders"
+description = "Media sources for moq-video and moq-audio: test pattern, media files, rpicam, push senders"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
@@ -26,19 +26,23 @@ tokio = { version = "1.54.1", features = ["sync", "time", "rt"] }
 tokio-util = "0.7.20"
 tracing = "0.1.44"
 
-# Reads audio files. moq-audio has no container reader.
+# Reads WAV and MP3 files. moq-audio has no container reader.
 symphonia = { version = "0.6", default-features = false, features = ["pcm", "mp3", "wav"], optional = true }
+# Reads MP4 files, plain and fragmented. moq-mux already links it.
+mp4-atom = { version = "0.17.1", default-features = false, optional = true }
 
 [dev-dependencies]
 moq-mux = { workspace = true }
-tokio = { version = "1.54.1", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full", "test-util"] }
 
 [features]
 default = ["pattern"]
 # A generated test picture and a tone.
 pattern = ["dep:moq-mux"]
-# Decodes WAV and MP3 files in real time.
-file = ["dep:symphonia"]
+# Media files: WAV and MP3 decoded in real time, and MP4 (H.264, AAC)
+# decoded or passed through. OpenH264 decodes the video where no hardware
+# decoder does.
+file = ["dep:symphonia", "dep:mp4-atom", "dep:moq-mux", "moq-video/openh264"]
 # Camera, screen and microphone capture. Off for a build that only publishes
 # frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
 capture = ["moq-video/capture", "moq-audio/capture"]

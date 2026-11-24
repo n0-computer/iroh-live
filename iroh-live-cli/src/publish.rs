@@ -1,15 +1,18 @@
 //! `irl publish`: publishes a capture device or a media file over iroh.
 //!
 //! Capture sources are encoded into the renditions `--renditions` lists. A
-//! `file:` source is republished without re-encoding.
+//! `file:` source is published as it is, or decoded and encoded under
+//! `--reencode` or an encoding flag.
 
-use iroh_live::{Node, layout::LiveLayout, media::LocalBroadcast, moq_net::broadcast};
-use n0_error::{Result, anyerr};
-use tracing::{info, warn};
+use iroh_live::{
+    layout::LiveLayout,
+    media::{LocalBroadcast, SlotState},
+};
+use n0_error::Result;
+use tracing::info;
 
 use crate::{
     args::PublishArgs,
-    import::{FileImport, FileSource},
     shutdown::Teardown,
     source,
     source_spec::VideoSourceSpec,
@@ -17,28 +20,33 @@ use crate::{
 };
 
 /// Runs the `publish` command.
-pub(crate) fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
-    match args.capture.video_source() {
-        VideoSourceSpec::File { path, looping } => {
-            publish_file(FileSource::new(path, looping, &args)?, &args, rt)
-        }
-        // `rpicam:raw` captures raw frames, so it falls through to the
-        // capture path and can be previewed.
-        #[cfg(all(target_os = "linux", feature = "rpicam"))]
-        VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Encoded) if args.preview => {
-            Err(anyerr!(
-                "--preview is not available for --video rpicam: rpicam-vid hands \
-                 over H.264 it has already encoded, so there are no raw frames to \
-                 draw. --video rpicam:raw captures pictures and can be previewed"
-            ))
-        }
-        _ => {
-            if args.transcode {
-                warn!("ignoring --transcode: it only applies to a file: video source");
+pub(crate) fn run(mut args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
+    if args.preview {
+        match args.capture.video_source() {
+            // `rpicam:raw` captures raw frames, so it can be previewed.
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Encoded) => {
+                return Err(n0_error::anyerr!(
+                    "--preview is not available for --video rpicam: rpicam-vid hands \
+                     over H.264 it has already encoded, so there are no raw frames to \
+                     draw. --video rpicam:raw captures pictures and can be previewed"
+                ));
             }
-            publish_capture(&args, rt)
+            // A preview draws decoded pictures.
+            VideoSourceSpec::File { .. } if args.capture.no_reencode => {
+                return Err(n0_error::anyerr!(
+                    "--no-reencode publishes the file as it is, so there are no \
+                     pictures for --preview to draw"
+                ));
+            }
+            VideoSourceSpec::File { .. } if !args.capture.reencode => {
+                info!("--preview decodes and encodes the file, as --reencode does");
+                args.capture.reencode = true;
+            }
+            _ => {}
         }
     }
+    publish_capture(&args, rt)
 }
 
 /// Opens the devices, publishes them, and prints the ticket.
@@ -67,7 +75,11 @@ fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
     let (node, broadcast, ticket) = rt.block_on(setup_capture(args))?;
 
     if !args.preview {
-        return wait_for_ctrl_c(rt, node, broadcast);
+        let plays_once = matches!(
+            args.capture.video_source(),
+            VideoSourceSpec::File { looping: false, .. }
+        );
+        return wait_for_ctrl_c(rt, node, broadcast, plays_once);
     }
 
     // eframe takes the main thread. The guard keeps the runtime entered.
@@ -75,65 +87,28 @@ fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
     preview::run(node, broadcast, ticket, args)
 }
 
-/// Publishes a media file, republishing its tracks without decoding them.
-fn publish_file(source: FileSource, args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
-    if args.preview {
-        return Err(anyerr!(
-            "--preview is not available for a file source: its tracks are \
-             republished as they are, so there are no raw frames to draw"
-        ));
-    }
-
-    rt.block_on(run_file(source, args))
-}
-
-/// Publishes the file and holds it open until end of input or an interrupt.
-async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
-    let node = bind_node(args.transport.inbound()).await?;
-    let result = publish_import(&node, source, args).await;
-    Teardown::new(node).run().await;
-    result
-}
-
-/// Publishes the file on `node`. The caller shuts `node` down.
-async fn publish_import(node: &Node, source: FileSource, args: &PublishArgs) -> Result {
-    // The import creates its tracks once it has read the file's header, a
-    // moment after the broadcast is published. A reader that asks within that
-    // moment finds no catalog yet: `RemoteBroadcast` asks again until it
-    // appears, while other readers may give up.
-    let producer: broadcast::Producer =
-        LiveLayout::default().publish(node, &args.transport.name)?;
-    let import = match FileImport::open(producer.clone(), source).await {
-        Ok(import) => import,
-        Err(err) => {
-            // Withdraws the publication.
-            producer.close();
-            return Err(err);
-        }
-    };
-    transport::advertise(node, &args.transport)?;
-    info!(name = %args.transport.name, "publishing a file");
-
-    println!("press Ctrl+C to stop");
-    let result = tokio::select! {
-        result = import.run() => result,
-        result = crate::shutdown::ctrl_c() => result.map_err(Into::into),
-    };
-    // The node holds the broadcast open while it is published, so end it here.
-    producer.close();
-    result?;
-    Ok(())
-}
-
 /// Holds the broadcast and its sources open until the user interrupts.
+///
+/// With `plays_once`, a file that plays once, it also returns once both
+/// slots are done.
 fn wait_for_ctrl_c(
     rt: &tokio::runtime::Runtime,
     node: SharedNode,
     broadcast: LocalBroadcast,
+    plays_once: bool,
 ) -> Result {
     println!("press Ctrl+C to stop");
     rt.block_on(async move {
-        crate::shutdown::ctrl_c().await?;
+        let mut status = broadcast.status();
+        let ended = status.wait_for(|status| {
+            [&status.video, &status.audio]
+                .iter()
+                .all(|slot| !matches!(slot, SlotState::Starting | SlotState::Running))
+        });
+        tokio::select! {
+            result = crate::shutdown::ctrl_c() => result?,
+            _ = ended, if plays_once => info!("the file ended"),
+        }
         Teardown::new(node).with_broadcast(broadcast).run().await;
         Ok(())
     })

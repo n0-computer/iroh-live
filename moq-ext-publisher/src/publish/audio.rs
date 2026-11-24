@@ -1,7 +1,7 @@
 //! The audio publish task: a microphone, or PCM from any other source.
 
 use moq_ext_sources::{
-    AudioFormat, AudioKind, AudioSource, ByPtr, Error, SlotState, stats::SharedCell,
+    AudioFormat, AudioKind, AudioSource, ByPtr, EncodedAudio, Error, SlotState, stats::SharedCell,
 };
 use tokio::sync::broadcast;
 #[cfg(feature = "capture")]
@@ -11,7 +11,10 @@ use tracing::{debug, info, warn};
 
 #[cfg(feature = "capture")]
 use super::status::Reporter;
-use super::{Job, SourceClock, encoding::audio_track_name, status::RenditionState};
+use super::{
+    Job, SourceClock, encoding::audio_track_name, pump_frames, report_encoded_end,
+    status::RenditionState,
+};
 use crate::stats::AudioEncodeStats;
 
 /// Publishes `source` encoded as `encoding` until it ends or the slot stops.
@@ -66,6 +69,43 @@ pub(super) async fn run(
             warn!(error = format_args!("{err:#}"), "audio publish failed");
             job.reporter.slot(SlotState::Failed(ByPtr::new(err)));
         }
+    }
+}
+
+/// Publishes pre-encoded audio until it ends or the slot stops.
+///
+/// Each frame goes out in a group of its own, as an encoder's would.
+pub(super) async fn run_encoded(mut job: Job, source: EncodedAudio, stop: CancellationToken) {
+    let Some(_tracks) = job.take_over(&stop).await else {
+        return;
+    };
+    let stats = job.stats.audio();
+    let result = async {
+        let EncodedAudio::Aac { config, frames } = source else {
+            return Err(Error::invalid(
+                "this kind of pre-encoded audio is not supported",
+            ));
+        };
+        let format = moq_mux::import::AudioFormat::Aac;
+        let name = format.to_string();
+        stats.update(|stats| stats.codec = Some(name.clone()));
+        let request = job
+            .producer
+            .reserve_track(name.as_str())
+            .ok_or_else(|| Error::broadcast(moq_net::Error::Duplicate))?;
+        let init = moq_mux::import::AudioInit::new(format, config);
+        let import = moq_mux::import::Track::audio(request, job.catalog.reserve(), init)
+            .map_err(Error::catalog)?;
+        info!(track = %name, "publishing pre-encoded audio");
+        pump_frames(&job, &name, frames, import, &stop, |track, _| {
+            stats.update(|stats| stats.frames += 1);
+            track.cut(None).map_err(Error::decoder)
+        })
+        .await
+    }
+    .await;
+    if !stop.is_cancelled() {
+        report_encoded_end(&job.reporter, result, "audio");
     }
 }
 
