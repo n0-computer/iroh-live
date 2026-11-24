@@ -11,7 +11,9 @@
 //! Each rendition's track sets `track::Info::refresh`, so a subscriber that
 //! joins a long group asks for a new one, and the encoder cuts a keyframe for
 //! it, as moq-video's capture does. The catalog declares each encoder's
-//! keyframe interval.
+//! keyframe interval. The source's producer can ask for a keyframe at a frame
+//! of its choice with `FrameSender::request_keyframe`, and every rendition
+//! cuts at the first frame it encodes after the request.
 //!
 //! A task that `set_video` replaces hands its rendition tracks to the
 //! successor, which encodes the new source into the renditions of the same
@@ -570,6 +572,9 @@ impl Encoder {
             // every earlier request.
             let mut cuts = Cuts::opening();
             let mut can_cut = encoder.applied().cut;
+            // A keyframe the source's producer asked for, held across the
+            // frames a slower rendition skips.
+            let mut requested = false;
 
             let mut due: Option<moq_net::Timestamp> = None;
             let mut meter = RateMeter::default();
@@ -609,6 +614,7 @@ impl Encoder {
                         return Ok(self.stopped());
                     }
                 };
+                requested |= self.frames.keyframe_requested();
                 let mapped = self.clock.map(frame.timestamp, self.frames.sent_at());
                 if self.clock.broke() {
                     // Open a group so the new source starts with a keyframe. A
@@ -664,6 +670,14 @@ impl Encoder {
                     && let Err(err) = encoder.cut().await
                 {
                     debug!(error = %err, "no keyframe for a joining subscriber");
+                }
+                // The source's producer asked for a keyframe at this frame. A
+                // backend that cannot cut keys on its interval only.
+                if std::mem::take(&mut requested)
+                    && can_cut
+                    && let Err(err) = encoder.cut().await
+                {
+                    debug!(error = %err, "no keyframe at the producer's request");
                 }
 
                 if self.pending.len() == MAX_PENDING {

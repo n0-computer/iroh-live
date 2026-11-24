@@ -181,6 +181,15 @@ it unless the rendition names the V4L2 encoder, since an encoder that cannot
 cut answers the request with its next scheduled keyframe, which is what a
 joiner gets without a refresh.
 
+The producer of a pushed source can ask for a keyframe at a frame of its
+choice with `FrameSender::request_keyframe()`. The request bumps a counter on the
+source's frame slot, and every frame pushed afterwards carries the count.
+Each rendition's `VideoFrames` handle reports the first frame it reads past a
+new count through `keyframe_requested()`, so every rendition cuts once, on
+the next frame it encodes, even if it skipped the frame the request preceded.
+`scaled` and `switchable` sources pass the request on. The encoder's `join`
+stays in force, and a backend that cannot cut ignores the request.
+
 The catalog reservation carries `encode::Config::effective_join()`, so
 moq-mux declares `media.join.interval` from the encoder's keyframe interval
 rather than measuring it from the first group.

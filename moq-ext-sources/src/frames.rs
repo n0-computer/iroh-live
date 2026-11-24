@@ -5,9 +5,17 @@
 //! so a reader that falls behind skips to the newest picture instead of
 //! draining a backlog. Each frame keeps the instant it was sent, which a
 //! reader gets from [`VideoFrames::sent_at`].
+//!
+//! A frame also carries how many keyframes its producer had asked for when it
+//! was sent. The count only grows, so a request survives the frames a reader
+//! skips: the next frame the reader gets reports it through
+//! [`VideoFrames::keyframe_requested`].
 
 use std::{
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
@@ -15,8 +23,14 @@ use tokio::sync::watch;
 
 use crate::{DemandGuard, Error, video};
 
-/// A frame in a slot, with the instant it was sent.
-type Sent = Option<(Arc<video::Frame>, Instant)>;
+/// The value of a slot: the current frame, if any, and the keyframe requests made before it.
+#[derive(Clone, Default)]
+struct Sent {
+    /// The current frame and the instant it was sent.
+    frame: Option<(Arc<video::Frame>, Instant)>,
+    /// The keyframe requests made before the last frame sent, kept when the frame is cleared.
+    keyframes: u64,
+}
 
 /// The producing end of a frame stream.
 ///
@@ -27,6 +41,8 @@ pub struct FrameSlot {
     #[debug(skip)]
     tx: watch::Sender<Sent>,
     failure: Arc<OnceLock<Arc<Error>>>,
+    /// How many keyframes the producer asked for, stamped on each frame sent.
+    keyframes: Arc<AtomicU64>,
 }
 
 impl Default for FrameSlot {
@@ -40,8 +56,9 @@ impl FrameSlot {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            tx: watch::Sender::new(None),
+            tx: watch::Sender::new(Sent::default()),
             failure: Default::default(),
+            keyframes: Default::default(),
         }
     }
 
@@ -54,15 +71,29 @@ impl FrameSlot {
 
     /// Replaces the current frame with one sent at `at`, for a stream that forwards another.
     pub(crate) fn send_at(&self, frame: Arc<video::Frame>, at: Instant) {
-        self.tx.send_replace(Some((frame, at)));
+        let keyframes = self.keyframes.load(Ordering::Relaxed);
+        self.tx.send_replace(Sent {
+            frame: Some((frame, at)),
+            keyframes,
+        });
+    }
+
+    /// Asks for a keyframe at the next frame sent, which every reader reports once.
+    ///
+    /// See [`VideoFrames::keyframe_requested`].
+    pub(crate) fn request_keyframe(&self) {
+        self.keyframes.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Drops the current frame, so no reader gets it from now on.
     ///
     /// A reader waiting in [`next`](VideoFrames::next) keeps waiting for the
     /// next frame sent.
+    ///
+    /// Keeps the keyframe requests of the last frame, so a reader that opens
+    /// afterwards does not report a request made before that frame.
     pub(crate) fn clear(&self) {
-        self.tx.send_replace(None);
+        self.tx.send_modify(|sent| sent.frame = None);
     }
 
     /// Records why the stream is about to end, for [`FrameReader::failure`].
@@ -128,19 +159,35 @@ pub struct VideoFrames {
     rx: watch::Receiver<Sent>,
     /// When the frame this handle last returned was sent.
     sent_at: Option<Instant>,
+    /// The keyframe requests made before the frame this handle last returned.
+    keyframes: u64,
+    /// Whether that frame is the first this handle returned after a new request.
+    keyframe_requested: bool,
     /// The demand this handle and its clones hold on their source, if any.
     demand: Option<Arc<DemandGuard>>,
 }
 
 impl VideoFrames {
     /// Creates a handle whose first [`next`](Self::next) returns the current frame.
+    ///
+    /// Requests made before the current frame was sent are not reported.
     fn new(mut rx: watch::Receiver<Sent>) -> Self {
         rx.mark_changed();
+        let keyframes = rx.borrow().keyframes;
         Self {
             rx,
             sent_at: None,
+            keyframes,
+            keyframe_requested: false,
             demand: None,
         }
+    }
+
+    /// Records the instant and the keyframe requests of the frame this handle returns.
+    fn returned(&mut self, at: Instant, keyframes: u64) {
+        self.sent_at = Some(at);
+        self.keyframe_requested = keyframes > self.keyframes;
+        self.keyframes = self.keyframes.max(keyframes);
     }
 
     /// Holds `demand` for as long as this handle or a clone of it lives.
@@ -154,7 +201,11 @@ impl VideoFrames {
     /// For render loops that redraw every vsync.
     #[must_use]
     pub fn current(&self) -> Option<Arc<video::Frame>> {
-        self.rx.borrow().as_ref().map(|(frame, _)| frame.clone())
+        self.rx
+            .borrow()
+            .frame
+            .as_ref()
+            .map(|(frame, _)| frame.clone())
     }
 
     /// Waits for a frame newer than the last this handle returned.
@@ -167,8 +218,9 @@ impl VideoFrames {
     pub async fn next(&mut self) -> Option<Arc<video::Frame>> {
         loop {
             self.rx.changed().await.ok()?;
-            if let Some((frame, at)) = self.rx.borrow_and_update().clone() {
-                self.sent_at = Some(at);
+            let sent = self.rx.borrow_and_update().clone();
+            if let Some((frame, at)) = sent.frame {
+                self.returned(at, sent.keyframes);
                 return Some(frame);
             }
         }
@@ -183,8 +235,10 @@ impl VideoFrames {
         if !sent.has_changed() {
             return None;
         }
-        let (frame, at) = sent.clone()?;
-        self.sent_at = Some(at);
+        let (frame, at) = sent.frame.clone()?;
+        let keyframes = sent.keyframes;
+        drop(sent);
+        self.returned(at, keyframes);
         Some(frame)
     }
 
@@ -198,6 +252,18 @@ impl VideoFrames {
     #[must_use]
     pub fn sent_at(&self) -> Option<Instant> {
         self.sent_at
+    }
+
+    /// Returns whether the producer asked for a keyframe at the last frame this handle returned.
+    ///
+    /// Meant for encoders. Returns true for the first frame the handle returned
+    /// after a call to
+    /// [`FrameSender::request_keyframe`](crate::FrameSender::request_keyframe),
+    /// even if the frame the request preceded was skipped. Each handle reports
+    /// a request once, independently of its clones and of other handles.
+    #[must_use]
+    pub fn keyframe_requested(&self) -> bool {
+        self.keyframe_requested
     }
 
     /// Waits until the producer is gone.
@@ -306,6 +372,66 @@ mod tests {
         drop(slot);
         assert_eq!(frames.next().await.as_deref().map(micros), Some(9));
         assert!(frames.next().await.is_none());
+    }
+
+    /// A request reaches every handle once, on the first frame each reads after it.
+    #[tokio::test]
+    async fn every_handle_reports_a_keyframe_request_once() {
+        let slot = FrameSlot::new();
+        let mut first = slot.frames();
+        let mut second = slot.frames();
+        slot.send(frame(1));
+        first.next().await.expect("a frame");
+        assert!(!first.keyframe_requested());
+        slot.request_keyframe();
+        slot.request_keyframe();
+        slot.send(frame(2));
+        first.next().await.expect("a frame");
+        assert!(first.keyframe_requested(), "the frame after the request");
+        assert_eq!(second.next().await.as_deref().map(micros), Some(2));
+        assert!(second.keyframe_requested(), "each handle sees the request");
+        slot.send(frame(3));
+        first.next().await.expect("a frame");
+        assert!(
+            !first.keyframe_requested(),
+            "two requests before one frame are one"
+        );
+    }
+
+    /// A request carries over to the newest frame when a reader skips the frame it preceded.
+    #[tokio::test]
+    async fn a_keyframe_request_survives_a_skipped_frame() {
+        let slot = FrameSlot::new();
+        let mut frames = slot.frames();
+        slot.request_keyframe();
+        slot.send(frame(1));
+        slot.send(frame(2));
+        assert_eq!(frames.next().await.as_deref().map(micros), Some(2));
+        assert!(frames.keyframe_requested());
+    }
+
+    /// A handle opened after a request does not report it for the frame already sent.
+    #[test]
+    fn a_fresh_handle_skips_earlier_requests() {
+        let slot = FrameSlot::new();
+        slot.request_keyframe();
+        slot.send(frame(1));
+        let mut frames = slot.frames();
+        assert!(frames.try_next().is_some());
+        assert!(!frames.keyframe_requested());
+    }
+
+    /// A handle opened on a cleared slot does not report requests made before its last frame.
+    #[test]
+    fn a_handle_on_a_cleared_slot_skips_earlier_requests() {
+        let slot = FrameSlot::new();
+        slot.request_keyframe();
+        slot.send(frame(1));
+        slot.clear();
+        let mut frames = slot.frames();
+        slot.send(frame(2));
+        assert!(frames.try_next().is_some());
+        assert!(!frames.keyframe_requested());
     }
 
     #[tokio::test]

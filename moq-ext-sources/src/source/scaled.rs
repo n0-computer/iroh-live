@@ -77,6 +77,8 @@ async fn run(input: VideoSource, size: video::Size, slot: FrameSlot, demand: Dem
     let mut guard = None;
     // Whether the last frame failed to scale, so a run of failures warns once.
     let mut failing = false;
+    // A keyframe request on the input that no scaled frame has carried yet.
+    let mut keyframe = false;
     loop {
         let want = *wanted.borrow_and_update();
         if want != guard.is_some() {
@@ -96,9 +98,13 @@ async fn run(input: VideoSource, size: video::Size, slot: FrameSlot, demand: Dem
         };
         let Some(frame) = frame else { break };
         let at = frames.sent_at().unwrap_or_else(Instant::now);
+        keyframe |= frames.keyframe_requested();
         match tokio::task::spawn_blocking(move || to_i420(frame, size)).await {
             Ok(Ok(frame)) => {
                 failing = false;
+                if std::mem::take(&mut keyframe) {
+                    slot.request_keyframe();
+                }
                 slot.send_at(frame, at);
             }
             Ok(Err(err)) if is_permanent(&err) => {
@@ -218,6 +224,25 @@ mod tests {
             .expect("open");
         let pushed = next(&mut input).await;
         assert!(Arc::ptr_eq(&pushed, &next(&mut frames).await));
+    }
+
+    /// A keyframe request on the input marks the next scaled frame, and only that one.
+    #[tokio::test]
+    async fn a_keyframe_request_reaches_the_scaled_frames() {
+        let big = video::Size::new(8, 6);
+        let (sender, source) = VideoSource::push(format(big));
+        let scaled = source.scaled(video::Size::new(4, 2)).expect("a valid size");
+        let mut frames = scaled.frames();
+        push_rgba(&sender, big, 1);
+        next(&mut frames).await;
+        assert!(!frames.keyframe_requested());
+        sender.request_keyframe();
+        push_rgba(&sender, big, 2);
+        assert_eq!(next(&mut frames).await.timestamp.as_micros(), Ok(2));
+        assert!(frames.keyframe_requested(), "the frame after the request");
+        push_rgba(&sender, big, 3);
+        assert_eq!(next(&mut frames).await.timestamp.as_micros(), Ok(3));
+        assert!(!frames.keyframe_requested(), "a request marks one frame");
     }
 
     #[test]

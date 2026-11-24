@@ -60,11 +60,18 @@ impl Drop for DemandGuard {
 pub(super) trait Sink<T>: Send + Sync + 'static {
     /// Hands one frame on without blocking.
     fn deliver(&self, frame: T);
+
+    /// Asks for a keyframe at the next frame delivered.
+    fn request_keyframe(&self) {}
 }
 
 impl Sink<video::Frame> for FrameSlot {
     fn deliver(&self, frame: video::Frame) {
         self.send(Arc::new(frame));
+    }
+
+    fn request_keyframe(&self) {
+        Self::request_keyframe(self);
     }
 }
 
@@ -162,6 +169,26 @@ impl<T: 'static> FrameSender<T> {
     }
 }
 
+impl FrameSender<video::Frame> {
+    /// Asks every encoder of the source for a keyframe at the next frame pushed.
+    ///
+    /// Each rendition's encoder cuts on the first frame it encodes after the
+    /// request, which is the next frame pushed or a newer one if the encoder
+    /// skipped it. Several requests before one frame cut once. A source
+    /// derived from this one, such as
+    /// [`VideoSource::scaled`](crate::VideoSource::scaled), passes the
+    /// request on.
+    ///
+    /// Whether the encoder's keyframe interval restarts at a requested
+    /// keyframe depends on the backend; a producer that places every keyframe
+    /// itself sets a `join` longer than the spacing of its requests. A backend
+    /// that cannot cut ignores the request, and so does a source that nothing
+    /// encodes.
+    pub fn request_keyframe(&self) {
+        self.sink.request_keyframe();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +205,30 @@ mod tests {
         assert!(*wanted.borrow(), "one consumer still wants frames");
         drop(second);
         assert!(!*wanted.borrow());
+    }
+
+    /// A video sender's request reaches the reader with the next frame pushed.
+    #[test]
+    fn a_keyframe_request_marks_the_next_frame() {
+        let slot = FrameSlot::new();
+        let mut frames = slot.frames();
+        let sender: FrameSender<video::Frame> =
+            FrameSender::new(Arc::new(slot), CancellationToken::new(), Demand::default());
+        let size = video::Size::new(2, 2);
+        let frame = |micros| {
+            let surface = video::Surface::rgba(&[0; 16], size).expect("2x2");
+            video::Frame::new(
+                surface,
+                moq_net::Timestamp::from_micros(micros).expect("in range"),
+            )
+        };
+        sender.push(frame(0)).expect("open");
+        frames.try_next().expect("a frame");
+        assert!(!frames.keyframe_requested());
+        sender.request_keyframe();
+        sender.push(frame(1)).expect("open");
+        frames.try_next().expect("a frame");
+        assert!(frames.keyframe_requested());
     }
 
     #[test]
