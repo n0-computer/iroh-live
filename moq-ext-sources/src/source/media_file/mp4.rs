@@ -13,7 +13,10 @@ use std::{
 };
 
 use bytes::Bytes;
-use mp4_atom::{Atom, Codec as Entry, Encode, FourCC, Header, Moof, Moov, ReadAtom, ReadFrom};
+use mp4_atom::{
+    Atom, Codec as Entry, DecodeAtom, DecodeMaybe, Encode, FourCC, Header, Meta, Moof, Moov,
+    ReadAtom, ReadFrom, Trak, Udta,
+};
 use n0_error::{AnyError, StdResultExt, anyerr};
 use tracing::warn;
 
@@ -22,6 +25,13 @@ const NON_SYNC: u32 = 0x0001_0000;
 
 /// The MPEG-4 object type of AAC in an `esds` box.
 const AAC_OBJECT_TYPE: u8 = 0x40;
+
+/// The boxes of a `moov` or `trak` that hold metadata, which the index does not read.
+///
+/// mp4-atom refuses a box that repeats where it expects at most one, and
+/// encoders often repeat the items of the `ilst` in `udta/meta`, so
+/// [`read_moov`] drops these boxes before mp4-atom decodes the rest.
+const METADATA: [FourCC; 2] = [Udta::KIND, Meta::KIND];
 
 /// One sample: where it lies, and when it decodes and presents, in microseconds.
 ///
@@ -96,11 +106,15 @@ pub(super) fn index(reader: &mut (impl Read + Seek)) -> Result<Vec<Track>, AnyEr
     let mut fragments = Vec::new();
     loop {
         let start = reader.stream_position()?;
+        // Some encoders leave a few bytes after the last box, too few for a box.
+        if len.saturating_sub(start) < 8 {
+            break;
+        }
         let Some(header) = Option::<Header>::read_from(reader).anyerr()? else {
             break;
         };
         match header.kind {
-            Moov::KIND => moov = Some(Moov::read_atom(&header, reader).anyerr()?),
+            Moov::KIND => moov = Some(read_moov(&header, reader)?),
             Moof::KIND => fragments.push((start, Moof::read_atom(&header, reader).anyerr()?)),
             // An `mdat` that runs to the end of the file ends the boxes.
             _ => match header.size {
@@ -441,6 +455,59 @@ fn fragment(
     Ok(offset)
 }
 
+/// Reads the body of the `moov` box `header` starts and decodes it without its metadata boxes.
+fn read_moov(header: &Header, reader: &mut impl Read) -> Result<Moov, AnyError> {
+    let mut body = Vec::new();
+    match header.size {
+        Some(size) => {
+            // Reading through `take` grows the buffer only as far as the file goes.
+            reader.take(size as u64).read_to_end(&mut body)?;
+            if body.len() != size {
+                return Err(anyerr!("the moov box runs past the end of the file"));
+            }
+        }
+        None => {
+            reader.read_to_end(&mut body)?;
+        }
+    }
+    let body = without_metadata(&body)?;
+    let header = Header {
+        kind: Moov::KIND,
+        size: Some(body.len()),
+    };
+    Moov::decode_atom(&header, &mut body.as_slice()).anyerr()
+}
+
+/// Returns the child boxes in `body` without the [`METADATA`] boxes, also dropped inside each `trak`.
+fn without_metadata(mut body: &[u8]) -> Result<Vec<u8>, AnyError> {
+    let mut kept = Vec::with_capacity(body.len());
+    while let Some(header) = Header::decode_maybe(&mut body).anyerr()? {
+        let size = header.size.unwrap_or(body.len());
+        let (child, rest) = body
+            .split_at_checked(size)
+            .ok_or_else(|| anyerr!("the {} box runs past the box that holds it", header.kind))?;
+        body = rest;
+        let trak;
+        let child = match header.kind {
+            kind if METADATA.contains(&kind) => continue,
+            Trak::KIND => {
+                trak = without_metadata(child)?;
+                trak.as_slice()
+            }
+            _ => child,
+        };
+        let header = Header {
+            kind: header.kind,
+            size: Some(child.len()),
+        };
+        header.encode(&mut kept).anyerr()?;
+        kept.extend_from_slice(child);
+    }
+    // Keep what is too short for a box, such as the padding mp4-atom tolerates.
+    kept.extend_from_slice(body);
+    Ok(kept)
+}
+
 /// Returns where a sample of `size` bytes at `offset` ends, if it ends within the file's `len` bytes.
 fn sample_end(offset: u64, size: u32, len: u64) -> Result<u64, AnyError> {
     offset
@@ -740,5 +807,50 @@ mod tests {
         }
         let samples = index(&mut Cursor::new(data)).unwrap().remove(0).samples;
         assert_eq!(millis(&samples), [0, 100, 200, 300, 400]);
+    }
+
+    /// Returns a box of `kind` around `body`.
+    fn mp4_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut data = (8 + body.len() as u32).to_be_bytes().to_vec();
+        data.extend_from_slice(kind);
+        data.extend_from_slice(body);
+        data
+    }
+
+    /// Returns a `udta` whose `meta/ilst` repeats its copyright item, as some encoders write.
+    fn duplicate_metadata() -> Vec<u8> {
+        // A `data` box of text: type 1 for UTF-8, then the locale.
+        let data = mp4_box(b"data", &[0, 0, 0, 1, 0, 0, 0, 0, b'x']);
+        let item = mp4_box(b"cprt", &data);
+        let ilst = mp4_box(b"ilst", &[item.clone(), item].concat());
+        let hdlr = mp4_box(b"hdlr", &[&[0; 8][..], b"mdir", &[0; 13]].concat());
+        // `meta` is a full box: version and flags precede its children.
+        let meta = mp4_box(b"meta", &[&[0; 4][..], &hdlr, &ilst].concat());
+        mp4_box(b"udta", &meta)
+    }
+
+    /// Repeated metadata items, in the `moov` and a `trak`, and bytes after the last box do not fail the index.
+    #[test]
+    fn duplicate_metadata_and_trailing_bytes_are_skipped() {
+        let mut encoded = Vec::new();
+        moov(stbl(3), Vec::new()).encode(&mut encoded).unwrap();
+        // Rebuild the `moov` and its `trak` with the metadata after their other children.
+        let (mvhd, trak) = {
+            let body = &encoded[8..];
+            let mvhd_size = u32::from_be_bytes(body[..4].try_into().unwrap()) as usize;
+            body.split_at(mvhd_size)
+        };
+        assert_eq!(&mvhd[4..8], b"mvhd");
+        assert_eq!(&trak[4..8], b"trak");
+        let trak = mp4_box(b"trak", &[&trak[8..], &duplicate_metadata()].concat());
+        let moov = mp4_box(b"moov", &[mvhd, &trak, &duplicate_metadata()].concat());
+        assert!(matches!(
+            <atom::Moov as atom::Decode>::decode(&mut moov.as_slice()),
+            Err(atom::Error::DuplicateBox(_))
+        ));
+
+        let data = [mdat(3), moov, vec![0; 2]].concat();
+        let tracks = index(&mut Cursor::new(data)).unwrap();
+        assert_eq!(millis(&tracks[0].samples), [0, 100, 200]);
     }
 }
