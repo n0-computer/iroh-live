@@ -79,8 +79,6 @@ mod tests {
     /// again until the next group lands.
     #[tokio::test]
     async fn asked_follows_the_tracks_requests() {
-        use std::time::Duration;
-
         use moq_net::{
             Timestamp,
             track::{Info, Range, Refresh, Start, Subscription},
@@ -103,7 +101,7 @@ mod tests {
         group.write_frame(at(0), &b"delta"[..]).expect("a frame");
         assert!(!asked(&demand), "a delta asks nothing");
 
-        let live = Subscription::default().with_ranges([Range::from(Start::Live(Duration::ZERO))]);
+        let live = Subscription::default().with_ranges([Range::from(Start::LATEST)]);
         let _late = track.subscribe(live);
         assert!(asked(&demand), "a live join after a delta asks for a group");
         group.finish().expect("finished");

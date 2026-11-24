@@ -569,14 +569,14 @@ async fn a_latency_whose_maximum_is_below_its_minimum_is_refused() {
 
 /// Waits until the readers of `track` skip media as late as `latency` allows, and no later.
 ///
-/// The subscription carries only the maximum. The minimum places where a
-/// reader joins, which a resubscribe on a running track does not move.
+/// Only the maximum is compared. The minimum places where a reader joins,
+/// which a resubscribe on a running track does not move.
 async fn subscribed_with(track: &moq_net::track::Producer, wanted: Delay) {
     tokio::time::timeout(TIMEOUT, async {
         loop {
             if track
                 .subscription()
-                .is_some_and(|sub| sub.delay.max == wanted.max)
+                .is_some_and(|sub| widest(&sub) == wanted.max)
             {
                 return;
             }
@@ -587,9 +587,23 @@ async fn subscribed_with(track: &moq_net::track::Producer, wanted: Delay) {
     .unwrap_or_else(|_| {
         panic!(
             "the subscription asks for {:?}, not {wanted:?}",
-            track.subscription().map(|sub| sub.delay)
+            track.subscription().map(|sub| sub.ranges)
         )
     });
+}
+
+/// Returns the longest any range of `subscription` keeps a superseded group,
+/// `None` while it asks for history or a live join has no maximum.
+fn widest(subscription: &moq_net::track::Subscription) -> Option<Duration> {
+    use moq_net::track::Start;
+
+    subscription
+        .ranges
+        .iter()
+        .try_fold(Duration::ZERO, |widest, range| match range.start {
+            Start::Live { max, .. } => max.map(|max| widest.max(max)),
+            Start::Oldest | Start::Time(_) => None,
+        })
 }
 
 /// Waits until the readers of `track` join at `wanted`'s minimum behind live.
@@ -599,13 +613,14 @@ async fn subscribed_with(track: &moq_net::track::Producer, wanted: Delay) {
 async fn joined_with(track: &moq_net::track::Producer, wanted: Delay) {
     use moq_net::track::Start;
 
-    let start = Start::Live(wanted.min.expect("a minimum"));
+    let start = wanted.min.expect("a minimum");
     tokio::time::timeout(TIMEOUT, async {
         loop {
-            if track
-                .subscription()
-                .is_some_and(|sub| sub.ranges.iter().any(|range| range.start == start))
-            {
+            if track.subscription().is_some_and(|sub| {
+                sub.ranges
+                    .iter()
+                    .any(|range| matches!(range.start, Start::Live { min, .. } if min == start))
+            }) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -614,7 +629,7 @@ async fn joined_with(track: &moq_net::track::Producer, wanted: Delay) {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "the subscription asks for {:?}, not a range from {start:?}",
+            "the subscription asks for {:?}, not a live join {start:?} behind",
             track.subscription().map(|sub| sub.ranges)
         )
     });
