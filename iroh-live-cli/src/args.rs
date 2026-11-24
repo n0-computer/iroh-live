@@ -87,9 +87,9 @@ pub(crate) struct CaptureArgs {
 
     /// Decode a `file:` video and encode it like a camera.
     ///
-    /// Without it, the file's H.264 and AAC are published as they are, in one
-    /// rendition. `--renditions`, a size and the other encoding flags need it.
-    /// docs/how-to/publish.md compares the two.
+    /// Without it, the file's H.264 and AAC are published as they are.
+    /// `--renditions`, `--width`, `--height`, `--bitrate`, `--fps` and
+    /// `--preview` turn it on. docs/how-to/publish.md compares the two.
     #[arg(long)]
     pub(crate) reencode: bool,
 
@@ -195,6 +195,18 @@ impl CaptureArgs {
         self.video.clone()
     }
 
+    /// Returns whether a `file:` video is decoded and encoded.
+    ///
+    /// `--reencode` asks for it, and so does a flag only an encoder acts on.
+    pub(crate) fn reencodes(&self) -> bool {
+        self.reencode
+            || !self.renditions.is_empty()
+            || self.width.is_some()
+            || self.height.is_some()
+            || self.bitrate.is_some()
+            || self.fps.is_some()
+    }
+
     /// Returns `--audio`, or the test tone under `--test-source`.
     ///
     /// Without `--audio`, a `file:` video brings its own audio and anything
@@ -267,8 +279,8 @@ pub(crate) struct PublishArgs {
 
     /// Open a preview window of the published video.
     ///
-    /// Not for `rpicam`, or a `file:` without `--reencode`, which arrive
-    /// already encoded.
+    /// Not for `rpicam`, which arrives already encoded. A `file:` video is
+    /// decoded for it, as under `--reencode`.
     #[arg(long)]
     pub(crate) preview: bool,
 

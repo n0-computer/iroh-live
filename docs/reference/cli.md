@@ -85,7 +85,7 @@ Capture and encoding:
 |---|---|
 | `--video <SPEC>` | Video source (default: `cam`) |
 | `--audio <SPEC>` | Audio source (default: `mic`, or the audio of a `file:` video, which in `irl call` replaces the microphone) |
-| `--reencode` | Decode a `file:` video and encode it like a camera. Without it the file's H.264 and AAC go out as they are, see [Publish a file](../how-to/publish.md#publish-a-file) |
+| `--reencode` | Decode a `file:` video and encode it like a camera. Without it the file's H.264 and AAC go out as they are, see [Publish a file](../how-to/publish.md#publish-a-file). `--renditions`, `--width`, `--height`, `--bitrate`, `--fps` and `--preview` turn it on |
 | `--test-source` | Publish `--video test --audio test`, overriding both flags |
 | `--codec <CODEC>` | `h264` (default) or `h265`. H.265 needs a hardware encoder |
 | `--encoder <KIND>` | `auto` (default), `hardware` (`hw`), `software` (`sw`), or one backend: `videotoolbox`, `mediafoundation`, `mediacodec`, `nvenc`, `vaapi`, `v4l2`, `openh264` |
@@ -111,7 +111,7 @@ Window:
 
 | Flag | Description |
 |---|---|
-| `--preview` | Open a window that shows what is published. A `file:` video needs `--reencode` for it |
+| `--preview` | Open a window that shows what is published. A `file:` video is decoded for it, as under `--reencode` |
 | `--fullscreen` | Start the preview window in fullscreen |
 
 A backend name is the only backend tried: if it is missing, the command fails
@@ -127,13 +127,15 @@ broadcast on the relay. Use a relay that keeps each publisher to its own
 paths, as `iroh-live-relay` does. On one where anyone may publish anywhere, a
 viewer can be served a forgery.
 
-`--preview` draws the frames that go to the encoders, so it decodes nothing. A
-file source and `--video rpicam` cannot be previewed, because their frames
-arrive encoded.
+`--preview` draws the frames that go to the encoders, so it decodes nothing.
+`--video rpicam` cannot be previewed, because its frames arrive encoded. A
+`file:` video is decoded and encoded under `--preview`, as under
+`--reencode`.
 
 `--video rpicam` publishes the H.264 that the Pi's hardware encoder produced.
 It refuses `--codec h265`, any `--encoder` other than `auto`, and more than one
-rung in `--renditions`. `--width`, `--height`, `--fps`, and `--bitrate` become
+rung in `--renditions`. A `file:` video published as it is refuses the same
+codec and encoder flags, and the audio flags for its own audio. `--width`, `--height`, `--fps`, and `--bitrate` become
 `rpicam-vid` arguments. Use `--video rpicam:raw` to encode the pictures here.
 
 ### Frame rate

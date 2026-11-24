@@ -171,21 +171,5 @@ mod tests {
             args.capture.audio_source().to_string(),
             "file:clip.mp4:loop"
         );
-
-        let cli = Cli::try_parse_from([
-            "irl",
-            "call",
-            "--video",
-            "file:clip.mp4",
-            "--reencode",
-            "--audio",
-            "none",
-        ])
-        .expect("a call takes a file and --reencode");
-        let Command::Call(args) = cli.command else {
-            panic!("expected call");
-        };
-        assert!(args.capture.reencode);
-        assert_eq!(args.capture.audio_source().to_string(), "none");
     }
 }

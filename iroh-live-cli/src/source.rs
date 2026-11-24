@@ -6,11 +6,11 @@
 use std::{path::Path, sync::Mutex, time::Duration};
 
 use iroh_live::media::{
-    AudioFormat, AudioSource, EncodedVideo, FileEnd, LocalBroadcast, MediaFile, Rate,
-    VideoFileConfig, VideoSource, audio, audio_encoding, video,
+    AudioFormat, AudioSource, FileEnd, LocalBroadcast, MediaFile, Rate, VideoFileConfig,
+    VideoSource, audio, audio_encoding, video,
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::media::{RpicamConfig, rpicam_h264, video::Size};
+use iroh_live::media::{EncodedVideo, RpicamConfig, rpicam_h264, video::Size};
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 
@@ -42,7 +42,10 @@ enum Video {
     /// Raw pictures, encoded into the ladder.
     Raw(VideoSource),
     /// Pre-encoded H.264, published as it is.
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
     Encoded(EncodedVideo),
+    /// A file, published as it is.
+    File(MediaFile),
 }
 
 /// Opens the video and audio `args` asks for, and sets them on `broadcast`.
@@ -58,14 +61,41 @@ pub(crate) async fn configure(
     speaker: Option<&Speaker>,
 ) -> Result<()> {
     let opened = open_video(args).await?;
-    let file = opened.as_ref().and_then(|opened| opened.file.clone());
-    if let Some(opened) = opened {
-        opened.apply(broadcast)?;
+    let own_audio = match (&args.audio, args.video_source()) {
+        (None, VideoSourceSpec::File { path, .. }) => opened_file(&path),
+        _ => None,
+    };
+    match opened {
+        Some(OpenedVideo {
+            source: Video::File(file),
+            ..
+        }) if own_audio.is_some() => {
+            broadcast
+                .set_encoded_file(&file)
+                .map_err(|err| codec_hint(file.path(), err))?;
+            return Ok(());
+        }
+        Some(opened) => {
+            opened.apply(broadcast)?;
+        }
+        None => {}
     }
-    if let Some(file) = file.filter(|_| args.audio.is_none()) {
-        return set_file_audio(broadcast, args, &file);
+    if own_audio
+        .as_ref()
+        .is_some_and(|file| file.info().audio.is_none())
+    {
+        info!("the file has no audio");
+        return Ok(());
     }
-    if let Some(source) = audio_source(&args.audio_source(), speaker).await? {
+    let source = match audio_source(&args.audio_source(), speaker).await {
+        // The user did not ask for the file's audio, so the video goes out alone.
+        Err(err) if own_audio.is_some() => {
+            warn!(error = %err, "publishing the video without the file's audio");
+            return Ok(());
+        }
+        source => source?,
+    };
+    if let Some(source) = source {
         let encoding = audio_config(args, &source);
         broadcast.set_audio(source, encoding)?;
     }
@@ -93,8 +123,6 @@ pub(crate) async fn configure_video(
 pub(crate) struct OpenedVideo {
     source: Video,
     ladder: rendition::Ladder,
-    /// The file a `file:` video comes from, for its audio.
-    file: Option<MediaFile>,
 }
 
 /// Opens the video `args` asks for without setting it.
@@ -103,44 +131,41 @@ pub(crate) struct OpenedVideo {
 pub(crate) async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>> {
     let spec = args.video_source();
     let ladder = rendition::ladder(&spec, args)?;
-    if let VideoSourceSpec::File { path, looping } = &spec {
-        let file = media_file(path, FileEnd::looping(*looping)).await?;
-        let source = file_video(&file, args).await?;
-        return Ok(Some(OpenedVideo {
-            source,
-            ladder,
-            file: Some(file),
-        }));
-    }
-    Ok(video_source(&spec, args, ladder.framerate)
-        .await?
-        .map(|source| OpenedVideo {
-            source,
-            ladder,
-            file: None,
-        }))
+    let source = match &spec {
+        VideoSourceSpec::File { path, looping } => {
+            let file = media_file(path, FileEnd::looping(*looping)).await?;
+            Some(file_video(file, args).await?)
+        }
+        spec => video_source(spec, args, ladder.framerate).await?,
+    };
+    Ok(source.map(|source| OpenedVideo { source, ladder }))
 }
 
 impl OpenedVideo {
     /// Sets the source on `broadcast` and returns it if raw, for a preview.
     pub(crate) fn apply(self, broadcast: &LocalBroadcast) -> Result<Option<VideoSource>> {
-        let Self { source, ladder, .. } = self;
+        let Self { source, ladder } = self;
         match source {
             Video::Raw(source) => {
                 ladder.report();
                 broadcast.set_video(source.clone(), ladder.encoding)?;
-                Ok(Some(source))
+                return Ok(Some(source));
             }
-            Video::Encoded(source) => {
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Video::Encoded(source) => broadcast.set_encoded_video(source)?,
+            Video::File(file) => {
+                let source = file
+                    .encoded_video()
+                    .map_err(|err| codec_hint(file.path(), err))?;
                 broadcast.set_encoded_video(source)?;
-                Ok(None)
             }
         }
+        Ok(None)
     }
 }
 
-/// Opens the video of `file`: decoded under `--reencode`, as it is otherwise.
-async fn file_video(file: &MediaFile, args: &CaptureArgs) -> Result<Video> {
+/// Opens the video of `file`: decoded if `args` encodes it, as it is otherwise.
+async fn file_video(file: MediaFile, args: &CaptureArgs) -> Result<Video> {
     let path = file.path();
     let Some(info) = &file.info().video else {
         return Err(anyerr!(
@@ -149,14 +174,29 @@ async fn file_video(file: &MediaFile, args: &CaptureArgs) -> Result<Video> {
             path.display()
         ));
     };
-    if args.reencode {
+    if args.reencodes() {
+        if !args.reencode {
+            info!("an encoding flag decodes and encodes the file, as --reencode does");
+        }
         let source = file
             .video(VideoFileConfig::default())
             .await
             .map_err(|err| codec_hint(path, err))?;
         return Ok(Video::Raw(source));
     }
-    check_passthrough_flags(args)?;
+    let own_audio = args.audio.is_none();
+    check_encoded_flags(
+        args,
+        "a file",
+        "--reencode decodes it and encodes it here",
+        &[
+            (own_audio && args.audio_bitrate.is_some(), "--audio-bitrate"),
+            (
+                own_audio && args.audio_codec != AudioCodecArg::Opus,
+                "--audio-codec",
+            ),
+        ],
+    )?;
     if info.gop > LONG_GOP {
         warn!(
             gop = ?info.gop,
@@ -164,24 +204,26 @@ async fn file_video(file: &MediaFile, args: &CaptureArgs) -> Result<Video> {
              for a picture. --reencode sets its own keyframe interval"
         );
     }
-    let source = file.encoded_video().map_err(|err| codec_hint(path, err))?;
-    Ok(Video::Encoded(source))
+    Ok(Video::File(file))
 }
 
-/// Opens the `file:` video at `path`, or returns the copy opened before.
+/// The files `file:` sources opened, which every later source of the same file shares.
 ///
 /// A video that opens again, after the scan screen of `irl call` or a switch
-/// in the preview, then shares the clock of the file's audio, which kept
-/// playing, so the two stay in sync.
+/// in the preview, and an `--audio` of the video's file then play against
+/// one clock and stay in sync. The list lives as long as the process and
+/// never shrinks, which suits a command line tool.
+static OPENED: Mutex<Vec<MediaFile>> = Mutex::new(Vec::new());
+
+/// Returns the file at `path` that a source opened before, if any.
+fn opened_file(path: &Path) -> Option<MediaFile> {
+    let opened = OPENED.lock().expect("poisoned");
+    opened.iter().find(|file| file.path() == path).cloned()
+}
+
+/// Opens the file at `path`, or returns the copy opened before.
 async fn media_file(path: &Path, end: FileEnd) -> Result<MediaFile> {
-    static OPENED: Mutex<Vec<MediaFile>> = Mutex::new(Vec::new());
-    let opened = OPENED
-        .lock()
-        .expect("poisoned")
-        .iter()
-        .find(|file| file.path() == path)
-        .cloned();
-    let file = match opened {
+    let file = match opened_file(path) {
         Some(file) => file,
         None => {
             let file = MediaFile::open(path).await?;
@@ -192,66 +234,31 @@ async fn media_file(path: &Path, end: FileEnd) -> Result<MediaFile> {
     Ok(file.with_end(end))
 }
 
-/// Sets the audio of `file`, if it has any: decoded under `--reencode`, as it is otherwise.
+/// Refuses the encoding flags that `source`, published as it arrives, leaves unused.
 ///
-/// The user did not ask for the file's audio, so audio that does not open
-/// only warns, and the video goes out alone.
-fn set_file_audio(broadcast: &LocalBroadcast, args: &CaptureArgs, file: &MediaFile) -> Result<()> {
-    let path = file.path().display();
-    if file.info().audio.is_none() {
-        info!(%path, "the file has no audio");
-        return Ok(());
-    }
-    let set = if args.reencode {
-        file.audio().map(|source| {
-            let encoding = audio_config(args, &source);
-            broadcast.set_audio(source, encoding)
-        })
-    } else {
-        file.encoded_audio()
-            .map(|source| broadcast.set_encoded_audio(source))
-    };
-    match set {
-        Ok(result) => Ok(result?),
-        Err(err) => {
-            warn!(%path, error = %err, "publishing the video without the file's audio");
-            Ok(())
-        }
-    }
-}
-
-/// Refuses the flags that need an encoder, which a passthrough file has not.
-fn check_passthrough_flags(args: &CaptureArgs) -> Result<()> {
-    let encoding = [
-        (!args.renditions.is_empty(), "--renditions"),
-        (
-            args.width.is_some() || args.height.is_some(),
-            "--width and --height",
-        ),
-        (args.bitrate.is_some(), "--bitrate"),
-        (args.fps.is_some(), "--fps"),
+/// `--codec` and `--encoder` always are, and `more` lists the flags only
+/// this source refuses. `instead` says how to encode the source here.
+fn check_encoded_flags(
+    args: &CaptureArgs,
+    source: &str,
+    instead: &str,
+    more: &[(bool, &str)],
+) -> Result<()> {
+    let common = [
         (args.codec != VideoCodecArg::H264, "--codec"),
         (args.encoder != Backend::Auto, "--encoder"),
-        (
-            args.audio.is_none() && args.audio_bitrate.is_some(),
-            "--audio-bitrate",
-        ),
-        (
-            args.audio.is_none() && args.audio_codec != AudioCodecArg::Opus,
-            "--audio-codec",
-        ),
     ];
-    let given: Vec<&str> = encoding
+    let refused: Vec<&str> = common
         .iter()
+        .chain(more)
         .filter_map(|(given, flag)| given.then_some(*flag))
         .collect();
-    if given.is_empty() {
+    if refused.is_empty() {
         return Ok(());
     }
     Err(anyerr!(
-        "a file is published as it is, in one rendition at its own size and \
-         bitrate, so {} needs --reencode, which decodes and encodes it",
-        given.join(", ")
+        "{source} arrives encoded and goes out as it is, so no encoder here acts on {}. {instead}",
+        refused.join(", ")
     ))
 }
 
@@ -317,43 +324,18 @@ async fn rpicam_source(
     match mode {
         RpicamMode::Raw => Ok(Video::Raw(VideoSource::rpicam(config).await?)),
         RpicamMode::Encoded => {
-            check_rpicam_flags(args)?;
+            check_encoded_flags(
+                args,
+                "--video rpicam",
+                "--video rpicam:raw takes the pictures and encodes them here",
+                &[(args.renditions.len() > 1, "a second rendition")],
+            )?;
             if let Some(bitrate) = args.bitrate {
                 config.bitrate = Rate::from_bps(bitrate);
             }
             Ok(Video::Encoded(rpicam_h264(config)?))
         }
     }
-}
-
-/// Refuses the encoding flags a pre-encoded source cannot act on.
-#[cfg(all(target_os = "linux", feature = "rpicam"))]
-fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
-    if args.codec != VideoCodecArg::H264 {
-        return Err(anyerr!(
-            "--video rpicam publishes the H.264 that rpicam-vid encoded in \
-             hardware, so --codec cannot select another codec; --video \
-             rpicam:raw takes the pictures instead and encodes them here"
-        ));
-    }
-    if args.encoder != Backend::Auto {
-        return Err(anyerr!(
-            "--encoder {} has nothing to do under --video rpicam: rpicam-vid \
-             has already encoded the picture, and no encoder of ours runs. \
-             --video rpicam:raw takes the pictures instead, which is what \
-             comparing an encoder against the hardware one needs",
-            args.encoder
-        ));
-    }
-    if args.renditions.len() > 1 {
-        return Err(anyerr!(
-            "--video rpicam publishes one rendition: the stream arrives \
-             encoded and cannot be produced again at a second size. Give at \
-             most one rung, or use --video rpicam:raw to encode a ladder from \
-             the pictures"
-        ));
-    }
-    Ok(())
 }
 
 /// Returns the capture config for microphone `id`, cancelling the echo of `speaker`.
@@ -399,8 +381,21 @@ async fn audio_source(
         AudioSourceSpec::Microphone(id) => Ok(Some(
             AudioSource::microphone(microphone_config(id.clone(), speaker)?).await?,
         )),
-        spec => Ok(spec.open().await?),
+        spec => match file_audio(spec) {
+            Some(file) => Ok(Some(file.audio()?)),
+            None => Ok(spec.open().await?),
+        },
     }
+}
+
+/// Returns the file a `file:` audio `spec` names if a video already plays it.
+///
+/// The audio then shares the video's clock and stays in sync with it.
+fn file_audio(spec: &AudioSourceSpec) -> Option<MediaFile> {
+    let AudioSourceSpec::File { path, looping } = spec else {
+        return None;
+    };
+    Some(opened_file(path)?.with_end(FileEnd::looping(*looping)))
 }
 
 /// Returns the encoding of `source` for `--audio-codec` and `--audio-bitrate`.
@@ -451,21 +446,38 @@ mod tests {
         );
     }
 
-    /// The flags that need an encoder are refused for a passthrough file, with the way out.
+    /// A flag that needs an encoder decodes a file, and one that names an encoder is refused.
     #[test]
-    fn encoding_flags_need_reencode() {
-        assert!(check_passthrough_flags(&CaptureArgs::default()).is_ok());
-        let args = CaptureArgs {
-            renditions: vec!["720p".into()],
+    fn encoding_flags_decode_a_file() {
+        assert!(!CaptureArgs::default().reencodes());
+        let sized = CaptureArgs {
             width: Some(640),
             ..Default::default()
         };
-        let err = check_passthrough_flags(&args).expect_err("a ladder needs an encoder");
-        let message = err.to_string();
-        assert!(
-            message.contains("--renditions, --width and --height"),
-            "{message}"
-        );
-        assert!(message.contains("--reencode"), "{message}");
+        assert!(sized.reencodes());
+        let coded = CaptureArgs {
+            codec: VideoCodecArg::H265,
+            ..Default::default()
+        };
+        let err = check_encoded_flags(&coded, "a file", "--reencode", &[]).unwrap_err();
+        assert!(err.to_string().contains("--codec"), "{err}");
+    }
+
+    /// An `--audio` of the file the video plays shares the video's file, and with it the clock.
+    #[tokio::test]
+    async fn the_audio_of_the_video_file_shares_its_clock() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../moq-ext-sources/src/source/test_data/clip.mp4");
+        let spec = |path: &Path| AudioSourceSpec::File {
+            path: path.to_path_buf(),
+            looping: false,
+        };
+        assert!(file_audio(&spec(&path)).is_none());
+        media_file(&path, FileEnd::Restart)
+            .await
+            .expect("the clip opens");
+        let shared = file_audio(&spec(&path)).expect("the video's file");
+        assert_eq!(shared.path(), path);
+        assert!(file_audio(&spec(Path::new("other.mp4"))).is_none());
     }
 }

@@ -35,8 +35,8 @@ rendition at the file's size and bitrate. Keyframes come only where the file
 has them, so a new viewer waits up to one GOP for a picture, and a viewer's
 request for a keyframe goes unanswered. Nothing adapts the bitrate to the
 path, and there are no pictures for a preview. `--reencode` lifts all of
-that, at the cost of a decode and an encode, and is needed for
-`--renditions`, a size, and `--preview`.
+that, at the cost of a decode and an encode. `--renditions`, `--width`,
+`--height`, `--bitrate`, `--fps` and `--preview` turn it on.
 
 Both ways take H.264 video and AAC audio only. Convert a file in another
 codec first, for example with

@@ -8,7 +8,7 @@ use iroh_live::{
     layout::LiveLayout,
     media::{LocalBroadcast, SlotState},
 };
-use n0_error::{Result, anyerr};
+use n0_error::Result;
 use tracing::info;
 
 use crate::{
@@ -20,29 +20,27 @@ use crate::{
 };
 
 /// Runs the `publish` command.
-pub(crate) fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
+pub(crate) fn run(mut args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
     if args.preview {
-        check_preview(&args)?;
+        match args.capture.video_source() {
+            // `rpicam:raw` captures raw frames, so it can be previewed.
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Encoded) => {
+                return Err(n0_error::anyerr!(
+                    "--preview is not available for --video rpicam: rpicam-vid hands \
+                     over H.264 it has already encoded, so there are no raw frames to \
+                     draw. --video rpicam:raw captures pictures and can be previewed"
+                ));
+            }
+            // A preview draws decoded pictures.
+            VideoSourceSpec::File { .. } if !args.capture.reencode => {
+                info!("--preview decodes and encodes the file, as --reencode does");
+                args.capture.reencode = true;
+            }
+            _ => {}
+        }
     }
     publish_capture(&args, rt)
-}
-
-/// Refuses `--preview` for a source that arrives encoded, which has no pictures to draw.
-fn check_preview(args: &PublishArgs) -> Result {
-    match args.capture.video_source() {
-        // `rpicam:raw` captures raw frames, so it can be previewed.
-        #[cfg(all(target_os = "linux", feature = "rpicam"))]
-        VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Encoded) => Err(anyerr!(
-            "--preview is not available for --video rpicam: rpicam-vid hands \
-             over H.264 it has already encoded, so there are no raw frames to \
-             draw. --video rpicam:raw captures pictures and can be previewed"
-        )),
-        VideoSourceSpec::File { .. } if !args.capture.reencode => Err(anyerr!(
-            "--preview needs --reencode for a file: without it the file is \
-             published as it is, and no pictures are decoded to draw"
-        )),
-        _ => Ok(()),
-    }
 }
 
 /// Opens the devices, publishes them, and prints the ticket.
