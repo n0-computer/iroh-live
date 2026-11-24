@@ -78,7 +78,7 @@ rooms = ["dep:iroh-live-rooms"]
 capture = ["media", "moq-ext-publisher/capture", "moq-ext-sources/capture"]
 # Media files: `MediaFile` publishes an MP4's H.264 and AAC as they are or
 # decodes them, and `AudioSource::file` decodes WAV and MP3 too.
-file = ["media", "moq-ext-sources/file"]
+file = ["media", "moq-ext-publisher/file", "moq-ext-sources/file"]
 # Speaker output.
 playback = ["media", "moq-ext-player/playback"]
 # Reach audio devices through PipeWire or PulseAudio rather than through their

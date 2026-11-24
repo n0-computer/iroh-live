@@ -597,6 +597,7 @@ async fn a_keyframe_request_survives_a_frame_the_rate_cap_drops() {
 }
 
 /// A file's H.264 and AAC publish as they are, B-frames included, and both slots end with the file.
+#[cfg(feature = "file")]
 #[tokio::test(start_paused = true)]
 async fn a_file_passes_through() {
     let clips = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -607,14 +608,7 @@ async fn a_file_passes_through() {
             .expect("the clip opens");
         let has_audio = file.info().audio.is_some();
         let broadcast = LocalBroadcast::new();
-        broadcast
-            .set_encoded_video(file.encoded_video().expect("H.264"))
-            .expect("the broadcast is open");
-        if has_audio {
-            broadcast
-                .set_encoded_audio(file.encoded_audio().expect("AAC"))
-                .expect("the broadcast is open");
-        }
+        broadcast.set_encoded_file(&file).expect("H.264 and AAC");
         // The catalog lists the renditions while they play, described by the file's records.
         let catalog = || {
             broadcast

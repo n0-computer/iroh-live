@@ -727,6 +727,35 @@ impl LocalBroadcast {
         Ok(())
     }
 
+    /// Publishes the H.264 video of `file` as it is, with its audio if that is AAC.
+    ///
+    /// Audio in another codec is left out with a warning.
+    /// `MediaFile::encoded_video` lists the trade-offs against decoding the
+    /// file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidConfig`] if the file has no H.264 video, and
+    /// [`Error::Closed`] after [`close`](Self::close).
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
+    #[cfg(feature = "file")]
+    pub fn set_encoded_file(&self, file: &moq_ext_sources::MediaFile) -> Result<(), Error> {
+        self.set_encoded_video(file.encoded_video()?)?;
+        match file.info().audio.as_ref().map(|_| file.encoded_audio()) {
+            Some(Ok(audio)) => self.set_encoded_audio(audio)?,
+            Some(Err(err)) => warn!(
+                parent: &self.shared.span,
+                error = %err,
+                "publishing the file's video without its audio"
+            ),
+            None => {}
+        }
+        Ok(())
+    }
+
     /// Encodes `source` as the broadcast's audio, replacing the current audio.
     ///
     /// A microphone opens when the publication starts. If it fails then or

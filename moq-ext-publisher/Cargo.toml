@@ -36,8 +36,6 @@ tokio-util = "0.7.20"
 tracing = "0.1.44"
 
 [dev-dependencies]
-# The tests publish the test clips of moq-ext-sources as they are.
-moq-ext-sources = { workspace = true, features = ["file"] }
 tokio = { version = "1.54.1", features = ["full", "test-util"] }
 
 [features]
@@ -53,6 +51,8 @@ sound-server = ["moq-ext-sources/sound-server", "moq-audio/pipewire", "moq-audio
 aec = ["capture", "moq-ext-sources/aec"]
 # Linux screen capture through xdg-desktop-portal. Links libpipewire-0.3.
 pipewire = ["capture", "moq-ext-sources/pipewire", "moq-video/pipewire"]
+# LocalBroadcast::set_encoded_file, which publishes an MP4 file as it is.
+file = ["moq-ext-sources/file"]
 # The Raspberry Pi camera through `rpicam-vid`, which must be on PATH. Linux
 # only.
 rpicam = ["moq-ext-sources/rpicam"]

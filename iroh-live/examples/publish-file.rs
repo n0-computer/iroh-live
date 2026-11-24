@@ -1,11 +1,10 @@
 //! Publishes an MP4 file in real time, as it is or re-encoded, and prints a ticket.
 //!
 //! `cargo run -p iroh-live --features file --example publish-file -- clip.mp4`
-//! publishes the file's H.264 and AAC as they are: no CPU, the original
-//! quality, but one rendition with the file's keyframes and bitrate. With
-//! `--reencode` it decodes the file and encodes a 720p and a 360p rendition,
-//! like a camera. `--loop` starts the file over at its end. Watch with
-//! `irl watch TICKET`.
+//! publishes the file's H.264 and AAC as they are. With `--reencode` it
+//! decodes the file and encodes a 720p and a 360p rendition, like a camera.
+//! docs/how-to/publish.md compares the two. `--loop` starts the file over at
+//! its end. Watch with `irl watch TICKET`.
 
 use std::path::PathBuf;
 
@@ -54,19 +53,15 @@ async fn main() -> n0_error::Result {
         .await?
         .with_end(FileEnd::looping(args.looping));
     info!(info = ?file.info(), "file opened");
-    let has_audio = file.info().audio.is_some();
     if args.reencode {
         let video = file.video(VideoFileConfig::default()).await?;
         let ladder = VideoEncoding::ladder([VideoRendition::p720(), VideoRendition::p360()]);
         broadcast.set_video(video, ladder)?;
-        if has_audio {
+        if file.info().audio.is_some() {
             broadcast.set_audio(file.audio()?, audio_encoding::music())?;
         }
     } else {
-        broadcast.set_encoded_video(file.encoded_video()?)?;
-        if has_audio {
-            broadcast.set_encoded_audio(file.encoded_audio()?)?;
-        }
+        broadcast.set_encoded_file(&file)?;
     }
 
     println!("{}", layout.ticket(node.id(), "file")?);

@@ -44,9 +44,10 @@ codec first, for example with
 another codec publishes its video alone, with a warning.
 
 From Rust, `MediaFile` does the same. `MediaFile::open` reads the file's
-index, `info()` reports its codecs, size, rate and GOP, and the file hands
-out either encoded streams for `set_encoded_video` and `set_encoded_audio`
-or decoded sources for `set_video` and `set_audio`. Every stream of one file
+index, and `info()` reports its codecs, size, rate and GOP.
+`LocalBroadcast::set_encoded_file` publishes the file as it is, and the
+file's `video` and `audio` decode it into sources for `set_video` and
+`set_audio`. Every stream of one file
 plays against one clock, so audio and video stay in sync and loop together.
 The `publish-file` example shows both ways.
 

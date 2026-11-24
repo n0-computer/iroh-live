@@ -77,7 +77,8 @@ returns the same token, for a device that something else opens next.
 stream such as `rpicam_h264(config)` returns, or a file's access units with
 their timestamps from `MediaFile::encoded_video`. On a Raspberry Pi,
 `rpicam-vid` encodes in hardware and no raw picture reaches us.
-`set_encoded_audio` takes a file's AAC the same way.
+`set_encoded_audio` takes a file's AAC the same way, and `set_encoded_file`
+sets both from a `MediaFile`.
 
 `AudioSource` has these constructors:
 
@@ -85,7 +86,8 @@ their timestamps from `MediaFile::encoded_video`. On a Raspberry Pi,
 - `file(path, at_end)` decodes a WAV, MP3 or MP4 file in real time. The
   `FileEnd` says whether it stops or restarts at the end of the file.
 - `tone(hz, layout)` and `test_pattern(layout)` generate sound.
-- `push(format)` returns a `FrameSender` for PCM the application produces.
+- `push(format)` returns a `FrameSender` for PCM the application produces,
+  and `spawn(name, format, run)` runs a producer on a thread of its own.
 
 For echo cancellation, the config's `aec` holds the canceller of the speaker's
 `playback::Engine`, from `Engine::canceller` (needs the `aec` feature). The
