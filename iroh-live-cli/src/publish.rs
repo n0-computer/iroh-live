@@ -2,7 +2,7 @@
 //!
 //! Capture sources are encoded into the renditions `--renditions` lists. A
 //! `file:` source is published as it is, or decoded and encoded under
-//! `--reencode`.
+//! `--reencode` or an encoding flag.
 
 use iroh_live::{
     layout::LiveLayout,
@@ -33,6 +33,12 @@ pub(crate) fn run(mut args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result
                 ));
             }
             // A preview draws decoded pictures.
+            VideoSourceSpec::File { .. } if args.capture.no_reencode => {
+                return Err(n0_error::anyerr!(
+                    "--no-reencode publishes the file as it is, so there are no \
+                     pictures for --preview to draw"
+                ));
+            }
             VideoSourceSpec::File { .. } if !args.capture.reencode => {
                 info!("--preview decodes and encodes the file, as --reencode does");
                 args.capture.reencode = true;

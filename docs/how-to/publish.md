@@ -35,20 +35,23 @@ rendition at the file's size and bitrate. Keyframes come only where the file
 has them, so a new viewer waits up to one GOP for a picture, and a viewer's
 request for a keyframe goes unanswered. Nothing adapts the bitrate to the
 path, and there are no pictures for a preview. `--reencode` lifts all of
-that, at the cost of a decode and an encode. `--renditions`, `--width`,
-`--height`, `--bitrate`, `--fps` and `--preview` turn it on.
+that, at the cost of a decode and an encode. Every flag that only an encoder
+acts on turns it on, such as `--renditions`, `--codec` or `--bitrate`, and so
+does `--preview`. `--no-reencode` insists on passthrough and fails on such a
+flag instead.
 
 Both ways take H.264 video and AAC audio only. Convert a file in another
 codec first, for example with
-`ffmpeg -i in.mp4 -c:v libx264 -c:a aac out.mp4`. A file whose audio is in
-another codec publishes its video alone, with a warning.
+`ffmpeg -i in.mp4 -c:v libx264 -c:a aac out.mp4`. Passed through, a file
+publishes whichever of its tracks is H.264 or AAC and leaves the other out
+with a warning. A file without video publishes its audio alone.
 
 From Rust, `MediaFile` does the same. `MediaFile::open` reads the file's
 index, and `info()` reports its codecs, size, rate and GOP.
-`LocalBroadcast::set_encoded_file` publishes the file as it is, and the
-file's `video` and `audio` decode it into sources for `set_video` and
-`set_audio`. Every stream of one file
-plays against one clock, so audio and video stay in sync and loop together.
+`LocalBroadcast::set_encoded_file` publishes the file's H.264 and AAC as
+they are, and the file's `video` and `audio` decode it into sources for
+`set_video` and `set_audio`. Every stream of one file plays against one
+clock, so audio and video stay in sync and loop together.
 The `publish-file` example shows both ways.
 
 ## From Rust

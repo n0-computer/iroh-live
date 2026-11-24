@@ -49,7 +49,7 @@ kind. The platform picks the capture backend.
 | `app:<id>` | Every window of one application (macOS) |
 | `rpicam` | The Raspberry Pi camera through `rpicam-vid`, encoded by the Pi's hardware. Needs the `rpicam` feature |
 | `rpicam:raw` | The Raspberry Pi camera's raw pictures, encoded here. Needs the `rpicam` feature |
-| `file:<path>[:loop]` | An MP4 file, plain or fragmented, published as it is, or decoded and encoded with `--reencode`. Its audio comes along unless `--audio` is given |
+| `file:<path>[:loop]` | An MP4 file, plain or fragmented, published as it is, or decoded and encoded with `--reencode`. Its audio comes along unless `--audio` is given, and a file without video publishes its audio alone |
 | `test`, `test:timing` | The timing pattern: a sweeping bar, stripes, a frame counter, a clock, and a marker that flashes with the test tone's beep |
 | `test:gradient` | A moving gradient |
 | `test:bounce` | A white square bouncing left and right on a background that drifts through the hues |
@@ -85,7 +85,8 @@ Capture and encoding:
 |---|---|
 | `--video <SPEC>` | Video source (default: `cam`) |
 | `--audio <SPEC>` | Audio source (default: `mic`, or the audio of a `file:` video, which in `irl call` replaces the microphone) |
-| `--reencode` | Decode a `file:` video and encode it like a camera. Without it the file's H.264 and AAC go out as they are, see [Publish a file](../how-to/publish.md#publish-a-file). `--renditions`, `--width`, `--height`, `--bitrate`, `--fps` and `--preview` turn it on |
+| `--reencode` | Decode a `file:` video and encode it like a camera. Without it the file's H.264 and AAC go out as they are, see [Publish a file](../how-to/publish.md#publish-a-file). Every encoding flag below turns it on, as does `--preview`. For the file's own audio, so do `--audio-codec` and `--audio-bitrate` |
+| `--no-reencode` | Publish a `file:` video as it is, and fail if an encoding flag or `--preview` is given or the file is not H.264 or AAC |
 | `--test-source` | Publish `--video test --audio test`, overriding both flags |
 | `--codec <CODEC>` | `h264` (default) or `h265`. H.265 needs a hardware encoder |
 | `--encoder <KIND>` | `auto` (default), `hardware` (`hw`), `software` (`sw`), or one backend: `videotoolbox`, `mediafoundation`, `mediacodec`, `nvenc`, `vaapi`, `v4l2`, `openh264` |
@@ -111,7 +112,7 @@ Window:
 
 | Flag | Description |
 |---|---|
-| `--preview` | Open a window that shows what is published. A `file:` video is decoded for it, as under `--reencode` |
+| `--preview` | Open a window that shows what is published. A `file:` video is decoded for it, as under `--reencode`, so `--no-reencode` refuses it |
 | `--fullscreen` | Start the preview window in fullscreen |
 
 A backend name is the only backend tried: if it is missing, the command fails
@@ -134,8 +135,7 @@ viewer can be served a forgery.
 
 `--video rpicam` publishes the H.264 that the Pi's hardware encoder produced.
 It refuses `--codec h265`, any `--encoder` other than `auto`, and more than one
-rung in `--renditions`. A `file:` video published as it is refuses the same
-codec and encoder flags, and the audio flags for its own audio. `--width`, `--height`, `--fps`, and `--bitrate` become
+rung in `--renditions`. `--width`, `--height`, `--fps`, and `--bitrate` become
 `rpicam-vid` arguments. Use `--video rpicam:raw` to encode the pictures here.
 
 ### Frame rate

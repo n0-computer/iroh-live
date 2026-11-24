@@ -15,10 +15,9 @@ use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use crate::source_spec::RpicamMode;
+use crate::{args::VideoCodecArg, backend::Backend, source_spec::RpicamMode};
 use crate::{
-    args::{AudioCodecArg, CaptureArgs, VideoCodecArg},
-    backend::Backend,
+    args::{AudioCodecArg, CaptureArgs},
     playback::Speaker,
     rendition::{self, CaptureFramerate},
     source_spec::{AudioSourceSpec, VideoOpenOptions, VideoSourceSpec},
@@ -52,7 +51,8 @@ enum Video {
 ///
 /// The microphone cancels the echo of `speaker`. Without `--audio`, a `file:`
 /// video brings its own audio, passed through or decoded as the video is.
-/// Fails for a ladder that does not parse, or a source that does not open.
+/// A file without video publishes its audio alone. Fails for a ladder that
+/// does not parse, or a source that does not open.
 /// The broadcast keeps the sources, and `video_source` hands the video back
 /// for a preview.
 pub(crate) async fn configure(
@@ -62,23 +62,21 @@ pub(crate) async fn configure(
 ) -> Result<()> {
     let opened = open_video(args).await?;
     let own_audio = match (&args.audio, args.video_source()) {
-        (None, VideoSourceSpec::File { path, .. }) => opened_file(&path),
+        (None, VideoSourceSpec::File { path, looping }) => {
+            opened_file(&path).map(|file| file.with_end(FileEnd::looping(looping)))
+        }
         _ => None,
     };
-    match opened {
-        Some(OpenedVideo {
-            source: Video::File(file),
-            ..
-        }) if own_audio.is_some() => {
-            broadcast
-                .set_encoded_file(&file)
-                .map_err(|err| codec_hint(file.path(), err))?;
-            return Ok(());
-        }
-        Some(opened) => {
-            opened.apply(broadcast)?;
-        }
-        None => {}
+    if let Some(file) = &own_audio
+        && !args.reencodes()?
+    {
+        // Publishes the video and the audio, whichever passes through.
+        return broadcast
+            .set_encoded_file(file)
+            .map_err(|err| codec_hint(file.path(), err));
+    }
+    if let Some(opened) = opened {
+        opened.apply(broadcast)?;
     }
     if own_audio
         .as_ref()
@@ -134,7 +132,7 @@ pub(crate) async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>
     let source = match &spec {
         VideoSourceSpec::File { path, looping } => {
             let file = media_file(path, FileEnd::looping(*looping)).await?;
-            Some(file_video(file, args).await?)
+            file_video(file, args).await?
         }
         spec => video_source(spec, args, ladder.framerate).await?,
     };
@@ -165,38 +163,35 @@ impl OpenedVideo {
 }
 
 /// Opens the video of `file`: decoded if `args` encodes it, as it is otherwise.
-async fn file_video(file: MediaFile, args: &CaptureArgs) -> Result<Video> {
+///
+/// Returns `None` for a file without video whose audio comes along, which
+/// [`configure`] publishes alone.
+async fn file_video(file: MediaFile, args: &CaptureArgs) -> Result<Option<Video>> {
     let path = file.path();
+    let reencodes = args.reencodes()?;
+    if reencodes && !args.reencode {
+        info!(
+            flags = %args.encoding_flags().join(", "),
+            "an encoding flag decodes and encodes the file, as --reencode does"
+        );
+    }
     let Some(info) = &file.info().video else {
+        if args.audio.is_none() {
+            return Ok(None);
+        }
         return Err(anyerr!(
             "{} has no video track. Publish it with --video none --audio file:{}",
             path.display(),
             path.display()
         ));
     };
-    if args.reencodes() {
-        if !args.reencode {
-            info!("an encoding flag decodes and encodes the file, as --reencode does");
-        }
+    if reencodes {
         let source = file
             .video(VideoFileConfig::default())
             .await
             .map_err(|err| codec_hint(path, err))?;
-        return Ok(Video::Raw(source));
+        return Ok(Some(Video::Raw(source)));
     }
-    let own_audio = args.audio.is_none();
-    check_encoded_flags(
-        args,
-        "a file",
-        "--reencode decodes it and encodes it here",
-        &[
-            (own_audio && args.audio_bitrate.is_some(), "--audio-bitrate"),
-            (
-                own_audio && args.audio_codec != AudioCodecArg::Opus,
-                "--audio-codec",
-            ),
-        ],
-    )?;
     if info.gop > LONG_GOP {
         warn!(
             gop = ?info.gop,
@@ -204,7 +199,7 @@ async fn file_video(file: MediaFile, args: &CaptureArgs) -> Result<Video> {
              for a picture. --reencode sets its own keyframe interval"
         );
     }
-    Ok(Video::File(file))
+    Ok(Some(Video::File(file)))
 }
 
 /// The files `file:` sources opened, which every later source of the same file shares.
@@ -234,30 +229,23 @@ async fn media_file(path: &Path, end: FileEnd) -> Result<MediaFile> {
     Ok(file.with_end(end))
 }
 
-/// Refuses the encoding flags that `source`, published as it arrives, leaves unused.
-///
-/// `--codec` and `--encoder` always are, and `more` lists the flags only
-/// this source refuses. `instead` says how to encode the source here.
-fn check_encoded_flags(
-    args: &CaptureArgs,
-    source: &str,
-    instead: &str,
-    more: &[(bool, &str)],
-) -> Result<()> {
-    let common = [
+/// Refuses the encoding flags that `rpicam-vid`, whose H.264 goes out as it is, leaves unused.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
+    let refused: Vec<&str> = [
         (args.codec != VideoCodecArg::H264, "--codec"),
         (args.encoder != Backend::Auto, "--encoder"),
-    ];
-    let refused: Vec<&str> = common
-        .iter()
-        .chain(more)
-        .filter_map(|(given, flag)| given.then_some(*flag))
-        .collect();
+        (args.renditions.len() > 1, "a second rendition"),
+    ]
+    .into_iter()
+    .filter_map(|(given, flag)| given.then_some(flag))
+    .collect();
     if refused.is_empty() {
         return Ok(());
     }
     Err(anyerr!(
-        "{source} arrives encoded and goes out as it is, so no encoder here acts on {}. {instead}",
+        "--video rpicam arrives encoded and goes out as it is, so no encoder here acts on {}. \
+         --video rpicam:raw takes the pictures and encodes them here",
         refused.join(", ")
     ))
 }
@@ -324,12 +312,7 @@ async fn rpicam_source(
     match mode {
         RpicamMode::Raw => Ok(Video::Raw(VideoSource::rpicam(config).await?)),
         RpicamMode::Encoded => {
-            check_encoded_flags(
-                args,
-                "--video rpicam",
-                "--video rpicam:raw takes the pictures and encodes them here",
-                &[(args.renditions.len() > 1, "a second rendition")],
-            )?;
+            check_rpicam_flags(args)?;
             if let Some(bitrate) = args.bitrate {
                 config.bitrate = Rate::from_bps(bitrate);
             }
@@ -429,6 +412,7 @@ fn is_microphone(args: &CaptureArgs) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::VideoCodecArg;
 
     /// Without a speaker there is no echo, so the microphone gets no canceller.
     #[cfg(feature = "aec")]
@@ -446,21 +430,40 @@ mod tests {
         );
     }
 
-    /// A flag that needs an encoder decodes a file, and one that names an encoder is refused.
+    /// A flag only an encoder acts on decodes a file, and `--no-reencode` refuses it.
     #[test]
     fn encoding_flags_decode_a_file() {
-        assert!(!CaptureArgs::default().reencodes());
-        let sized = CaptureArgs {
-            width: Some(640),
+        assert!(!CaptureArgs::default().reencodes().expect("no flags"));
+        for args in [
+            CaptureArgs {
+                codec: VideoCodecArg::H265,
+                ..Default::default()
+            },
+            CaptureArgs {
+                width: Some(640),
+                ..Default::default()
+            },
+            CaptureArgs {
+                audio_bitrate: Some(64_000),
+                ..Default::default()
+            },
+        ] {
+            assert!(args.reencodes().expect("no --no-reencode"), "{args:?}");
+            let refused = CaptureArgs {
+                no_reencode: true,
+                ..args
+            };
+            let err = refused.reencodes().unwrap_err();
+            assert!(err.to_string().contains("--no-reencode"), "{err}");
+        }
+        // An `--audio` of its own takes the audio flags, which leave the file alone.
+        let mic = CaptureArgs {
+            audio: Some(AudioSourceSpec::Microphone(None)),
+            audio_bitrate: Some(64_000),
+            no_reencode: true,
             ..Default::default()
         };
-        assert!(sized.reencodes());
-        let coded = CaptureArgs {
-            codec: VideoCodecArg::H265,
-            ..Default::default()
-        };
-        let err = check_encoded_flags(&coded, "a file", "--reencode", &[]).unwrap_err();
-        assert!(err.to_string().contains("--codec"), "{err}");
+        assert!(!mic.reencodes().expect("the flag is the microphone's"));
     }
 
     /// An `--audio` of the file the video plays shares the video's file, and with it the clock.

@@ -88,10 +88,14 @@ pub(crate) struct CaptureArgs {
     /// Decode a `file:` video and encode it like a camera.
     ///
     /// Without it, the file's H.264 and AAC are published as they are.
-    /// `--renditions`, `--width`, `--height`, `--bitrate`, `--fps` and
-    /// `--preview` turn it on. docs/how-to/publish.md compares the two.
+    /// Every flag that only an encoder acts on turns it on, and so does
+    /// `--preview`. docs/how-to/publish.md compares the two.
     #[arg(long)]
     pub(crate) reencode: bool,
+
+    /// Publish a `file:` video as it is, and refuse the encoding flags.
+    #[arg(long, conflicts_with = "reencode")]
+    pub(crate) no_reencode: bool,
 
     /// Publish the test pattern and tone, as `--video test --audio test`.
     #[arg(long)]
@@ -170,6 +174,7 @@ impl Default for CaptureArgs {
                 .expect("the default video source parses"),
             audio: None,
             reencode: false,
+            no_reencode: false,
             test_source: false,
             codec: VideoCodecArg::default(),
             encoder: Backend::default(),
@@ -195,16 +200,55 @@ impl CaptureArgs {
         self.video.clone()
     }
 
+    /// Returns the flags given that only an encoder acts on.
+    ///
+    /// The audio flags count only for the audio of a `file:` video, since
+    /// they apply to any other audio source.
+    pub(crate) fn encoding_flags(&self) -> Vec<&'static str> {
+        let own_audio = self.audio.is_none();
+        [
+            (self.codec != VideoCodecArg::H264, "--codec"),
+            (self.encoder != Backend::Auto, "--encoder"),
+            (!self.renditions.is_empty(), "--renditions"),
+            (
+                self.keyframe_interval != DEFAULT_KEYFRAME_SECONDS,
+                "--keyframe-interval",
+            ),
+            (self.bitrate.is_some(), "--bitrate"),
+            (self.width.is_some(), "--width"),
+            (self.height.is_some(), "--height"),
+            (self.fps.is_some(), "--fps"),
+            (
+                own_audio && self.audio_codec != AudioCodecArg::Opus,
+                "--audio-codec",
+            ),
+            (own_audio && self.audio_bitrate.is_some(), "--audio-bitrate"),
+        ]
+        .into_iter()
+        .filter_map(|(given, flag)| given.then_some(flag))
+        .collect()
+    }
+
     /// Returns whether a `file:` video is decoded and encoded.
     ///
-    /// `--reencode` asks for it, and so does a flag only an encoder acts on.
-    pub(crate) fn reencodes(&self) -> bool {
-        self.reencode
-            || !self.renditions.is_empty()
-            || self.width.is_some()
-            || self.height.is_some()
-            || self.bitrate.is_some()
-            || self.fps.is_some()
+    /// `--reencode` asks for it, and so does any of the
+    /// [`encoding_flags`](Self::encoding_flags).
+    ///
+    /// # Errors
+    ///
+    /// Fails for `--no-reencode` with `--reencode` or an encoding flag.
+    pub(crate) fn reencodes(&self) -> Result<bool> {
+        let flags = self.encoding_flags();
+        match (self.reencode, self.no_reencode) {
+            (true, true) => Err(anyerr!(
+                "--reencode and --no-reencode contradict each other"
+            )),
+            (false, true) if !flags.is_empty() => Err(anyerr!(
+                "--no-reencode publishes the file as it is, so no encoder here acts on {}",
+                flags.join(", ")
+            )),
+            (reencode, no_reencode) => Ok(reencode || (!no_reencode && !flags.is_empty())),
+        }
     }
 
     /// Returns `--audio`, or the test tone under `--test-source`.
@@ -280,7 +324,7 @@ pub(crate) struct PublishArgs {
     /// Open a preview window of the published video.
     ///
     /// Not for `rpicam`, which arrives already encoded. A `file:` video is
-    /// decoded for it, as under `--reencode`.
+    /// decoded for it, as under `--reencode`, so not with `--no-reencode`.
     #[arg(long)]
     pub(crate) preview: bool,
 
