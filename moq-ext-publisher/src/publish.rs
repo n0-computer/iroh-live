@@ -727,31 +727,52 @@ impl LocalBroadcast {
         Ok(())
     }
 
-    /// Publishes the H.264 video of `file` as it is, with its audio if that is AAC.
+    /// Publishes the H.264 video and the AAC audio of `file` as they are.
     ///
-    /// Audio in another codec is left out with a warning.
-    /// `MediaFile::encoded_video` lists the trade-offs against decoding the
-    /// file.
+    /// Either track may be missing. A track in another codec is left out with
+    /// a warning, and the slot of a missing or left-out track keeps what it
+    /// had. `MediaFile::encoded_video` lists the trade-offs against decoding
+    /// the file.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidConfig`] if the file has no H.264 video, and
-    /// [`Error::Closed`] after [`close`](Self::close).
+    /// Returns [`Error::InvalidConfig`] if the file has neither H.264 video
+    /// nor AAC audio, and [`Error::Closed`] after [`close`](Self::close).
     ///
     /// # Panics
     ///
     /// Panics when called outside a Tokio runtime.
     #[cfg(feature = "file")]
     pub fn set_encoded_file(&self, file: &moq_ext_sources::MediaFile) -> Result<(), Error> {
-        self.set_encoded_video(file.encoded_video()?)?;
-        match file.info().audio.as_ref().map(|_| file.encoded_audio()) {
-            Some(Ok(audio)) => self.set_encoded_audio(audio)?,
-            Some(Err(err)) => warn!(
-                parent: &self.shared.span,
-                error = %err,
-                "publishing the file's video without its audio"
-            ),
-            None => {}
+        self.check_open()?;
+        let info = file.info();
+        let video = info.video.as_ref().map(|_| file.encoded_video());
+        let audio = info.audio.as_ref().map(|_| file.encoded_audio());
+        let video_err = video.as_ref().and_then(|video| video.as_ref().err());
+        let audio_err = audio.as_ref().and_then(|audio| audio.as_ref().err());
+        if !matches!(video, Some(Ok(_))) && !matches!(audio, Some(Ok(_))) {
+            let reasons: Vec<String> = [video_err, audio_err]
+                .into_iter()
+                .flatten()
+                .map(ToString::to_string)
+                .collect();
+            return Err(Error::invalid(if reasons.is_empty() {
+                "the file has neither video nor audio".to_string()
+            } else {
+                reasons.join("; ")
+            }));
+        }
+        if let Some(err) = video_err {
+            warn!(parent: &self.shared.span, error = %err, "publishing the file's audio without its video");
+        }
+        if let Some(err) = audio_err {
+            warn!(parent: &self.shared.span, error = %err, "publishing the file's video without its audio");
+        }
+        if let Some(Ok(video)) = video {
+            self.set_encoded_video(video)?;
+        }
+        if let Some(Ok(audio)) = audio {
+            self.set_encoded_audio(audio)?;
         }
         Ok(())
     }

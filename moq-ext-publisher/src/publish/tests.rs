@@ -596,19 +596,63 @@ async fn a_keyframe_request_survives_a_frame_the_rate_cap_drops() {
     );
 }
 
-/// A file's H.264 and AAC publish as they are, B-frames included, and both slots end with the file.
+/// Returns the MP4 file `data` with its video track turned into a `free` box.
+///
+/// The box keeps its size, so every sample offset stays valid.
+#[cfg(feature = "file")]
+fn without_video(mut data: Vec<u8>) -> Vec<u8> {
+    let size = |data: &[u8], at: usize| {
+        u32::from_be_bytes(data[at..at + 4].try_into().expect("four bytes")) as usize
+    };
+    let mut moov = 0;
+    while &data[moov + 4..moov + 8] != b"moov" {
+        moov += size(&data, moov);
+    }
+    let mut child = moov + 8;
+    while child < moov + size(&data, moov) {
+        let trak = &data[child..child + size(&data, child)];
+        // `hdlr`, then a version, flags and a predefined word before the handler type.
+        let video = trak
+            .windows(16)
+            .any(|bytes| &bytes[..4] == b"hdlr" && &bytes[12..] == b"vide");
+        if &trak[4..8] == b"trak" && video {
+            data[child + 4..child + 8].copy_from_slice(b"free");
+        }
+        child += size(&data, child);
+    }
+    data
+}
+
+/// A file's H.264 and AAC publish as they are, B-frames included, and the slots end with the file.
+///
+/// A file without video publishes its audio alone.
 #[cfg(feature = "file")]
 #[tokio::test(start_paused = true)]
 async fn a_file_passes_through() {
     let clips = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../moq-ext-sources/src/source/test_data");
-    for name in ["clip.mp4", "bframes.mp4"] {
-        let file = moq_ext_sources::MediaFile::open(clips.join(name))
+    let clip = std::fs::read(clips.join("clip.mp4")).expect("the clip reads");
+    let audio_only = std::env::temp_dir().join(format!(
+        "moq-ext-publisher-audio-only-{}.mp4",
+        std::process::id()
+    ));
+    std::fs::write(&audio_only, without_video(clip)).expect("the temp dir is writable");
+    for path in [
+        clips.join("clip.mp4"),
+        clips.join("bframes.mp4"),
+        audio_only.clone(),
+    ] {
+        let name = path.display();
+        let file = moq_ext_sources::MediaFile::open(&path)
             .await
             .expect("the clip opens");
+        let has_video = file.info().video.is_some();
         let has_audio = file.info().audio.is_some();
+        if path == audio_only {
+            assert!(!has_video && has_audio, "{name} still has its video");
+        }
         let broadcast = LocalBroadcast::new();
-        broadcast.set_encoded_file(&file).expect("H.264 and AAC");
+        broadcast.set_encoded_file(&file).expect("H.264 or AAC");
         // The catalog lists the renditions while they play, described by the file's records.
         let catalog = || {
             broadcast
@@ -619,7 +663,7 @@ async fn a_file_passes_through() {
                 .snapshot()
         };
         tokio::time::timeout(TIMEOUT, async {
-            while catalog().video.renditions.is_empty()
+            while (has_video && catalog().video.renditions.is_empty())
                 || (has_audio && catalog().audio.renditions.is_empty())
             {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -627,11 +671,18 @@ async fn a_file_passes_through() {
         })
         .await
         .unwrap_or_else(|_| panic!("{name} published no rendition"));
+        let ended = |has: bool, state: &SlotState| {
+            if has {
+                *state == SlotState::Ended
+            } else {
+                *state == SlotState::Off
+            }
+        };
         let mut status = broadcast.status();
         tokio::time::timeout(
             TIMEOUT,
             status.wait_for(|status| {
-                status.video == SlotState::Ended && (!has_audio || status.audio == SlotState::Ended)
+                ended(has_video, &status.video) && ended(has_audio, &status.audio)
             }),
         )
         .await
@@ -642,6 +693,7 @@ async fn a_file_passes_through() {
             assert!(frames > 10, "{name}: {frames} audio frames");
         }
     }
+    std::fs::remove_file(&audio_only).expect("the file was written");
 }
 
 /// Two pre-encoded streams that agree on their frames' instants keep their offset on the broadcast clock.

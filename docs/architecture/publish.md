@@ -78,7 +78,7 @@ stream such as `rpicam_h264(config)` returns, or a file's access units with
 their timestamps from `MediaFile::encoded_video`. On a Raspberry Pi,
 `rpicam-vid` encodes in hardware and no raw picture reaches us.
 `set_encoded_audio` takes a file's AAC the same way, and `set_encoded_file`
-sets both from a `MediaFile`.
+sets whichever of the two a `MediaFile` has.
 
 `AudioSource` has these constructors:
 
