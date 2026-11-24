@@ -511,25 +511,20 @@ impl VideoSourceSpec {
     /// device or the file does not open.
     ///
     /// A file decodes through [`MediaFile::video`](crate::MediaFile::video),
-    /// at the size the options ask for if they give both a width and a
-    /// height, and at the file's own rate.
+    /// at its own size and rate, which the options do not change.
     pub async fn open(&self, options: &VideoOpenOptions) -> Result<Option<VideoSource>, Error> {
         let source = match self {
             Self::None => return Ok(None),
             Self::Test(pattern) => test_pattern(*pattern, options)?,
             #[cfg(feature = "file")]
             Self::File { path, looping } => {
-                let mut config = crate::VideoFileConfig::default();
-                if let (Some(width), Some(height)) = (options.width, options.height) {
-                    config = config.with_size(video::Size::new(width, height));
-                }
                 let end = if *looping {
                     crate::FileEnd::Restart
                 } else {
                     crate::FileEnd::Stop
                 };
                 let file = crate::MediaFile::open(path).await?.with_end(end);
-                return file.video(config).await.map(Some);
+                return file.video(Default::default()).await.map(Some);
             }
             #[cfg(not(feature = "file"))]
             Self::File { path, .. } => {
@@ -833,19 +828,14 @@ mod tests {
         assert!(AudioSourceSpec::None.open().await.unwrap().is_none());
     }
 
-    /// A `file:` video decodes at the size the options ask for.
+    /// A `file:` video decodes at the file's size.
     #[cfg(feature = "file")]
     #[tokio::test]
     async fn a_file_video_decodes() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/source/test_data/clip.mp4");
         let spec: VideoSourceSpec = format!("file:{path}").parse().unwrap();
-        let options = VideoOpenOptions {
-            width: Some(32),
-            height: Some(24),
-            ..Default::default()
-        };
-        let source = spec.open(&options).await.unwrap().expect("a source");
-        assert_eq!(source.format().size, video::Size::new(32, 24));
+        let source = spec.open(&Default::default()).await.unwrap().unwrap();
+        assert_eq!(source.format().size, video::Size::new(64, 48));
     }
 
     /// The test tones open in every build with generated sources.

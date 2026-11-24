@@ -114,24 +114,15 @@ pub struct AudioInfo {
 
 /// How [`MediaFile::video`] decodes the video.
 ///
-/// The default keeps the file's size and lets moq-video pick the decoder.
+/// The default lets moq-video pick the decoder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct VideoFileConfig {
-    /// The size to scale the pictures to, or `None` for the file's size.
-    pub size: Option<video::Size>,
     /// The decoder backend to open.
     pub decoder: video::decode::Kind,
 }
 
 impl VideoFileConfig {
-    /// Returns this config with `size` as the size to scale the pictures to.
-    #[must_use]
-    pub fn with_size(mut self, size: video::Size) -> Self {
-        self.size = Some(size);
-        self
-    }
-
     /// Returns this config with `decoder` as the decoder backend to open.
     #[must_use]
     pub fn with_decoder(mut self, decoder: video::decode::Kind) -> Self {
@@ -223,33 +214,27 @@ impl MediaFile {
 
     /// Decodes the file's H.264 video in real time into a raw source, like a camera.
     ///
-    /// Each picture comes when its presentation time is due, as CPU I420 at
-    /// the size `config` asks for, or at the file's size. The rate is the
-    /// track's average. The decoder opens before this returns, and decodes
-    /// whether or not a broadcast wants the source.
+    /// Each picture comes when its presentation time is due, at the file's
+    /// size and in the decoder's own memory, so a hardware decoder's pictures
+    /// reach a hardware encoder without a copy. The renditions of the
+    /// broadcast scale them. The rate is the track's average. The decoder
+    /// opens before this returns, and decodes whether or not a broadcast
+    /// wants the source.
     ///
     /// Cancellation safe: dropping the future stops the decode thread.
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::InvalidConfig`] for an odd or zero size, or a file
-    /// without H.264 video, and with [`Error::Decoder`] if no decoder of the
+    /// Fails with [`Error::InvalidConfig`] for a file without H.264 video,
+    /// and with [`Error::Decoder`] if no decoder of the
     /// [`VideoFileConfig::decoder`] backend opens. A read or decode error
     /// later fails the source, as [`VideoSource::failure`] reports.
     pub async fn video(&self, config: VideoFileConfig) -> Result<VideoSource, Error> {
-        if let Some(size) = config.size
-            && (size.width == 0 || size.height == 0 || size.width % 2 == 1 || size.height % 2 == 1)
-        {
-            return Err(Error::invalid(format!(
-                "a decoded file scales to even sizes only, not {}x{}",
-                size.width, size.height
-            )));
-        }
         let catalog =
             moq_mux::codec::h264::config(&self.codec_record(true)?).map_err(Error::decoder)?;
         let info = self.shared.info.video.as_ref().expect("the file has video");
         let format = VideoFormat {
-            size: config.size.unwrap_or(info.size),
+            size: info.size,
             rate: info.rate,
         };
         let file = self.clone();
@@ -259,9 +244,6 @@ impl MediaFile {
         let source = VideoSource::spawn("video-file", format, move |sender| {
             let mut decoder_config = video::decode::Config::new();
             decoder_config.kind = config.decoder;
-            decoder_config.output = video::Output::Cpu;
-            // Only a size that was asked for: an odd coded size is a bad hint.
-            decoder_config.scale_hint = config.size;
             let decoder = match video::decode::Decoder::new(&catalog, &decoder_config) {
                 Ok(decoder) => {
                     let _ = opened.send(Ok(()));
@@ -274,7 +256,6 @@ impl MediaFile {
             };
             file.decode_video(
                 decoder,
-                config.size,
                 |frame| sender.push(frame).is_ok(),
                 || sender.is_closed(),
             )
@@ -374,20 +355,12 @@ impl MediaFile {
     fn decode_video(
         &self,
         mut decoder: video::decode::Decoder,
-        size: Option<video::Size>,
         mut push: impl FnMut(video::Frame) -> bool,
         closed: impl Fn() -> bool,
     ) -> Result<(), Error> {
         let clock = &self.shared.clock;
-        // Scales a picture, waits until it is due and hands it over.
+        // Waits until a picture is due and hands it over.
         let mut show = |mut frame: video::Frame| -> Result<bool, Error> {
-            if let Some(size) = size
-                && frame.size() != size
-            {
-                frame = frame
-                    .resize(size, &Default::default())
-                    .map_err(Error::decoder)?;
-            }
             // The decoder's timestamps are media times, which the skip moves.
             let skipped = clock.skipped();
             let at = skipped + Duration::from_micros(Reorder::micros(&frame));
@@ -1054,20 +1027,7 @@ mod tests {
         assert!(matches!(not_mp4, Err(Error::Device { .. })));
     }
 
-    /// Decoding refuses an odd or zero size before it opens anything.
-    #[tokio::test]
-    async fn decoding_refuses_odd_sizes() {
-        let file = open("clip.mp4").await;
-        for size in [video::Size::new(641, 360), video::Size::new(0, 48)] {
-            let config = VideoFileConfig::default().with_size(size);
-            assert!(matches!(
-                file.video(config).await,
-                Err(Error::InvalidConfig { .. })
-            ));
-        }
-    }
-
-    /// A looping B-frame file decodes to pictures of the asked size with rising timestamps.
+    /// A looping B-frame file decodes to pictures with rising timestamps.
     ///
     /// The software decoder keeps the test independent of the platform's
     /// backend, and [`reorder_restores_presentation_order`] covers a backend
@@ -1082,13 +1042,10 @@ mod tests {
         let catalog = moq_mux::codec::h264::config(&file.codec_record(true).unwrap()).unwrap();
         let mut config = video::decode::Config::new();
         config.kind = video::decode::Kind::Software;
-        config.output = video::Output::Cpu;
         let decoder = video::decode::Decoder::new(&catalog, &config).unwrap();
-        let size = video::Size::new(32, 24);
         let mut frames = Vec::new();
         file.decode_video(
             decoder,
-            Some(size),
             |frame| {
                 frames.push(frame);
                 frames.len() < 12
@@ -1096,7 +1053,6 @@ mod tests {
             || false,
         )
         .expect("the clip plays");
-        assert!(frames.iter().all(|frame| frame.size() == size));
         let millis: Vec<u64> = frames
             .iter()
             .map(|frame| Reorder::micros(frame) / 1000)

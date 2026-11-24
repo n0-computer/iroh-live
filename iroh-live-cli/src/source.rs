@@ -7,10 +7,10 @@ use std::{path::Path, sync::Mutex, time::Duration};
 
 use iroh_live::media::{
     AudioFormat, AudioSource, EncodedVideo, FileEnd, LocalBroadcast, MediaFile, Rate,
-    VideoFileConfig, VideoSource, audio, audio_encoding, video, video::Size,
+    VideoFileConfig, VideoSource, audio, audio_encoding, video,
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-use iroh_live::media::{RpicamConfig, rpicam_h264};
+use iroh_live::media::{RpicamConfig, rpicam_h264, video::Size};
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 
@@ -155,12 +155,8 @@ async fn file_video(file: &MediaFile, args: &CaptureArgs) -> Result<Video> {
         ));
     };
     if args.reencode {
-        let mut config = VideoFileConfig::default();
-        if let (Some(width), Some(height)) = (args.width, args.height) {
-            config = config.with_size(Size::new(width, height));
-        }
         let source = file
-            .video(config)
+            .video(VideoFileConfig::default())
             .await
             .map_err(|err| codec_hint(path, err))?;
         return Ok(Video::Raw(source));

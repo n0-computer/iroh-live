@@ -92,7 +92,7 @@ Capture and encoding:
 | `--renditions <LIST>` | The simulcast ladder, comma-separated. A rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`, with an optional `@<fps>`. A bare name encodes at the source's size. Default: one rendition named `video` at the source's size |
 | `--keyframe-interval <SECONDS>` | Seconds between keyframes (default: 2). A viewer waits up to this long for a first picture, and a rendition switch waits as long. Use 1 for a call or a demo |
 | `--bitrate <BITS_PER_SECOND>` | Target video bitrate of the largest rung. Smaller rungs get a share by pixel count. Omit to derive one from the resolution |
-| `--width`, `--height` | Requested capture size. The device picks its nearest mode |
+| `--width`, `--height` | Requested capture size. The device picks its nearest mode. A `file:` video keeps its size, and the two size its one rendition |
 | `--fps` | Requested capture frame rate, see below |
 | `--no-cursor` | Hide the pointer in screen, window, and application capture |
 | `--audio-codec <CODEC>` | `opus` (default) or `pcm` |

@@ -131,6 +131,9 @@ pub(crate) struct CaptureArgs {
     pub(crate) bitrate: Option<u64>,
 
     /// Requested capture width. The device picks its nearest mode.
+    ///
+    /// A `file:` video keeps its size, and `--width` with `--height` sizes
+    /// its one rendition.
     #[arg(long)]
     pub(crate) width: Option<u32>,
 

@@ -257,9 +257,11 @@ where it stopped.
 The passthrough trade-offs are in
 [Publish a file](../how-to/publish.md#publish-a-file). `MediaFile::video`
 and `MediaFile::audio` decode with moq-video's and moq-audio's decoders into
-raw sources, which `set_video` and `set_audio` encode like a camera. The
-decode path puts pictures back into presentation order, since some
-backends return them in decode order.
+raw sources, which `set_video` and `set_audio` encode like a camera.
+Decoded pictures stay in the decoder's memory, at the file's size, and the
+renditions scale them. The decode path puts pictures back into
+presentation order, since moq-video's VideoToolbox backend returns them in
+decode order.
 
 See [Raspberry Pi](../how-to/raspberry-pi.md) for `rpicam_h264`.
 
