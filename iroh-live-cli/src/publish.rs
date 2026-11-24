@@ -4,7 +4,10 @@
 //! `file:` source is published as it is, or decoded and encoded under
 //! `--reencode`.
 
-use iroh_live::{layout::LiveLayout, media::LocalBroadcast};
+use iroh_live::{
+    layout::LiveLayout,
+    media::{LocalBroadcast, SlotState},
+};
 use n0_error::{Result, anyerr};
 use tracing::info;
 
@@ -68,7 +71,11 @@ fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
     let (node, broadcast, ticket) = rt.block_on(setup_capture(args))?;
 
     if !args.preview {
-        return wait_for_ctrl_c(rt, node, broadcast);
+        let plays_once = matches!(
+            args.capture.video_source(),
+            VideoSourceSpec::File { looping: false, .. }
+        );
+        return wait_for_ctrl_c(rt, node, broadcast, plays_once);
     }
 
     // eframe takes the main thread. The guard keeps the runtime entered.
@@ -77,14 +84,27 @@ fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
 }
 
 /// Holds the broadcast and its sources open until the user interrupts.
+///
+/// With `plays_once`, a file that plays once, it also returns once both
+/// slots are done.
 fn wait_for_ctrl_c(
     rt: &tokio::runtime::Runtime,
     node: SharedNode,
     broadcast: LocalBroadcast,
+    plays_once: bool,
 ) -> Result {
     println!("press Ctrl+C to stop");
     rt.block_on(async move {
-        crate::shutdown::ctrl_c().await?;
+        let mut status = broadcast.status();
+        let ended = status.wait_for(|status| {
+            [&status.video, &status.audio]
+                .iter()
+                .all(|slot| !matches!(slot, SlotState::Starting | SlotState::Running))
+        });
+        tokio::select! {
+            result = crate::shutdown::ctrl_c() => result?,
+            _ = ended, if plays_once => info!("the file ended"),
+        }
         Teardown::new(node).with_broadcast(broadcast).run().await;
         Ok(())
     })

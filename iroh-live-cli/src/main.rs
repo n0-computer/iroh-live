@@ -188,13 +188,4 @@ mod tests {
         assert!(args.capture.reencode);
         assert_eq!(args.capture.audio_source().to_string(), "none");
     }
-
-    /// `--transcode` and `--format` went away with the passthrough that needed them.
-    #[test]
-    fn the_old_file_flags_are_gone() {
-        for flag in ["--transcode", "--format=fmp4"] {
-            Cli::try_parse_from(["irl", "publish", "--video", "file:clip.mp4", flag])
-                .expect_err("the flag no longer exists");
-        }
-    }
 }

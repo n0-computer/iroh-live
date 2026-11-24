@@ -80,14 +80,16 @@ pub(crate) struct CaptureArgs {
     ///
     /// `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`, `test[:beeps|:tone]`,
     /// or `none`. Anything else is a device name, such as `hw:0,1`.
+    /// A `file:` video brings its own audio, which in `irl call` replaces the
+    /// microphone. Give `--audio mic` to keep it.
     #[arg(long, verbatim_doc_comment)]
     pub(crate) audio: Option<AudioSourceSpec>,
 
     /// Decode a `file:` video and encode it like a camera.
     ///
-    /// Without it, the file's H.264 and AAC are published as they are: one
-    /// rendition with the file's keyframes and bitrate, at no CPU cost.
-    /// `--renditions`, a size and the other encoding flags need it.
+    /// Without it, the file's H.264 and AAC are published as they are, in one
+    /// rendition. `--renditions`, a size and the other encoding flags need it.
+    /// docs/how-to/publish.md compares the two.
     #[arg(long)]
     pub(crate) reencode: bool,
 

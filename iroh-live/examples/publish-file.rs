@@ -30,11 +30,11 @@ struct Args {
     path: PathBuf,
 
     /// Decode the file and encode it into two renditions.
-    #[clap(long)]
+    #[arg(long)]
     reencode: bool,
 
     /// Start the file over at its end.
-    #[clap(long = "loop")]
+    #[arg(long = "loop")]
     looping: bool,
 }
 

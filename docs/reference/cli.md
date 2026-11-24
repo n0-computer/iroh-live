@@ -84,8 +84,8 @@ Capture and encoding:
 | Flag | Description |
 |---|---|
 | `--video <SPEC>` | Video source (default: `cam`) |
-| `--audio <SPEC>` | Audio source (default: `mic`, or the audio of a `file:` video) |
-| `--reencode` | Decode a `file:` video and encode it like a camera. Without it the file's H.264 and AAC go out as they are, in one rendition, and `--renditions`, a size and the other encoding flags are refused |
+| `--audio <SPEC>` | Audio source (default: `mic`, or the audio of a `file:` video, which in `irl call` replaces the microphone) |
+| `--reencode` | Decode a `file:` video and encode it like a camera. Without it the file's H.264 and AAC go out as they are, see [Publish a file](../how-to/publish.md#publish-a-file) |
 | `--test-source` | Publish `--video test --audio test`, overriding both flags |
 | `--codec <CODEC>` | `h264` (default) or `h265`. H.265 needs a hardware encoder |
 | `--encoder <KIND>` | `auto` (default), `hardware` (`hw`), `software` (`sw`), or one backend: `videotoolbox`, `mediafoundation`, `mediacodec`, `nvenc`, `vaapi`, `v4l2`, `openh264` |

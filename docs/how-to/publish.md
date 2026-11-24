@@ -36,8 +36,12 @@ has them, so a new viewer waits up to one GOP for a picture, and a viewer's
 request for a keyframe goes unanswered. Nothing adapts the bitrate to the
 path, and there are no pictures for a preview. `--reencode` lifts all of
 that, at the cost of a decode and an encode, and is needed for
-`--renditions`, a size, `--preview`, and for files in other codecs than
-H.264 and AAC.
+`--renditions`, a size, and `--preview`.
+
+Both ways take H.264 video and AAC audio only. Convert a file in another
+codec first, for example with
+`ffmpeg -i in.mp4 -c:v libx264 -c:a aac out.mp4`. A file whose audio is in
+another codec publishes its video alone, with a warning.
 
 From Rust, `MediaFile` does the same. `MediaFile::open` reads the file's
 index, `info()` reports its codecs, size, rate and GOP, and the file hands

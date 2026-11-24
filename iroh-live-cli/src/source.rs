@@ -3,7 +3,7 @@
 //! Sources open before they reach the broadcast, so a missing device is an
 //! error here and not a retry loop in the log.
 
-use std::{path::Path, time::Duration};
+use std::{path::Path, sync::Mutex, time::Duration};
 
 use iroh_live::media::{
     AudioFormat, AudioSource, EncodedVideo, FileEnd, LocalBroadcast, MediaFile, Rate,
@@ -109,7 +109,7 @@ pub(crate) async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>
         } else {
             FileEnd::Stop
         };
-        let file = MediaFile::open(path).await?.with_end(end);
+        let file = media_file(path, end).await?;
         let source = file_video(&file, args).await?;
         return Ok(Some(OpenedVideo {
             source,
@@ -149,7 +149,7 @@ async fn file_video(file: &MediaFile, args: &CaptureArgs) -> Result<Video> {
     let path = file.path();
     let Some(info) = &file.info().video else {
         return Err(anyerr!(
-            "{} has no video track; publish it with --video none --audio file:{}",
+            "{} has no video track. Publish it with --video none --audio file:{}",
             path.display(),
             path.display()
         ));
@@ -162,7 +162,7 @@ async fn file_video(file: &MediaFile, args: &CaptureArgs) -> Result<Video> {
         let source = file
             .video(config)
             .await
-            .map_err(|err| convert_hint(path, err))?;
+            .map_err(|err| codec_hint(path, err))?;
         return Ok(Video::Raw(source));
     }
     check_passthrough_flags(args)?;
@@ -170,32 +170,63 @@ async fn file_video(file: &MediaFile, args: &CaptureArgs) -> Result<Video> {
         warn!(
             gop = ?info.gop,
             "the file has keyframes this far apart, so a new viewer waits up to that long \
-             for a picture; --reencode sets its own keyframe interval"
+             for a picture. --reencode sets its own keyframe interval"
         );
     }
-    let source = file
-        .encoded_video()
-        .map_err(|err| passthrough_hint(path, err))?;
+    let source = file.encoded_video().map_err(|err| codec_hint(path, err))?;
     Ok(Video::Encoded(source))
 }
 
+/// Opens the `file:` video at `path`, or returns the copy opened before.
+///
+/// A video that opens again, after the scan screen of `irl call` or a switch
+/// in the preview, then shares the clock of the file's audio, which kept
+/// playing, so the two stay in sync.
+async fn media_file(path: &Path, end: FileEnd) -> Result<MediaFile> {
+    static OPENED: Mutex<Vec<MediaFile>> = Mutex::new(Vec::new());
+    let opened = OPENED
+        .lock()
+        .expect("poisoned")
+        .iter()
+        .find(|file| file.path() == path)
+        .cloned();
+    let file = match opened {
+        Some(file) => file,
+        None => {
+            let file = MediaFile::open(path).await?;
+            OPENED.lock().expect("poisoned").push(file.clone());
+            file
+        }
+    };
+    Ok(file.with_end(end))
+}
+
 /// Sets the audio of `file`, if it has any: decoded under `--reencode`, as it is otherwise.
+///
+/// The user did not ask for the file's audio, so audio that does not open
+/// only warns, and the video goes out alone.
 fn set_file_audio(broadcast: &LocalBroadcast, args: &CaptureArgs, file: &MediaFile) -> Result<()> {
+    let path = file.path().display();
     if file.info().audio.is_none() {
-        info!(path = %file.path().display(), "the file has no audio");
+        info!(%path, "the file has no audio");
         return Ok(());
     }
-    if args.reencode {
-        let source = file.audio().map_err(|err| convert_hint(file.path(), err))?;
-        let encoding = audio_config(args, &source);
-        broadcast.set_audio(source, encoding)?;
+    let set = if args.reencode {
+        file.audio().map(|source| {
+            let encoding = audio_config(args, &source);
+            broadcast.set_audio(source, encoding)
+        })
     } else {
-        let source = file
-            .encoded_audio()
-            .map_err(|err| passthrough_hint(file.path(), err))?;
-        broadcast.set_encoded_audio(source)?;
+        file.encoded_audio()
+            .map(|source| broadcast.set_encoded_audio(source))
+    };
+    match set {
+        Ok(result) => Ok(result?),
+        Err(err) => {
+            warn!(%path, error = %err, "publishing the video without the file's audio");
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 /// Refuses the flags that need an encoder, which a passthrough file has not.
@@ -233,18 +264,10 @@ fn check_passthrough_flags(args: &CaptureArgs) -> Result<()> {
     ))
 }
 
-/// Adds the passthrough alternatives to an error about a file's codec.
-fn passthrough_hint(path: &Path, err: impl std::fmt::Display) -> n0_error::AnyError {
-    anyerr!(
-        "{err}. A file is published as it is only with H.264 video and AAC \
-         audio. Add --reencode to decode it, or convert it with `ffmpeg -i {} \
-         -c:v libx264 -c:a aac out.mp4`",
-        path.display()
-    )
-}
-
-/// Adds the conversion that makes a file decodable to an error about its codec.
-fn convert_hint(path: &Path, err: impl std::fmt::Display) -> n0_error::AnyError {
+/// Adds a conversion that makes the file publishable to an error about its codec.
+///
+/// Passthrough and `--reencode` both take H.264 video and AAC audio only.
+fn codec_hint(path: &Path, err: impl std::fmt::Display) -> n0_error::AnyError {
     anyerr!(
         "{err}. Convert it with `ffmpeg -i {} -c:v libx264 -c:a aac out.mp4`",
         path.display()

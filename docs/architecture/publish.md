@@ -231,8 +231,8 @@ access unit until the next start code, so the end of the stream flushes it
 explicitly. A file's access units go to `moq_mux::import::Track` with the
 file's avcC instead, each with its presentation time, so B-frames keep their
 order. `set_encoded_audio` publishes AAC frames through the same importer,
-one group per frame. A stream that ends before its first access unit shows as
-a failed video slot.
+one group per frame. A stream that ends before its first frame shows as a
+failed slot.
 
 A file's frames carry the wall-clock instant their timestamp stands for. The
 broadcast maps a stream's timestamps with the offset of its first frame, so
@@ -242,19 +242,24 @@ the audio and video of one file stay in sync whichever starts first.
 
 `MediaFile` reads the sample index of an MP4 file with mp4-atom, from the
 `moov` sample tables of a plain file or the `moof` of each fragment, and
-reads each sample from the file when it is due. It applies the edit list,
-so presentation starts at zero, and starts the clock with the first sample
-any stream asks for. Each sample is due at its decode time; a decoded
-picture at its presentation time. A looping file starts every track again
-once the longest has ended, with timestamps that keep rising. A file that
-falls more than a second behind, after a suspended host for example, skips
-ahead on every stream at once instead of racing to catch up.
+reads each sample from the file when it is due. It applies the edit list:
+empty edits delay a track, and the media edit trims its start and end. A
+track presents from the first keyframe that the edit keeps. Each
+sample is due at its decode time, and a decoded picture at its presentation
+time. The clock starts with the first sample any stream asks for, and a
+stream that starts later joins at the clock's position, at the next
+keyframe. A looping file starts every track again once the longest has
+ended, with timestamps that keep rising. A file that falls more than a
+second behind, after a stalled disk for example, moves its timeline forward
+on every stream at once instead of racing to catch up. The content resumes
+where it stopped.
 
-Passthrough publishes one rendition with the file's keyframes and bitrate:
-no ladder, no keyframe on request, no rate control and no preview, in
-exchange for no CPU and the original quality. `MediaFile::video` and
-`MediaFile::audio` decode with moq-video's and moq-audio's decoders into
-raw sources, which `set_video` and `set_audio` encode like a camera.
+The passthrough trade-offs are in
+[Publish a file](../how-to/publish.md#publish-a-file). `MediaFile::video`
+and `MediaFile::audio` decode with moq-video's and moq-audio's decoders into
+raw sources, which `set_video` and `set_audio` encode like a camera. The
+decode path puts pictures back into presentation order, since some
+backends return them in decode order.
 
 See [Raspberry Pi](../how-to/raspberry-pi.md) for `rpicam_h264`.
 
