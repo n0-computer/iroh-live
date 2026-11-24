@@ -487,3 +487,258 @@ fn saturate(value: i128) -> i64 {
     value.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
 }
 
+#[cfg(test)]
+mod tests {
+    //! Index tests on files built in memory, each a `moov` and `mdat` or `moof` boxes.
+
+    use std::io::Cursor;
+
+    use mp4_atom as atom;
+
+    use super::*;
+
+    /// The size of every test sample.
+    const SIZE: u32 = 10;
+
+    /// Returns an `mdat` box with `samples` test samples.
+    fn mdat(samples: u32) -> Vec<u8> {
+        let mut data = (8 + samples * SIZE).to_be_bytes().to_vec();
+        data.extend_from_slice(b"mdat");
+        data.resize(data.len() + (samples * SIZE) as usize, 0);
+        data
+    }
+
+    /// Returns sample tables of `count` samples of 100 ms in one chunk, which an `mdat` at the start holds.
+    fn stbl(count: u32) -> atom::Stbl {
+        atom::Stbl {
+            stsd: atom::Stsd {
+                // The index reads any codec, and this one is short to write.
+                codecs: vec![
+                    atom::Opus {
+                        audio: atom::Audio {
+                            data_reference_index: 1,
+                            channel_count: 2,
+                            sample_size: 16,
+                            sample_rate: atom::FixedPoint::from(48_000),
+                        },
+                        dops: atom::Dops {
+                            output_channel_count: 2,
+                            pre_skip: 0,
+                            input_sample_rate: 48_000,
+                            output_gain: 0,
+                            channel_mapping: None,
+                        },
+                        btrt: None,
+                    }
+                    .into(),
+                ],
+            },
+            stts: atom::Stts {
+                entries: vec![atom::SttsEntry {
+                    sample_count: count,
+                    sample_delta: 100,
+                }],
+            },
+            stsc: atom::Stsc {
+                entries: vec![atom::StscEntry {
+                    first_chunk: 1,
+                    samples_per_chunk: count,
+                    sample_description_index: 1,
+                }],
+            },
+            stsz: atom::Stsz {
+                samples: atom::StszSamples::Identical { count, size: SIZE },
+            },
+            stco: Some(atom::Stco { entries: vec![8] }),
+            ..Default::default()
+        }
+    }
+
+    /// Returns a `moov` with one video track of timescale 1000 and the tables `stbl`.
+    fn moov(stbl: atom::Stbl, edits: Vec<atom::ElstEntry>) -> atom::Moov {
+        let trak = atom::Trak {
+            tkhd: atom::Tkhd {
+                track_id: 1,
+                ..Default::default()
+            },
+            edts: (!edits.is_empty()).then_some(atom::Edts {
+                elst: Some(atom::Elst { entries: edits }),
+            }),
+            mdia: atom::Mdia {
+                mdhd: atom::Mdhd {
+                    timescale: 1000,
+                    language: "und".into(),
+                    ..Default::default()
+                },
+                hdlr: atom::Hdlr {
+                    handler: b"vide".into(),
+                    name: String::new(),
+                },
+                minf: atom::Minf {
+                    stbl,
+                    ..Default::default()
+                },
+            },
+            ..Default::default()
+        };
+        atom::Moov {
+            trak: vec![trak],
+            ..Default::default()
+        }
+    }
+
+    /// Indexes an `mdat` of `samples` test samples followed by `moov`.
+    fn index_plain(samples: u32, moov: &atom::Moov) -> Result<Vec<Sample>, AnyError> {
+        let mut data = mdat(samples);
+        moov.encode(&mut data).unwrap();
+        let mut tracks = index(&mut Cursor::new(data))?;
+        Ok(tracks.remove(0).samples)
+    }
+
+    /// Returns an edit list entry in the movie timescale of 1000.
+    fn edit(segment_duration: u64, media_time: Option<u64>) -> atom::ElstEntry {
+        atom::ElstEntry {
+            segment_duration,
+            media_time,
+            media_rate: atom::FixedPoint::from(1),
+        }
+    }
+
+    /// Returns the presentation times of `samples` in milliseconds.
+    fn millis(samples: &[Sample]) -> Vec<i64> {
+        samples.iter().map(|sample| sample.pts / 1000).collect()
+    }
+
+    /// An empty edit delays the track, and the media edit trims its start and end.
+    #[test]
+    fn edits_delay_and_trim() {
+        let delayed = moov(stbl(10), vec![edit(500, None), edit(0, Some(200))]);
+        let samples = index_plain(10, &delayed).unwrap();
+        assert_eq!(
+            millis(&samples),
+            [500, 600, 700, 800, 900, 1000, 1100, 1200]
+        );
+        assert_eq!(samples[0].offset, 8 + 2 * u64::from(SIZE));
+
+        let trimmed = moov(stbl(10), vec![edit(300, Some(200))]);
+        assert_eq!(millis(&index_plain(10, &trimmed).unwrap()), [0, 100, 200]);
+
+        // A splice plays the media whole from the first edit.
+        let spliced = moov(stbl(10), vec![edit(300, Some(200)), edit(300, Some(700))]);
+        assert_eq!(index_plain(10, &spliced).unwrap().len(), 8);
+    }
+
+    /// A version 1 `ctts` moves samples before their decode time.
+    #[test]
+    fn negative_composition_offsets() {
+        let mut tables = stbl(4);
+        tables.ctts = Some(atom::Ctts {
+            entries: [0, 200, -100, -100]
+                .map(|sample_offset| atom::CttsEntry {
+                    sample_count: 1,
+                    sample_offset,
+                })
+                .into(),
+        });
+        let samples = index_plain(4, &moov(tables, Vec::new())).unwrap();
+        assert_eq!(millis(&samples), [0, 300, 100, 200]);
+    }
+
+    /// Chunk offsets in 64 bits place the samples as 32-bit ones do.
+    #[test]
+    fn co64_places_the_samples() {
+        let mut tables = stbl(3);
+        tables.stco = None;
+        tables.co64 = Some(atom::Co64 { entries: vec![8] });
+        let samples = index_plain(3, &moov(tables, Vec::new())).unwrap();
+        let offsets: Vec<u64> = samples.iter().map(|sample| sample.offset).collect();
+        assert_eq!(offsets, [8, 18, 28]);
+    }
+
+    /// Without an `stss` every sample is a keyframe, and with one only those it lists.
+    #[test]
+    fn sync_samples() {
+        let all = index_plain(3, &moov(stbl(3), Vec::new())).unwrap();
+        assert!(all.iter().all(|sample| sample.keyframe));
+        let mut tables = stbl(3);
+        tables.stss = Some(atom::Stss {
+            entries: vec![1, 3],
+        });
+        let listed = index_plain(3, &moov(tables, Vec::new())).unwrap();
+        let keyframes: Vec<bool> = listed.iter().map(|sample| sample.keyframe).collect();
+        assert_eq!(keyframes, [true, false, true]);
+    }
+
+    /// Sizes and offsets past the end of the file fail the index instead of allocating.
+    #[test]
+    fn corrupt_sizes_fail() {
+        let mut huge = stbl(3);
+        huge.stsz.samples = atom::StszSamples::Identical {
+            count: u32::MAX,
+            size: SIZE,
+        };
+        assert!(index_plain(3, &moov(huge, Vec::new())).is_err());
+        let mut past = stbl(3);
+        past.stco = Some(atom::Stco {
+            entries: vec![1 << 30],
+        });
+        assert!(index_plain(3, &moov(past, Vec::new())).is_err());
+    }
+
+    /// A track with two sample descriptions is refused.
+    #[test]
+    fn several_sample_descriptions_fail() {
+        let mut tables = stbl(1);
+        tables.stsd.codecs.push(tables.stsd.codecs[0].clone());
+        assert!(index_plain(1, &moov(tables, Vec::new())).is_err());
+    }
+
+    /// A fragment without a `tfdt` continues the track where the last one ended.
+    #[test]
+    fn fragments_without_tfdt_continue() {
+        let mut init = moov(stbl(0), Vec::new());
+        init.mvex = Some(atom::Mvex {
+            trex: vec![atom::Trex {
+                track_id: 1,
+                default_sample_description_index: 1,
+                default_sample_duration: 100,
+                default_sample_size: SIZE,
+                default_sample_flags: 0,
+            }],
+            ..Default::default()
+        });
+        let mut data = Vec::new();
+        init.encode(&mut data).unwrap();
+        for (count, tfdt) in [(3, Some(0)), (2, None)] {
+            let mut moof = atom::Moof {
+                traf: vec![atom::Traf {
+                    tfhd: atom::Tfhd {
+                        track_id: 1,
+                        default_base_is_moof: true,
+                        ..Default::default()
+                    },
+                    tfdt: tfdt.map(|base_media_decode_time| atom::Tfdt {
+                        base_media_decode_time,
+                    }),
+                    trun: vec![atom::Trun {
+                        data_offset: Some(0),
+                        samples: atom::TrunSamples::Inherited {
+                            count,
+                            first_flags: None,
+                        },
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let mut encoded = Vec::new();
+            moof.encode(&mut encoded).unwrap();
+            // The samples follow the `moof` and the `mdat` header.
+            moof.traf[0].trun[0].data_offset = Some(encoded.len() as i32 + 8);
+            moof.encode(&mut data).unwrap();
+            data.extend(mdat(count));
+        }
+        let samples = index(&mut Cursor::new(data)).unwrap().remove(0).samples;
+        assert_eq!(millis(&samples), [0, 100, 200, 300, 400]);
+    }
+}

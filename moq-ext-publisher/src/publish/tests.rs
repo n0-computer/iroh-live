@@ -597,7 +597,7 @@ async fn a_keyframe_request_survives_a_frame_the_rate_cap_drops() {
 }
 
 /// A file's H.264 and AAC publish as they are, B-frames included, and both slots end with the file.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_file_passes_through() {
     let clips = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../moq-ext-sources/src/source/test_data");
@@ -648,4 +648,25 @@ async fn a_file_passes_through() {
             assert!(frames > 10, "{name}: {frames} audio frames");
         }
     }
+}
+
+/// Two pre-encoded streams that agree on their frames' instants keep their offset on the broadcast clock.
+///
+/// The audio's first frame arrives later than the video's, and presents 64 ms
+/// after it, as the audio of a file with an encoder delay does.
+#[tokio::test]
+async fn pre_encoded_streams_stay_aligned() {
+    let clock = moq_mux::Clock::new();
+    let start = std::time::Instant::now();
+    let frame = |millis: u64| moq_ext_sources::EncodedFrame {
+        data: bytes::Bytes::new(),
+        timestamp: moq_net::Timestamp::from_micros(millis * 1000).unwrap(),
+        at: start + Duration::from_millis(millis),
+    };
+    let (mut video, mut audio) = (None, None);
+    let video_at = super::wall_map(&mut video, &clock, &frame(0));
+    std::thread::sleep(Duration::from_millis(30));
+    let audio_at = super::wall_map(&mut audio, &clock, &frame(64));
+    let apart = super::micros(audio_at) as i128 - super::micros(video_at) as i128;
+    assert!((apart - 64_000).abs() < 1_000, "{apart} us apart");
 }

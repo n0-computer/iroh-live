@@ -833,6 +833,21 @@ mod tests {
         assert!(AudioSourceSpec::None.open().await.unwrap().is_none());
     }
 
+    /// A `file:` video decodes at the size the options ask for.
+    #[cfg(feature = "file")]
+    #[tokio::test]
+    async fn a_file_video_decodes() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/source/test_data/clip.mp4");
+        let spec: VideoSourceSpec = format!("file:{path}").parse().unwrap();
+        let options = VideoOpenOptions {
+            width: Some(32),
+            height: Some(24),
+            ..Default::default()
+        };
+        let source = spec.open(&options).await.unwrap().expect("a source");
+        assert_eq!(source.format().size, video::Size::new(32, 24));
+    }
+
     /// The test tones open in every build with generated sources.
     #[cfg(feature = "pattern")]
     #[tokio::test]
