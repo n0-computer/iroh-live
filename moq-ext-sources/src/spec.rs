@@ -83,8 +83,7 @@ pub enum VideoSourceSpec {
     Rpicam(RpicamMode),
     /// A generated picture, for publishing without a camera.
     Test(TestPattern),
-    /// An MP4 file, decoded by [`open`](Self::open), or published as it is
-    /// through [`MediaFile`](crate::MediaFile).
+    /// An MP4 file, decoded by [`open`](Self::open) or passed through by `MediaFile`.
     File {
         /// Path to the file.
         path: PathBuf,

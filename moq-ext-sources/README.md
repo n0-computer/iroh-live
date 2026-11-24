@@ -29,7 +29,8 @@ a WAV, MP3 or MP4 file and stops or restarts at its end. `MediaFile` reads an
 MP4 file and hands out its H.264 and AAC as they are, for
 `LocalBroadcast::set_encoded_video` and `set_encoded_audio`, or decoded into a
 `VideoSource` and an `AudioSource`. `rpicam_h264` returns the Annex-B H.264
-that `rpicam-vid` encoded, for `set_encoded_video`. The crate docs list every constructor.
+that `rpicam-vid` encoded, for `set_encoded_video`. The crate docs list every
+constructor.
 
 `VideoSource::capture` waits up to three seconds for a camera dropped before
 it to release the device, so a switch back to the same camera does not fail as

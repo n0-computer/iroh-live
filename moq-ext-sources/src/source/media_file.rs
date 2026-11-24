@@ -9,6 +9,7 @@
 //! video stay in sync and loop together.
 
 use std::{
+    collections::BTreeMap,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
@@ -19,7 +20,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use hang::catalog::{AAC, AudioConfig, H264, VideoConfig};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -34,16 +34,26 @@ use crate::{EncodedAudio, EncodedFrame, EncodedVideo, Error, audio, video};
 mod mp4;
 
 /// The frame rate of a video track whose samples have no durations.
-const FALLBACK_FPS: f64 = 30.0;
+const FALLBACK_FPS: u32 = 30;
 
-/// How far playback can fall behind the wall clock before it skips ahead.
+/// The shortest pass over a file, one frame at [`FALLBACK_FPS`].
 ///
-/// A suspended host or a stalled disk makes playback late. Without the skip,
-/// the file would play fast until it caught up.
+/// A file of one sample, or of samples without durations, would otherwise
+/// loop a million times a second.
+const MIN_PASS: Duration = Duration::from_micros(1_000_000 / FALLBACK_FPS as u64);
+
+/// How far playback can fall behind the wall clock before the timeline moves forward.
+///
+/// A stalled disk makes playback late. Without the move, the file would play
+/// fast until it caught up. After the move, the content resumes where it
+/// stopped.
 const MAX_BEHIND: Duration = Duration::from_secs(1);
 
 /// The longest a decode thread sleeps before it checks that its source is still wanted.
 const WAIT_SLICE: Duration = Duration::from_millis(50);
+
+/// The deepest reordering [`Reorder`] allows for, the size of the largest H.264 picture buffer.
+const MAX_HELD: usize = 16;
 
 /// An MP4 file, ready to publish as it is or to decode.
 ///
@@ -63,8 +73,6 @@ struct Shared {
     video: Option<Track>,
     audio: Option<Track>,
     info: MediaInfo,
-    /// The earliest presentation time of any track, in microseconds, which plays at zero.
-    base: i64,
     /// The length of one pass over the file.
     pass: Duration,
     clock: Clock,
@@ -92,8 +100,7 @@ pub struct VideoInfo {
     pub size: video::Size,
     /// The average frame rate over the whole track.
     pub rate: video::FrameRate,
-    /// The longest time between two keyframes, which a new viewer of a
-    /// passthrough may wait for a picture.
+    /// The longest time between two keyframes, which a new passthrough viewer may wait.
     pub gop: Duration,
 }
 
@@ -140,12 +147,14 @@ impl VideoFileConfig {
 impl MediaFile {
     /// Opens the MP4 file at `path`, plain or fragmented, and reads its sample index.
     ///
-    /// The file plays once; [`with_end`](Self::with_end) makes it loop.
+    /// The file plays once, and [`with_end`](Self::with_end) makes it loop.
+    /// The index stays in memory, about 40 bytes per sample, which is 22 MB
+    /// for two hours of 30 fps video with 48 kHz AAC.
     ///
     /// # Errors
     ///
     /// Fails with [`Error::Device`] if the file cannot be read, is not an MP4
-    /// file, or holds neither audio nor video.
+    /// file, is corrupt, or holds neither audio nor video.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
         let shared = tokio::task::spawn_blocking(move || Shared::open(path))
@@ -182,41 +191,36 @@ impl MediaFile {
     /// Returns the file's H.264 video as it is, paced to the wall clock.
     ///
     /// For `LocalBroadcast::set_encoded_video`. Each access unit is due when
-    /// its decode time comes. Passthrough publishes one rendition at the
-    /// file's size and bitrate, with keyframes only where the file has them,
-    /// and nothing can ask for another. It costs no CPU and keeps the
-    /// original quality.
+    /// its decode time comes. Passthrough costs no CPU and keeps the original
+    /// quality, but it publishes one rendition at the file's size and
+    /// bitrate. Keyframes come only where the file has them, and nothing can
+    /// ask for another. A stream that starts while the file already plays
+    /// starts at the next keyframe. A read error ends the stream with that
+    /// error.
     ///
     /// # Errors
     ///
     /// Fails with [`Error::InvalidConfig`] if the file has no video, or video
     /// in another codec than H.264.
     pub fn encoded_video(&self) -> Result<EncodedVideo, Error> {
-        let track = self.track(true, "H.264")?;
-        let Codec::H264 { avcc } = &track.codec else {
-            unreachable!("track checks the codec")
-        };
         Ok(EncodedVideo::Avc1 {
-            avcc: avcc.clone(),
+            avcc: self.codec_record(true)?,
             frames: Box::pin(self.paced(true)),
         })
     }
 
     /// Returns the file's AAC audio as it is, paced to the wall clock.
     ///
-    /// For `LocalBroadcast::set_encoded_audio`.
+    /// For `LocalBroadcast::set_encoded_audio`, with the trade-offs of
+    /// [`encoded_video`](Self::encoded_video).
     ///
     /// # Errors
     ///
     /// Fails with [`Error::InvalidConfig`] if the file has no audio, or audio
     /// in another codec than AAC.
     pub fn encoded_audio(&self) -> Result<EncodedAudio, Error> {
-        let track = self.track(false, "AAC")?;
-        let Codec::Aac { config } = &track.codec else {
-            unreachable!("track checks the codec")
-        };
         Ok(EncodedAudio::Aac {
-            config: config.clone(),
+            config: self.codec_record(false)?,
             frames: Box::pin(self.paced(false)),
         })
     }
@@ -225,7 +229,8 @@ impl MediaFile {
     ///
     /// Each picture comes when its presentation time is due, as CPU I420 at
     /// the size `config` asks for, or at the file's size. The rate is the
-    /// track's average. The decoder opens before this returns.
+    /// track's average. The decoder opens before this returns, and decodes
+    /// whether or not a broadcast wants the source.
     ///
     /// Cancellation safe: dropping the future stops the decode thread.
     ///
@@ -244,9 +249,9 @@ impl MediaFile {
                 size.width, size.height
             )));
         }
-        let track = self.track(true, "H.264")?;
-        let catalog = video_catalog(track);
-        let info = self.shared.info.video.as_ref().expect("a video track");
+        let catalog =
+            moq_mux::codec::h264::config(&self.codec_record(true)?).map_err(Error::decoder)?;
+        let info = self.shared.info.video.as_ref().expect("the file has video");
         let format = VideoFormat {
             size: config.size.unwrap_or(info.size),
             rate: info.rate,
@@ -293,8 +298,8 @@ impl MediaFile {
     /// Fails with [`Error::InvalidConfig`] if the file has no AAC audio, and
     /// with [`Error::Decoder`] if the decoder does not open.
     pub fn audio(&self) -> Result<AudioSource, Error> {
-        let track = self.track(false, "AAC")?;
-        let catalog = audio_catalog(track);
+        let catalog =
+            moq_mux::codec::aac::config(&self.codec_record(false)?).map_err(Error::decoder)?;
         let decoder = moq_audio::decode::Decoder::new(&catalog, &Default::default())
             .map_err(Error::decoder)?;
         let format = AudioFormat {
@@ -320,55 +325,62 @@ impl MediaFile {
         Ok(AudioSource::new("audio-file", kind, stop, Driver::Thread))
     }
 
-    /// Returns the first video or audio track, if it is in `codec`.
-    fn track(&self, video: bool, codec: &str) -> Result<&Track, Error> {
-        let (track, kind) = if video {
-            (&self.shared.video, "video")
+    /// Returns the avcC record of the video track, or the AudioSpecificConfig of the audio track.
+    ///
+    /// Fails if the track is missing or in another codec than H.264 or AAC.
+    fn codec_record(&self, video: bool) -> Result<Bytes, Error> {
+        let (track, kind, supported) = if video {
+            (&self.shared.video, "video", "H.264")
         } else {
-            (&self.shared.audio, "audio")
+            (&self.shared.audio, "audio", "AAC")
         };
         let path = self.path().display();
         let track = track
             .as_ref()
             .ok_or_else(|| Error::invalid(format!("{path} has no {kind} track")))?;
-        if track.codec.name() != codec {
-            return Err(Error::invalid(format!(
-                "{path} has {} {kind}, and only {codec} is supported",
-                track.codec.name()
-            )));
+        match (&track.codec, video) {
+            (Codec::H264(record), true) | (Codec::Aac(record), false) => Ok(record.clone()),
+            (codec, _) => Err(Error::invalid(format!(
+                "{path}: its {kind} is in {}, and only {supported} is supported",
+                codec.name()
+            ))),
         }
-        Ok(track)
     }
 
     /// Returns the samples of the video or audio track, each when its decode time is due.
-    fn paced(&self, video: bool) -> impl n0_future::Stream<Item = EncodedFrame> + use<> {
+    ///
+    /// The stream ends after a read error, which it yields.
+    fn paced(
+        &self,
+        video: bool,
+    ) -> impl n0_future::Stream<Item = Result<EncodedFrame, Error>> + use<> {
         let schedule = Schedule::new(self.clone(), video);
-        n0_future::stream::unfold(schedule, |mut schedule| async move {
+        n0_future::stream::unfold(Some(schedule), |schedule| async move {
+            let mut schedule = schedule?;
             let next = schedule.next()?;
-            let shared = &schedule.file.shared;
-            let skipped = shared.clock.skipped();
-            let due = shared.clock.instant(skipped + next.decode_at);
-            tokio::time::sleep_until(due).await;
-            shared.clock.catch_up(due);
-            // A sample is a few kilobytes of a local file, so the read blocks
-            // the task for no longer than a page fault would.
-            let data = match shared.read(&next.sample) {
-                Ok(data) => data,
-                Err(err) => {
-                    warn!(
-                        error = format_args!("{err:#}"),
-                        "file read failed, the stream ends"
-                    );
-                    return None;
-                }
-            };
-            let timestamp = skipped + next.timestamp;
-            let frame = EncodedFrame {
-                data,
-                timestamp: to_timestamp(timestamp),
-                at: shared.clock.instant(timestamp).into_std(),
-            };
-            Some((frame, schedule))
+            let frame = schedule.file.when_due(next).await;
+            let more = frame.is_ok().then_some(schedule);
+            Some((frame, more))
+        })
+    }
+
+    /// Reads the sample of `next`, and returns it once it is due.
+    async fn when_due(&self, next: Scheduled) -> Result<EncodedFrame, Error> {
+        let shared = self.shared.clone();
+        // The read comes before the wait, so its time falls inside it.
+        let data = tokio::task::spawn_blocking(move || shared.read(&next.sample))
+            .await
+            .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??;
+        let clock = &self.shared.clock;
+        let skipped = clock.skipped();
+        let due = clock.instant(skipped + next.decode_at);
+        tokio::time::sleep_until(due).await;
+        clock.catch_up(skipped, due);
+        let timestamp = skipped + next.timestamp;
+        Ok(EncodedFrame {
+            data,
+            timestamp: to_timestamp(timestamp)?,
+            at: clock.instant(timestamp).into_std(),
         })
     }
 
@@ -385,51 +397,68 @@ impl MediaFile {
     ) -> Result<(), Error> {
         let clock = &self.shared.clock;
         // Scales a picture, waits until it is due and hands it over.
-        let mut show = |frame: video::Frame| -> Result<bool, Error> {
-            let frame = match size {
-                Some(size) if frame.size() != size => frame
+        let mut show = |mut frame: video::Frame| -> Result<bool, Error> {
+            if let Some(size) = size
+                && frame.size() != size
+            {
+                frame = frame
                     .resize(size, &Default::default())
-                    .map_err(Error::decoder)?,
-                _ => frame,
-            };
-            let at = Duration::from_micros(frame.timestamp.as_micros().unwrap_or(0) as u64);
+                    .map_err(Error::decoder)?;
+            }
+            // The decoder's timestamps are media times, which the skip moves.
+            let skipped = clock.skipped();
+            let at = skipped + Duration::from_micros(Reorder::micros(&frame));
             let due = clock.instant(at);
             if !wait_until(due, &closed) {
                 return Ok(false);
             }
-            clock.catch_up(due);
+            clock.catch_up(skipped, due);
+            frame.timestamp = to_timestamp(at)?;
             Ok(push(frame))
         };
-        let mut drain = |decoder: &mut video::decode::Decoder| -> Result<bool, Error> {
+        // Takes the pictures the decoder readied, and shows those whose turn it is.
+        let mut drain = |decoder: &mut video::decode::Decoder,
+                         reorder: &mut Reorder,
+                         flushing: bool|
+         -> Result<bool, Error> {
             while let Some(frame) = decoder.receive().map_err(Error::decoder)? {
+                reorder.push(frame);
+            }
+            while let Some(frame) = reorder.pop(flushing) {
                 if !show(frame)? {
                     return Ok(false);
                 }
             }
             Ok(true)
         };
-        let mut pass = 0;
+        let mut reorder = Reorder::new(
+            self.shared
+                .video
+                .as_ref()
+                .map_or(&[], |track| &track.samples),
+        );
+        let mut pass = None;
         for next in Schedule::new(self.clone(), true) {
-            if next.pass != pass {
+            if pass.is_some_and(|pass| pass != next.pass) {
                 // The pictures a reordering decoder still holds belong to the last pass.
                 decoder.flush().map_err(Error::decoder)?;
-                if !drain(&mut decoder)? {
+                if !drain(&mut decoder, &mut reorder, true)? {
                     return Ok(());
                 }
-                pass = next.pass;
                 debug!(path = %self.path().display(), "video file looping");
             }
+            pass = Some(next.pass);
             let data = self.shared.read(&next.sample)?;
-            let timestamp = to_timestamp(clock.skipped() + next.timestamp);
+            let timestamp = to_timestamp(next.timestamp)?;
             decoder
                 .decode(&data, timestamp, next.sample.keyframe)
                 .map_err(Error::decoder)?;
-            if !drain(&mut decoder)? {
+            if !drain(&mut decoder, &mut reorder, false)? {
                 return Ok(());
             }
         }
         decoder.flush().map_err(Error::decoder)?;
-        drain(&mut decoder)?;
+        drain(&mut decoder, &mut reorder, true)?;
         debug!(path = %self.path().display(), "video file ended");
         Ok(())
     }
@@ -442,23 +471,30 @@ impl MediaFile {
         stop: &CancellationToken,
     ) -> Result<(), Error> {
         let clock = &self.shared.clock;
-        let mut pass = 0;
+        let mut pass = None;
+        let mut corrupt = 0u64;
         for next in Schedule::new(self.clone(), false) {
-            if next.pass != pass {
+            if pass.is_some_and(|pass| pass != next.pass) {
                 // Each pass starts with the encoder delay again.
                 decoder.reset().map_err(Error::decoder)?;
-                pass = next.pass;
             }
+            pass = Some(next.pass);
             let data = self.shared.read(&next.sample)?;
-            let timestamp = clock.skipped() + next.timestamp;
+            let skipped = clock.skipped();
+            let timestamp = skipped + next.timestamp;
             let due = clock.instant(timestamp);
             if !wait_until(due, &|| stop.is_cancelled()) {
                 return Ok(());
             }
-            clock.catch_up(due);
-            // A corrupt packet is not fatal: skip it and keep the file playing.
+            clock.catch_up(skipped, due);
+            // A corrupt packet is not fatal. The file keeps playing without it.
             if let Err(err) = decoder.decode(&data) {
-                debug!(error = %err, "skipping a corrupt audio packet");
+                corrupt += 1;
+                if corrupt == 1 {
+                    warn!(path = %self.path().display(), error = %err, "skipping a corrupt audio packet, later ones log at debug");
+                } else {
+                    debug!(corrupt, error = %err, "skipping a corrupt audio packet");
+                }
                 continue;
             }
             while let Some(decoded) = decoder.receive().map_err(Error::decoder)? {
@@ -469,7 +505,7 @@ impl MediaFile {
                         .flat_map(|sample| sample.to_le_bytes()),
                 );
                 // An error only means no broadcast is attached right now.
-                let _ = fanout.send(audio::Frame::new(data, to_timestamp(timestamp)));
+                let _ = fanout.send(audio::Frame::new(data, to_timestamp(timestamp)?));
             }
         }
         debug!(path = %self.path().display(), "audio file ended");
@@ -493,26 +529,14 @@ impl Shared {
         if video.is_none() && audio.is_none() {
             return Err(file_error(&path, "the file has no audio or video samples"));
         }
-        let tracks = || video.iter().chain(&audio);
-        let base = tracks()
-            .flat_map(|track| {
-                track
-                    .samples
-                    .iter()
-                    .map(|sample| micros(sample.pts, track.timescale))
-            })
-            .min()
-            .unwrap_or(0);
-        let end = tracks()
-            .flat_map(|track| {
-                track
-                    .samples
-                    .iter()
-                    .map(|sample| micros(sample.pts + i64::from(sample.duration), track.timescale))
-            })
+        let end = video
+            .iter()
+            .chain(&audio)
+            .flat_map(|track| &track.samples)
+            .map(|sample| sample.pts.saturating_add(i64::from(sample.duration)))
             .max()
             .unwrap_or(0);
-        let pass = Duration::from_micros((end - base).max(1) as u64);
+        let pass = Duration::from_micros(u64::try_from(end).unwrap_or(0)).max(MIN_PASS);
         let info = MediaInfo {
             video: video.as_ref().map(video_info),
             audio: audio.as_ref().map(|track| AudioInfo {
@@ -522,19 +546,19 @@ impl Shared {
             }),
             duration: pass,
         };
+        debug!(path = %path.display(), ?video, ?audio, ?pass, "file opened");
         Ok(Self {
             path,
             file: Mutex::new(file),
             video,
             audio,
             info,
-            base,
             pass,
             clock: Clock::default(),
         })
     }
 
-    /// Reads the data of `sample`.
+    /// Reads the data of `sample`, which the index checked to lie within the file.
     fn read(&self, sample: &Sample) -> Result<Bytes, Error> {
         let mut data = vec![0; sample.size as usize];
         let mut file = self.file.lock().expect("poisoned");
@@ -550,14 +574,19 @@ impl Shared {
     }
 }
 
-/// Reports whether the file at `path` starts with the `ftyp` box of an MP4 file.
+/// Reports whether the file at `path` starts with a box an MP4 or QuickTime file starts with.
 pub(super) async fn is_mp4(path: &Path) -> bool {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let mut head = [0; 8];
         std::fs::File::open(path)
             .and_then(|mut file| file.read_exact(&mut head))
-            .is_ok_and(|()| &head[4..] == b"ftyp")
+            .is_ok_and(|()| {
+                matches!(
+                    &head[4..],
+                    b"ftyp" | b"moov" | b"mdat" | b"free" | b"wide" | b"skip"
+                )
+            })
     })
     .await
     .unwrap_or(false)
@@ -568,18 +597,15 @@ pub(super) async fn is_mp4(path: &Path) -> bool {
 /// The rate is the track's average, so a long first frame of a screen
 /// recording does not set it.
 fn video_info(track: &Track) -> VideoInfo {
-    let seconds = |units: i64| units as f64 / f64::from(track.timescale);
     let span: i64 = track
         .samples
         .iter()
         .map(|sample| i64::from(sample.duration))
         .sum();
-    let rate = if span > 0 {
-        video::FrameRate::from_f64(track.samples.len() as f64 / seconds(span)).ok()
-    } else {
-        None
-    }
-    .unwrap_or_else(|| video::FrameRate::from_f64(FALLBACK_FPS).expect("a valid rate"));
+    let rate = (span > 0)
+        .then(|| video::FrameRate::from_f64(track.samples.len() as f64 * 1e6 / span as f64).ok())
+        .flatten()
+        .unwrap_or_else(|| video::FrameRate::new(FALLBACK_FPS, 1).expect("a valid rate"));
     // The longest run from one keyframe to the next, or to the end.
     let end = track
         .samples
@@ -598,49 +624,16 @@ fn video_info(track: &Track) -> VideoInfo {
         codec: track.codec.name(),
         size: video::Size::new(track.width, track.height),
         rate,
-        gop: Duration::from_secs_f64(seconds(gop).max(0.0)),
+        gop: Duration::from_micros(gop.max(0) as u64),
     }
 }
 
-/// Returns the catalog entry that opens moq-video's decoder for an H.264 track.
-fn video_catalog(track: &Track) -> VideoConfig {
-    let Codec::H264 { avcc } = &track.codec else {
-        unreachable!("only H.264 tracks decode")
-    };
-    let byte = |index: usize| avcc.get(index).copied().unwrap_or(0);
-    let mut config = VideoConfig::new(H264 {
-        inline: false,
-        profile: byte(1),
-        constraints: byte(2),
-        level: byte(3),
-    });
-    config.description = Some(avcc.clone());
-    config.coded_width = Some(track.width);
-    config.coded_height = Some(track.height);
-    config
-}
-
-/// Returns the catalog entry that opens moq-audio's decoder for an AAC track.
-fn audio_catalog(track: &Track) -> AudioConfig {
-    let Codec::Aac { config } = &track.codec else {
-        unreachable!("only AAC tracks decode")
-    };
-    // The audio object type is the first five bits of the AudioSpecificConfig.
-    let profile = config.first().map_or(2, |byte| byte >> 3);
-    let mut catalog = AudioConfig::new(AAC { profile }, track.sample_rate, track.channels);
-    catalog.description = Some(config.clone());
-    catalog
-}
-
-/// Returns `units` of `timescale` in microseconds.
-fn micros(units: i64, timescale: u32) -> i64 {
-    (i128::from(units) * 1_000_000 / i128::from(timescale)) as i64
-}
-
-/// Returns a media time as a timestamp.
-fn to_timestamp(at: Duration) -> moq_net::Timestamp {
-    moq_net::Timestamp::from_micros(at.as_micros() as u64)
-        .expect("a file plays for far less than the timestamp range")
+/// Returns a media time as a timestamp, or an error past the timestamp range.
+fn to_timestamp(at: Duration) -> Result<moq_net::Timestamp, Error> {
+    u64::try_from(at.as_micros())
+        .ok()
+        .and_then(|micros| moq_net::Timestamp::from_micros(micros).ok())
+        .ok_or_else(|| Error::device_msg(format!("a file time of {at:?} is out of range")))
 }
 
 /// Waits until `due`, in short slices, and returns `false` early once `closed` says so.
@@ -660,15 +653,76 @@ fn wait_until(due: Instant, closed: &impl Fn() -> bool) -> bool {
     }
 }
 
+/// Puts decoded pictures back into presentation order.
+///
+/// A backend may hand pictures back in decode order, as VideoToolbox does.
+/// The buffer holds as many pictures as the stream's samples can come ahead
+/// of an earlier one, and lets the earliest go when it holds more.
+#[derive(derive_more::Debug)]
+struct Reorder {
+    depth: usize,
+    /// The pictures that wait, by presentation time.
+    #[debug("{} pictures", held.len())]
+    held: BTreeMap<u64, video::Frame>,
+}
+
+impl Reorder {
+    /// Creates a buffer for `samples`, in decode order.
+    ///
+    /// The depth is the most samples that follow one sample in decode order
+    /// and present before it, up to [`MAX_HELD`].
+    fn new(samples: &[Sample]) -> Self {
+        let depth = samples
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| {
+                samples[index + 1..]
+                    .iter()
+                    .take(MAX_HELD)
+                    .filter(|later| later.pts < sample.pts)
+                    .count()
+            })
+            .max()
+            .unwrap_or(0);
+        Self {
+            depth,
+            held: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the presentation time of `frame` in microseconds.
+    fn micros(frame: &video::Frame) -> u64 {
+        frame
+            .timestamp
+            .as_micros()
+            .map_or(0, |micros| micros as u64)
+    }
+
+    /// Holds a picture the decoder returned.
+    fn push(&mut self, frame: video::Frame) {
+        self.held.insert(Self::micros(&frame), frame);
+    }
+
+    /// Returns the earliest picture once more than the depth wait, or any with `flushing`.
+    fn pop(&mut self, flushing: bool) -> Option<video::Frame> {
+        if flushing || self.held.len() > self.depth {
+            self.held.pop_first().map(|(_, frame)| frame)
+        } else {
+            None
+        }
+    }
+}
+
 /// The wall clock every stream of a file plays against.
 ///
 /// It starts with the first sample any stream asks for, so a file opened
-/// early does not rush its first seconds out.
+/// early does not rush its first seconds out. A stream that starts later
+/// joins at the clock's position.
 #[derive(Debug, Default)]
 struct Clock {
     /// When media time zero is due.
     epoch: OnceLock<Instant>,
-    /// How far playback skipped ahead after falling behind, in microseconds.
+    /// How far the timeline moved forward after playback fell behind, in microseconds.
     skipped: AtomicU64,
 }
 
@@ -678,20 +732,43 @@ impl Clock {
         *self.epoch.get_or_init(Instant::now) + at
     }
 
-    /// Returns how far playback has skipped ahead, which every media time adds.
+    /// Returns how far the timeline moved forward, which every media time adds.
     fn skipped(&self) -> Duration {
         Duration::from_micros(self.skipped.load(Ordering::Relaxed))
     }
 
-    /// Skips ahead if a sample due at `due` comes more than [`MAX_BEHIND`] late.
+    /// Returns the media time that plays now, or `None` before the clock starts.
+    fn position(&self) -> Option<Duration> {
+        let epoch = self.epoch.get()?;
+        Some(
+            Instant::now()
+                .saturating_duration_since(*epoch)
+                .saturating_sub(self.skipped()),
+        )
+    }
+
+    /// Moves the timeline forward if a sample due at `due` comes more than [`MAX_BEHIND`] late.
     ///
-    /// Moves every stream of the file, so they stay in sync.
-    fn catch_up(&self, due: Instant) {
+    /// `skipped` is what [`skipped`](Self::skipped) returned when the stream
+    /// computed `due`. When every stream falls behind in one stall, only the
+    /// first one moves the timeline, so the stall counts once. The move holds
+    /// for every stream of the file, so they stay in sync.
+    fn catch_up(&self, skipped: Duration, due: Instant) {
         let behind = Instant::now().saturating_duration_since(due);
-        if behind > MAX_BEHIND {
-            debug!(?behind, "file playback skips ahead");
-            self.skipped
-                .fetch_add(behind.as_micros() as u64, Ordering::Relaxed);
+        if behind <= MAX_BEHIND {
+            return;
+        }
+        let read = skipped.as_micros() as u64;
+        let moved = read + behind.as_micros() as u64;
+        if self
+            .skipped
+            .compare_exchange(read, moved, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            warn!(
+                ?behind,
+                "file playback fell behind, so its timeline moves forward"
+            );
         }
     }
 }
@@ -711,12 +788,15 @@ struct Scheduled {
 /// The samples of one track in decode order, pass after pass for a looping file.
 ///
 /// Every track of a file starts a pass at the same time, after the longest
-/// track ended, so a shorter track pauses and the tracks stay in sync.
+/// track ended, so a shorter track pauses and the tracks stay in sync. The
+/// first sample is the first keyframe at or after the clock's position, so a
+/// stream that joins a playing file plays in sync with the others.
 #[derive(Debug)]
 struct Schedule {
     file: MediaFile,
     video: bool,
-    index: usize,
+    /// The next sample, or `None` before the first.
+    index: Option<usize>,
     pass: u64,
 }
 
@@ -725,7 +805,7 @@ impl Schedule {
         Self {
             file,
             video,
-            index: 0,
+            index: None,
             pass: 0,
         }
     }
@@ -741,19 +821,28 @@ impl Iterator for Schedule {
         } else {
             shared.audio.as_ref()?
         };
-        if self.index == track.samples.len() {
-            if self.file.end == FileEnd::Stop {
-                return None;
-            }
-            self.index = 0;
+        let pass = shared.pass.as_micros() as u64;
+        let mut index = self.index.unwrap_or_else(|| {
+            let position = shared.clock.position().unwrap_or_default().as_micros() as u64;
+            self.pass = position / pass;
+            let offset = (position % pass) as i64;
+            track
+                .samples
+                .iter()
+                .position(|sample| sample.keyframe && sample.pts >= offset)
+                .unwrap_or(track.samples.len())
+        });
+        if index == track.samples.len() {
             self.pass += 1;
+            index = 0;
         }
-        let sample = track.samples[self.index];
-        self.index += 1;
-        let at = |units: i64| {
-            let offset = micros(units, track.timescale) - shared.base;
-            shared.pass * self.pass as u32 + Duration::from_micros(offset.max(0) as u64)
-        };
+        if self.pass > 0 && self.file.end == FileEnd::Stop {
+            return None;
+        }
+        let sample = track.samples[index];
+        self.index = Some(index + 1);
+        let start = self.pass.saturating_mul(pass);
+        let at = |time: i64| Duration::from_micros(start.saturating_add_signed(time));
         Some(Scheduled {
             sample,
             pass: self.pass,
@@ -776,7 +865,8 @@ mod tests {
     ///   testsrc2=size=64x48:rate=10:duration=1 -f lavfi -i
     ///   sine=frequency=440:sample_rate=16000:duration=1 -c:v libx264 -profile:v
     ///   baseline -crf 40 -g 10 -pix_fmt yuv420p -c:a aac -b:a 16k -ac 1
-    ///   -movflags +faststart clip.mp4`.
+    ///   -movflags +faststart clip.mp4`. The audio's edit list trims the
+    ///   encoder's priming packet.
     /// - `fragmented.mp4`: the same streams, copied with `-movflags
     ///   cmaf+frag_keyframe+empty_moov+default_base_moof`.
     /// - `bframes.mp4`: the same video in High profile with two B-frames
@@ -788,11 +878,14 @@ mod tests {
             .join(name)
     }
 
+    /// Opens the test clip `name`.
+    async fn open(name: &str) -> MediaFile {
+        MediaFile::open(clip(name)).await.expect("the clip opens")
+    }
+
     #[tokio::test]
     async fn a_plain_mp4_reports_its_tracks() {
-        let file = MediaFile::open(clip("clip.mp4"))
-            .await
-            .expect("the clip opens");
+        let file = open("clip.mp4").await;
         let info = file.info();
         let video = info.video.as_ref().expect("a video track");
         assert_eq!(video.codec, "H.264");
@@ -808,27 +901,28 @@ mod tests {
 
     /// A fragmented copy of a file indexes to the same samples, spaced the same.
     ///
-    /// ffmpeg drops the audio's edit list when it fragments, so the tracks
-    /// start at another offset from each other.
+    /// ffmpeg drops the audio's edit list when it fragments, so the fragmented
+    /// audio keeps the priming packet that the plain file trims. The tracks
+    /// are compared from their ends.
     #[tokio::test]
     async fn a_fragmented_mp4_matches_the_plain_one() {
-        let plain = MediaFile::open(clip("clip.mp4"))
-            .await
-            .expect("the clip opens");
-        let fragmented = MediaFile::open(clip("fragmented.mp4"))
-            .await
-            .expect("the fragmented clip opens");
+        let plain = open("clip.mp4").await;
+        let fragmented = open("fragmented.mp4").await;
         assert_eq!(plain.info().video, fragmented.info().video);
         assert_eq!(plain.info().audio, fragmented.info().audio);
         for video in [true, false] {
             let plain_samples: Vec<_> = Schedule::new(plain.clone(), video).collect();
             let fragmented_samples: Vec<_> = Schedule::new(fragmented.clone(), video).collect();
-            assert_eq!(plain_samples.len(), fragmented_samples.len());
-            let start = |samples: &[Scheduled]| samples[0].timestamp;
-            let (plain_start, fragmented_start) =
-                (start(&plain_samples), start(&fragmented_samples));
-            for (a, b) in plain_samples.iter().zip(&fragmented_samples) {
-                assert_eq!(a.timestamp - plain_start, b.timestamp - fragmented_start);
+            let primed = usize::from(!video);
+            assert_eq!(plain_samples.len() + primed, fragmented_samples.len());
+            let end = |samples: &[Scheduled]| samples.last().unwrap().timestamp;
+            let (plain_end, fragmented_end) = (end(&plain_samples), end(&fragmented_samples));
+            for (a, b) in plain_samples
+                .iter()
+                .rev()
+                .zip(fragmented_samples.iter().rev())
+            {
+                assert_eq!(plain_end - a.timestamp, fragmented_end - b.timestamp);
                 assert_eq!(a.sample.keyframe, b.sample.keyframe);
                 assert_eq!(
                     plain.shared.read(&a.sample).unwrap(),
@@ -841,9 +935,7 @@ mod tests {
     /// B-frames keep their presentation times, which the edit list starts at zero.
     #[tokio::test]
     async fn b_frames_keep_their_presentation_times() {
-        let file = MediaFile::open(clip("bframes.mp4"))
-            .await
-            .expect("the clip opens");
+        let file = open("bframes.mp4").await;
         let pts: Vec<u64> = Schedule::new(file, true)
             .map(|next| next.timestamp.as_millis() as u64)
             .collect();
@@ -857,31 +949,25 @@ mod tests {
     /// A looping file starts each pass one file length after the last, on every track.
     #[tokio::test]
     async fn a_looping_file_continues_its_timeline() {
-        let file = MediaFile::open(clip("clip.mp4"))
-            .await
-            .expect("the clip opens")
-            .with_end(FileEnd::Restart);
+        let file = open("clip.mp4").await.with_end(FileEnd::Restart);
         let length = file.info().duration;
         for video in [true, false] {
             let count = Schedule::new(file.clone().with_end(FileEnd::Stop), video).count();
-            let two: Vec<_> = Schedule::new(file.clone(), video).take(2 * count).collect();
-            for (first, second) in two[..count].iter().zip(&two[count..]) {
+            let two_passes: Vec<_> = Schedule::new(file.clone(), video).take(2 * count).collect();
+            // The edit list trims the audio's priming, so both tracks start at zero.
+            assert_eq!(two_passes[0].timestamp, Duration::ZERO);
+            for (first, second) in two_passes[..count].iter().zip(&two_passes[count..]) {
                 assert_eq!(second.pass, 1);
                 assert_eq!(second.timestamp, first.timestamp + length);
                 assert_eq!(second.decode_at, first.decode_at + length);
             }
         }
-        // The audio's priming packet presents first, so the video starts after it.
-        let first_video = Schedule::new(file, true).next().unwrap();
-        assert_eq!(first_video.timestamp, Duration::from_millis(64));
     }
 
     /// Passthrough hands each access unit over when its decode time is due.
     #[tokio::test(start_paused = true)]
     async fn passthrough_paces_to_the_decode_times() {
-        let file = MediaFile::open(clip("bframes.mp4"))
-            .await
-            .expect("the clip opens");
+        let file = open("bframes.mp4").await;
         let EncodedVideo::Avc1 { avcc, mut frames } = file.encoded_video().expect("H.264") else {
             panic!("not avc1");
         };
@@ -889,6 +975,7 @@ mod tests {
         let start = Instant::now();
         let mut arrivals = Vec::new();
         while let Some(frame) = frames.next().await {
+            let frame = frame.expect("the clip reads");
             arrivals.push((Instant::now() - start).as_millis() as u64);
             assert_eq!(
                 frame.at,
@@ -900,11 +987,95 @@ mod tests {
         assert_eq!(arrivals, [0, 0, 0, 100, 200, 300, 400, 500, 600, 700]);
     }
 
+    /// A stream that starts while the file plays joins at the clock's position, and the others go on.
+    #[tokio::test(start_paused = true)]
+    async fn a_late_stream_joins_without_stalling_the_others() {
+        let file = open("clip.mp4").await.with_end(FileEnd::Restart);
+        let EncodedVideo::Avc1 { mut frames, .. } = file.encoded_video().expect("H.264") else {
+            panic!("not avc1");
+        };
+        let start = Instant::now();
+        let video = tokio::spawn(async move {
+            let mut arrivals = Vec::new();
+            while arrivals.len() < 50 {
+                frames
+                    .next()
+                    .await
+                    .expect("a loop")
+                    .expect("the clip reads");
+                arrivals.push(Instant::now() - start);
+            }
+            arrivals
+        });
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let EncodedAudio::Aac { mut frames, .. } = file.encoded_audio().expect("AAC");
+        let first = frames
+            .next()
+            .await
+            .expect("a frame")
+            .expect("the clip reads");
+        let now = Instant::now() - start;
+        let presents = Duration::from_micros(first.timestamp.as_micros().unwrap() as u64);
+        assert!(
+            presents + Duration::from_millis(70) >= now
+                && presents <= now + Duration::from_millis(70),
+            "the audio joins at {presents:?}, at {now:?}"
+        );
+        let arrivals = video.await.unwrap();
+        // A pass ends with the longer audio, so the video pauses a little at each loop.
+        let pause = file.info().duration - Duration::from_millis(900);
+        let longest = arrivals.windows(2).map(|pair| pair[1] - pair[0]).max();
+        assert_eq!(longest, Some(pause), "{arrivals:?}");
+        assert_eq!(file.shared.clock.skipped(), Duration::ZERO);
+    }
+
+    /// A stall that every stream sees moves the timeline once.
+    #[tokio::test(start_paused = true)]
+    async fn a_shared_stall_counts_once() {
+        let clock = Clock::default();
+        let skipped = clock.skipped();
+        let due = clock.instant(skipped);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        for _stream in 0..2 {
+            clock.catch_up(skipped, due);
+        }
+        assert_eq!(clock.skipped(), Duration::from_secs(3));
+        assert_eq!(clock.position(), Some(Duration::ZERO));
+    }
+
+    /// Pictures that a backend returns in decode order leave in presentation order.
+    #[tokio::test]
+    async fn reorder_restores_presentation_order() {
+        let file = open("bframes.mp4").await;
+        let mut reorder = Reorder::new(&file.shared.video.as_ref().unwrap().samples);
+        assert_eq!(reorder.depth, 2);
+        let size = video::Size::new(2, 2);
+        let picture = |millis: u64| {
+            let pixels = vec![0; video::I420::len(size).unwrap()];
+            let surface = video::Surface::I420(video::I420::new(size, pixels).unwrap());
+            video::Frame::new(
+                surface,
+                moq_net::Timestamp::from_micros(millis * 1000).unwrap(),
+            )
+        };
+        let mut shown = Vec::new();
+        // I0 P3 B1 B2 P6 B4 B5, each returned as soon as it is fed.
+        for millis in [0, 300, 100, 200, 600, 400, 500] {
+            reorder.push(picture(millis));
+            while let Some(frame) = reorder.pop(false) {
+                shown.push(Reorder::micros(&frame) / 1000);
+            }
+        }
+        assert_eq!(shown, [0, 100, 200, 300, 400]);
+        while let Some(frame) = reorder.pop(true) {
+            shown.push(Reorder::micros(&frame) / 1000);
+        }
+        assert_eq!(shown, [0, 100, 200, 300, 400, 500, 600]);
+    }
+
     #[tokio::test]
     async fn passthrough_refuses_another_codec() {
-        let file = MediaFile::open(clip("bframes.mp4"))
-            .await
-            .expect("the clip opens");
+        let file = open("bframes.mp4").await;
         assert!(matches!(
             file.encoded_audio(),
             Err(Error::InvalidConfig { .. })
@@ -917,9 +1088,7 @@ mod tests {
     /// Decoding refuses an odd or zero size before it opens anything.
     #[tokio::test]
     async fn decoding_refuses_odd_sizes() {
-        let file = MediaFile::open(clip("clip.mp4"))
-            .await
-            .expect("the clip opens");
+        let file = open("clip.mp4").await;
         for size in [video::Size::new(641, 360), video::Size::new(0, 48)] {
             let config = VideoFileConfig::default().with_size(size);
             assert!(matches!(
@@ -930,6 +1099,10 @@ mod tests {
     }
 
     /// A looping B-frame file decodes to pictures of the asked size with rising timestamps.
+    ///
+    /// The software decoder keeps the test independent of the platform's
+    /// backend, and [`reorder_restores_presentation_order`] covers a backend
+    /// that returns decode order.
     #[test]
     fn a_looping_b_frame_file_decodes_in_presentation_order() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -937,10 +1110,11 @@ mod tests {
             .block_on(MediaFile::open(clip("bframes.mp4")))
             .expect("the clip opens")
             .with_end(FileEnd::Restart);
-        let track = file.track(true, "H.264").unwrap();
+        let catalog = moq_mux::codec::h264::config(&file.codec_record(true).unwrap()).unwrap();
         let mut config = video::decode::Config::new();
+        config.kind = video::decode::Kind::Software;
         config.output = video::Output::Cpu;
-        let decoder = video::decode::Decoder::new(&video_catalog(track), &config).unwrap();
+        let decoder = video::decode::Decoder::new(&catalog, &config).unwrap();
         let size = video::Size::new(32, 24);
         let mut frames = Vec::new();
         file.decode_video(
@@ -956,18 +1130,17 @@ mod tests {
         assert!(frames.iter().all(|frame| frame.size() == size));
         let millis: Vec<u64> = frames
             .iter()
-            .map(|frame| (frame.timestamp.as_micros().unwrap() / 1000) as u64)
+            .map(|frame| Reorder::micros(frame) / 1000)
             .collect();
         assert_eq!(millis, (0..12).map(|n| n * 100).collect::<Vec<_>>());
     }
 
-    /// The audio decodes to the file's rate and layout.
+    /// `AudioSource::file` takes an MP4 file and decodes its AAC at the file's rate and layout.
     #[tokio::test]
-    async fn the_audio_decodes() {
-        let file = MediaFile::open(clip("clip.mp4"))
+    async fn an_mp4_audio_file_decodes() {
+        let source = AudioSource::file(clip("clip.mp4"), FileEnd::Stop)
             .await
-            .expect("the clip opens");
-        let source = file.audio().expect("the audio opens");
+            .expect("the audio opens");
         let format = source.format().expect("PCM");
         assert_eq!(format.sample_rate, 16_000);
         assert_eq!(format.layout, audio::Layout::Mono);
