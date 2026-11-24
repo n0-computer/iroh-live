@@ -674,6 +674,7 @@ impl Encoder {
                 // The source's producer asked for a keyframe at this frame. A
                 // backend that cannot cut keys on its interval only.
                 if std::mem::take(&mut requested)
+                    && can_cut
                     && let Err(err) = encoder.cut().await
                 {
                     debug!(error = %err, "no keyframe at the producer's request");
