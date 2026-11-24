@@ -226,6 +226,25 @@ mod tests {
         assert!(Arc::ptr_eq(&pushed, &next(&mut frames).await));
     }
 
+    /// A keyframe request on the input marks the next scaled frame, and only that one.
+    #[tokio::test]
+    async fn a_keyframe_request_reaches_the_scaled_frames() {
+        let big = video::Size::new(8, 6);
+        let (sender, source) = VideoSource::push(format(big));
+        let scaled = source.scaled(video::Size::new(4, 2)).expect("a valid size");
+        let mut frames = scaled.frames();
+        push_rgba(&sender, big, 1);
+        next(&mut frames).await;
+        assert!(!frames.keyframe_requested());
+        sender.request_keyframe();
+        push_rgba(&sender, big, 2);
+        assert_eq!(next(&mut frames).await.timestamp.as_micros(), Ok(2));
+        assert!(frames.keyframe_requested(), "the frame after the request");
+        push_rgba(&sender, big, 3);
+        assert_eq!(next(&mut frames).await.timestamp.as_micros(), Ok(3));
+        assert!(!frames.keyframe_requested(), "a request marks one frame");
+    }
+
     #[test]
     fn only_an_unsupported_surface_fails_the_source() {
         assert!(is_permanent(&video::Error::Unsupported(

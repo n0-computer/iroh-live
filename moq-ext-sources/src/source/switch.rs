@@ -445,6 +445,32 @@ mod tests {
         assert_eq!(frames.sent_at(), inner_frames.sent_at());
     }
 
+    /// A keyframe request on the current input marks the next frame, and one on a replaced input does not.
+    #[tokio::test]
+    async fn a_keyframe_request_reaches_only_the_current_input() {
+        let (switch, source) = VideoSource::switchable(format());
+        let mut frames = source.frames();
+        let (first_sender, first) = VideoSource::push(format());
+        switch.replace(first);
+        push(&first_sender, 1);
+        assert_eq!(next_micros(&mut frames).await, 1);
+        assert!(!frames.keyframe_requested());
+        first_sender.request_keyframe();
+        push(&first_sender, 2);
+        assert_eq!(next_micros(&mut frames).await, 2);
+        assert!(frames.keyframe_requested(), "the frame after the request");
+
+        // Neither a request the old input never pushed a frame after, nor one
+        // made once it was replaced, reaches the output.
+        first_sender.request_keyframe();
+        let (second_sender, second) = VideoSource::push(format());
+        switch.replace(second);
+        first_sender.request_keyframe();
+        push(&second_sender, 3);
+        assert_eq!(next_micros(&mut frames).await, 3);
+        assert!(!frames.keyframe_requested(), "a request of the old input");
+    }
+
     /// A reader of the switchable source wants the input's frames, and nothing else does.
     #[tokio::test]
     async fn the_switchable_source_passes_its_demand_on() {
