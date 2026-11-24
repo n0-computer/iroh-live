@@ -76,7 +76,7 @@ impl Codec {
 pub(super) struct Track {
     pub(super) video: bool,
     pub(super) codec: Codec,
-    /// The picture size a video track declares.
+    /// The picture size of a video track, from the SPS of an H.264 track and the sample entry of another.
     pub(super) width: u32,
     pub(super) height: u32,
     /// The sample rate and channel count of an audio track.
@@ -174,11 +174,31 @@ pub(super) fn index(reader: &mut (impl Read + Seek)) -> Result<Vec<Track>, AnyEr
             }),
             _ => declared,
         };
+        // The SPS is exact where the sample entry may not be: some files
+        // declare 640x359 for a stream whose pictures are 640x360, a size
+        // encoders refuse, while the decoder's pictures follow the SPS.
+        let declared = visual.map_or((0, 0), |visual| {
+            (u32::from(visual.width), u32::from(visual.height))
+        });
+        let (width, height) = match &codec {
+            Codec::H264(record) => moq_mux::codec::h264::config(record)
+                .ok()
+                .and_then(|config| config.coded_width.zip(config.coded_height))
+                .unwrap_or(declared),
+            _ => declared,
+        };
+        if (width, height) != declared {
+            debug!(
+                ?declared,
+                sps = ?(width, height),
+                "the sample entry's picture size differs from the SPS, using the SPS"
+            );
+        }
         ids.insert(id, tracks.len());
         tracks.push(Track {
             video,
-            width: visual.map_or(0, |visual| u32::from(visual.width)),
-            height: visual.map_or(0, |visual| u32::from(visual.height)),
+            width,
+            height,
             sample_rate,
             channels,
             codec,
@@ -864,5 +884,28 @@ mod tests {
         data.extend_from_slice(b"\r\n");
         let tracks = index(&mut Cursor::new(data)).unwrap();
         assert_eq!(millis(&tracks[0].samples), [0, 100, 200]);
+    }
+
+    /// An H.264 track takes its picture size from the SPS, not from a sample entry that disagrees.
+    #[test]
+    fn the_sps_sets_the_picture_size() {
+        let mut data = include_bytes!("../test_data/clip.mp4").to_vec();
+        // The width and height follow the `avc1` kind after 24 bytes of
+        // reserved fields, data reference index and pre-defined fields. The
+        // `ftyp` names `avc1` as a brand too, so the search starts at `stsd`.
+        let find = |from: usize, kind: &[u8]| {
+            from + data[from..]
+                .windows(4)
+                .position(|window| window == kind)
+                .expect("the clip has an avc1 sample entry")
+        };
+        let kind = find(find(0, b"stsd"), b"avc1");
+        let height = kind + 4 + 26;
+        assert_eq!(data[height..height + 2], 48u16.to_be_bytes());
+        data[height..height + 2].copy_from_slice(&47u16.to_be_bytes());
+
+        let tracks = index(&mut Cursor::new(data)).unwrap();
+        let video = tracks.iter().find(|track| track.video).unwrap();
+        assert_eq!((video.width, video.height), (64, 48));
     }
 }
