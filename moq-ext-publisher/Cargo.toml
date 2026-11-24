@@ -36,6 +36,8 @@ tokio-util = "0.7.20"
 tracing = "0.1.44"
 
 [dev-dependencies]
+# The tests publish the test clips of moq-ext-sources as they are.
+moq-ext-sources = { workspace = true, features = ["file"] }
 tokio = { version = "1.54.1", features = ["full", "test-util"] }
 
 [features]

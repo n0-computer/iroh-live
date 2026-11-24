@@ -73,15 +73,17 @@ Foundation camera that delivers neither a frame nor an error, is given up on
 after three seconds and does not delay a later open. `VideoSource::released`
 returns the same token, for a device that something else opens next.
 
-`set_encoded_video` takes a stream of Annex-B H.264 bytes that is already
-encoded, such as the one `rpicam_h264(config)` returns. On a Raspberry Pi,
+`set_encoded_video` takes H.264 that is already encoded: an Annex-B byte
+stream such as `rpicam_h264(config)` returns, or a file's access units with
+their timestamps from `MediaFile::encoded_video`. On a Raspberry Pi,
 `rpicam-vid` encodes in hardware and no raw picture reaches us.
+`set_encoded_audio` takes a file's AAC the same way.
 
 `AudioSource` has these constructors:
 
 - `microphone(config)` opens a microphone from moq-audio's `capture::Config`.
-- `file(path, at_end)` decodes a WAV or MP3 in real time. The `FileEnd` says
-  whether it stops or restarts at the end of the file.
+- `file(path, at_end)` decodes a WAV, MP3 or MP4 file in real time. The
+  `FileEnd` says whether it stops or restarts at the end of the file.
 - `tone(hz, layout)` and `test_pattern(layout)` generate sound.
 - `push(format)` returns a `FrameSender` for PCM the application produces.
 
@@ -219,14 +221,40 @@ a source that idles until wanted produces frames for it. The preview belongs to
 the source, so it works before any broadcast exists. Pre-encoded video has no
 preview.
 
-## Pre-encoded video
+## Pre-encoded media
 
-`set_encoded_video` never opens an encoder. `moq_mux::codec::h264::Split` cuts
-the byte stream into access units, and `moq_mux::codec::h264::Import` publishes
-them as the one rendition `video`. `Import` fills in the catalog entry from the
-first SPS. The splitter holds the last access unit until the next start code,
-so the end of the stream flushes it explicitly. A stream that ends before its
-first access unit shows as a failed video slot.
+`set_encoded_video` never opens an encoder. For an Annex-B stream,
+`moq_mux::codec::h264::Split` cuts the bytes into access units, and
+`moq_mux::codec::h264::Import` publishes them as the one rendition `video`,
+filling in the catalog entry from the first SPS. The splitter holds the last
+access unit until the next start code, so the end of the stream flushes it
+explicitly. A file's access units go to `moq_mux::import::Track` with the
+file's avcC instead, each with its presentation time, so B-frames keep their
+order. `set_encoded_audio` publishes AAC frames through the same importer,
+one group per frame. A stream that ends before its first access unit shows as
+a failed video slot.
+
+A file's frames carry the wall-clock instant their timestamp stands for. The
+broadcast maps a stream's timestamps with the offset of its first frame, so
+the audio and video of one file stay in sync whichever starts first.
+
+### Files
+
+`MediaFile` reads the sample index of an MP4 file with mp4-atom, from the
+`moov` sample tables of a plain file or the `moof` of each fragment, and
+reads each sample from the file when it is due. It applies the edit list,
+so presentation starts at zero, and starts the clock with the first sample
+any stream asks for. Each sample is due at its decode time; a decoded
+picture at its presentation time. A looping file starts every track again
+once the longest has ended, with timestamps that keep rising. A file that
+falls more than a second behind, after a suspended host for example, skips
+ahead on every stream at once instead of racing to catch up.
+
+Passthrough publishes one rendition with the file's keyframes and bitrate:
+no ladder, no keyframe on request, no rate control and no preview, in
+exchange for no CPU and the original quality. `MediaFile::video` and
+`MediaFile::audio` decode with moq-video's and moq-audio's decoders into
+raw sources, which `set_video` and `set_audio` encode like a camera.
 
 See [Raspberry Pi](../how-to/raspberry-pi.md) for `rpicam_h264`.
 

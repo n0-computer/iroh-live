@@ -364,7 +364,9 @@ async fn the_broadcast_hands_back_its_sources() {
 
     // A pre-encoded stream has no raw source to hand back.
     broadcast
-        .set_encoded_video(n0_future::stream::empty())
+        .set_encoded_video(moq_ext_sources::EncodedVideo::AnnexB(Box::pin(
+            n0_future::stream::empty(),
+        )))
         .expect("open");
     assert!(broadcast.video_source().is_none());
 }
@@ -592,4 +594,58 @@ async fn a_keyframe_request_survives_a_frame_the_rate_cap_drops() {
         Some(Duration::from_micros(STEP)),
         "the full rendition keyed the requested frame"
     );
+}
+
+/// A file's H.264 and AAC publish as they are, B-frames included, and both slots end with the file.
+#[tokio::test]
+async fn a_file_passes_through() {
+    let clips = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../moq-ext-sources/src/source/test_data");
+    for name in ["clip.mp4", "bframes.mp4"] {
+        let file = moq_ext_sources::MediaFile::open(clips.join(name))
+            .await
+            .expect("the clip opens");
+        let has_audio = file.info().audio.is_some();
+        let broadcast = LocalBroadcast::new();
+        broadcast
+            .set_encoded_video(file.encoded_video().expect("H.264"))
+            .expect("the broadcast is open");
+        if has_audio {
+            broadcast
+                .set_encoded_audio(file.encoded_audio().expect("AAC"))
+                .expect("the broadcast is open");
+        }
+        // The catalog lists the renditions while they play, described by the file's records.
+        let catalog = || {
+            broadcast
+                .shared
+                .catalog
+                .lock()
+                .expect("poisoned")
+                .snapshot()
+        };
+        tokio::time::timeout(TIMEOUT, async {
+            while catalog().video.renditions.is_empty()
+                || (has_audio && catalog().audio.renditions.is_empty())
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{name} published no rendition"));
+        let mut status = broadcast.status();
+        tokio::time::timeout(
+            TIMEOUT,
+            status.wait_for(|status| {
+                status.video == SlotState::Ended && (!has_audio || status.audio == SlotState::Ended)
+            }),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{name} did not end: {:?}", broadcast.status().borrow()))
+        .expect("the broadcast is alive");
+        if has_audio {
+            let frames = broadcast.stats().audio.expect("audio stats").frames;
+            assert!(frames > 10, "{name}: {frames} audio frames");
+        }
+    }
 }

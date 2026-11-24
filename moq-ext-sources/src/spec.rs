@@ -83,7 +83,8 @@ pub enum VideoSourceSpec {
     Rpicam(RpicamMode),
     /// A generated picture, for publishing without a camera.
     Test(TestPattern),
-    /// A media file, imported rather than encoded.
+    /// An MP4 file, decoded by [`open`](Self::open), or published as it is
+    /// through [`MediaFile`](crate::MediaFile).
     File {
         /// Path to the file.
         path: PathBuf,
@@ -505,17 +506,36 @@ impl VideoSourceSpec {
     ///
     /// Fails with [`Error::InvalidConfig`] for a source this build cannot
     /// open, such as a camera without the `capture` feature or the portal off
-    /// Linux. Also fails for [`File`](Self::File) and for
-    /// [`RpicamMode::Encoded`], which carry encoded video and have no raw
-    /// source: import the file with moq-mux, or read `rpicam_h264` instead.
-    /// Fails with [`Error::Device`] if the device does not open.
+    /// Linux, or a file without the `file` feature. Also fails for
+    /// [`RpicamMode::Encoded`], which carries encoded video and has no raw
+    /// source: read `rpicam_h264` instead. Fails with [`Error::Device`] if the
+    /// device or the file does not open.
+    ///
+    /// A file decodes through [`MediaFile::video`](crate::MediaFile::video),
+    /// at the size the options ask for if they give both a width and a
+    /// height, and at the file's own rate.
     pub async fn open(&self, options: &VideoOpenOptions) -> Result<Option<VideoSource>, Error> {
         let source = match self {
             Self::None => return Ok(None),
             Self::Test(pattern) => test_pattern(*pattern, options)?,
+            #[cfg(feature = "file")]
+            Self::File { path, looping } => {
+                let mut config = crate::VideoFileConfig::default();
+                if let (Some(width), Some(height)) = (options.width, options.height) {
+                    config = config.with_size(video::Size::new(width, height));
+                }
+                let end = if *looping {
+                    crate::FileEnd::Restart
+                } else {
+                    crate::FileEnd::Stop
+                };
+                let file = crate::MediaFile::open(path).await?.with_end(end);
+                return file.video(config).await.map(Some);
+            }
+            #[cfg(not(feature = "file"))]
             Self::File { path, .. } => {
                 return Err(Error::invalid(format!(
-                    "{} is encoded video, not a raw source; import it with moq-mux instead",
+                    "this build cannot decode {}; it needs the `file` feature",
                     path.display()
                 )));
             }
@@ -800,9 +820,9 @@ mod tests {
         assert_eq!(image.size(), video::Size::new(320, 180));
     }
 
-    /// `none` opens nothing, and a file is encoded video with no raw source.
+    /// `none` opens nothing.
     #[tokio::test]
-    async fn none_and_files_open_no_raw_video() {
+    async fn none_opens_nothing() {
         let options = VideoOpenOptions::default();
         assert!(
             VideoSourceSpec::None
@@ -811,11 +831,6 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let file: VideoSourceSpec = "file:clip.mp4".parse().unwrap();
-        assert!(matches!(
-            file.open(&options).await,
-            Err(Error::InvalidConfig { .. })
-        ));
         assert!(AudioSourceSpec::None.open().await.unwrap().is_none());
     }
 

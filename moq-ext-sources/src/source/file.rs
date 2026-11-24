@@ -59,7 +59,7 @@ pub(crate) fn spawn(
 }
 
 /// Returns a device error that names `path`.
-fn file_error(path: &Path, source: impl std::fmt::Display) -> Error {
+pub(super) fn file_error(path: &Path, source: impl std::fmt::Display) -> Error {
     n0_error::e!(Error::Device {
         source: AnyError::from_string(format!("{}: {source}", path.display()))
     })

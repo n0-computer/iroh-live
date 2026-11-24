@@ -5597,10 +5597,12 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "derive_more",
+ "hang",
  "moq-audio",
  "moq-mux",
  "moq-net",
  "moq-video",
+ "mp4-atom",
  "n0-error",
  "n0-future",
  "serde",

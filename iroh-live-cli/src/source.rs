@@ -37,7 +37,7 @@ enum Video {
     Raw(VideoSource),
     /// Pre-encoded H.264, published as it is.
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
-    Encoded(#[debug(skip)] n0_future::boxed::BoxStream<bytes::Bytes>),
+    Encoded(iroh_live::media::EncodedVideo),
 }
 
 /// Opens the video and audio `args` asks for, and sets them on `broadcast`.

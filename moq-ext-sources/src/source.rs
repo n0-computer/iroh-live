@@ -15,6 +15,8 @@ use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::info;
 use tracing::{debug, warn};
 
+#[cfg(feature = "file")]
+pub use self::media_file::{AudioInfo, MediaFile, MediaInfo, VideoFileConfig, VideoInfo};
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::rpicam::RpicamConfig;
 pub use self::{
@@ -33,6 +35,8 @@ mod capture;
 mod file;
 #[cfg(feature = "pattern")]
 mod generator;
+#[cfg(feature = "file")]
+mod media_file;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 mod rpicam;
 mod scaled;
@@ -525,13 +529,11 @@ impl VideoSource {
 ///
 /// Fails if `rpicam-vid` is not installed or cannot be started.
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
-pub fn rpicam_h264(
-    config: RpicamConfig,
-) -> Result<n0_future::boxed::BoxStream<bytes::Bytes>, Error> {
-    rpicam::open_encoded(config)
+pub fn rpicam_h264(config: RpicamConfig) -> Result<crate::EncodedVideo, Error> {
+    rpicam::open_encoded(config).map(crate::EncodedVideo::AnnexB)
 }
 
-/// What an audio file source does when it reaches the end of the file.
+/// What a file source does when it reaches the end of the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileEnd {
     /// Ends the source.
@@ -662,8 +664,9 @@ impl AudioSource {
     /// Decodes an audio file in real time.
     ///
     /// `at_end` says whether the source ends with the file or starts it again.
-    /// Reads WAV and MP3. The file is probed before this returns,
-    /// and decoding starts on its own thread.
+    /// Reads WAV, MP3, and the AAC of an MP4 file, which goes through
+    /// [`MediaFile::audio`]. The file is probed before this returns, and
+    /// decoding starts on its own thread.
     ///
     /// Cancellation safe: dropping the future stops the decode thread.
     ///
@@ -674,6 +677,9 @@ impl AudioSource {
     #[cfg(feature = "file")]
     pub async fn file(path: impl AsRef<Path>, at_end: FileEnd) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
+        if media_file::is_mp4(&path).await {
+            return MediaFile::open(&path).await?.with_end(at_end).audio();
+        }
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let weak = fanout.downgrade();
         let stop = CancellationToken::new();

@@ -30,7 +30,7 @@ use std::{
 };
 
 use moq_ext_sources::{
-    ByPtr, Error, SlotState, VideoFrames, VideoSource,
+    ByPtr, EncodedFrame, EncodedVideo, Error, SlotState, VideoFrames, VideoSource,
     stats::{RateMeter, Smoothed},
 };
 use moq_video::encode;
@@ -39,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::{
-    Job, SourceClock,
+    Job, SourceClock, WallOffset,
     cuts::{Cuts, asked as refresh_asked},
     encoding::{VideoEncoding, VideoRendition},
     status::{RenditionState, Reporter},
@@ -774,16 +774,11 @@ impl Encoder {
     }
 }
 
-/// Publishes a pre-encoded Annex-B stream as the one rendition.
+/// Publishes pre-encoded video as the one rendition.
 ///
-/// `Split` cuts the byte stream into access units. `Import` publishes them and
-/// fills in the catalog rendition from the first SPS, so the caller does not
-/// describe the stream.
-pub(super) async fn run_encoded(
-    mut job: Job,
-    mut bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
-    stop: CancellationToken,
-) {
+/// moq-mux's importers publish it and fill in the catalog rendition from the
+/// stream's own parameter sets, so the caller does not describe the stream.
+pub(super) async fn run_encoded(mut job: Job, source: EncodedVideo, stop: CancellationToken) {
     let Some(_tracks) = job.take_over(&stop).await else {
         return;
     };
@@ -792,35 +787,26 @@ pub(super) async fn run_encoded(
     let Job {
         producer,
         catalog,
+        clock,
         stats,
         reporter,
         ..
     } = job;
     stats.clear_video();
     let result = async {
-        let track = producer
-            .create_track(
-                ENCODED_RENDITION,
-                Some(catalog.track_info(hang::catalog::PRIORITY.video)),
-            )
-            .ok_or_else(|| Error::broadcast(moq_net::Error::Duplicate))?;
-        let mut import =
-            moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
-                .map_err(Error::catalog)?;
-        let mut split = moq_mux::codec::h264::Split::new();
+        let mut import = EncodedImport::new(&producer, &catalog, source)?;
         let entry = stats.rendition(ENCODED_RENDITION);
         info!("publishing pre-encoded video");
 
         let mut units = 0u64;
         let mut meter = RateMeter::default();
         loop {
-            let chunk = tokio::select! {
-                chunk = bytes.next() => chunk,
+            let published = tokio::select! {
+                published = import.next(&clock) => published?,
                 () = stop.cancelled() => None,
             };
-            let Some(chunk) = chunk else { break };
-            let frames = split.decode(&chunk, None).map_err(Error::decoder)?;
-            if units == 0 && !frames.is_empty() {
+            let Some(sizes) = published else { break };
+            if units == 0 && !sizes.is_empty() {
                 reporter.slot(SlotState::Running);
                 reporter.rendition(
                     ENCODED_RENDITION,
@@ -829,27 +815,20 @@ pub(super) async fn run_encoded(
                     },
                 );
             }
-            for frame in &frames {
-                let rates = meter.tick(frame.payload.len() as u64);
+            for size in &sizes {
+                let rates = meter.tick(*size as u64);
                 entry.update(|entry| entry.record(rates));
             }
-            units += frames.len() as u64;
-            import.decode(frames).map_err(Error::decoder)?;
-            let track = import.track().name();
+            units += sizes.len() as u64;
+            let track = import.track_name();
             entry.update(|entry| {
                 if entry.stats.track != track {
-                    entry.stats.track = track.to_string();
+                    entry.stats.track = track;
                 }
             });
         }
         entry.update(RenditionEntry::stopped);
-        // The splitter holds the final access unit until the next start code,
-        // so the end of the stream has to flush it explicitly.
-        let tail = split.flush(None).map_err(Error::decoder)?;
-        units += tail.len() as u64;
-        import.decode(tail).map_err(Error::decoder)?;
-        // Dropping the finished track releases it, as dropping the importer did.
-        let _finished = import.finish().map_err(Error::catalog)?;
+        units += import.finish()?;
         Ok::<_, Error>(units)
     }
     .await;
@@ -870,6 +849,139 @@ pub(super) async fn run_encoded(
         Err(err) => {
             warn!(error = format_args!("{err:#}"), "pre-encoded video failed");
             reporter.slot(SlotState::Failed(ByPtr::new(err)));
+        }
+    }
+}
+
+/// The importer of a pre-encoded video source, with the source it reads.
+enum EncodedImport {
+    /// An Annex-B byte stream, cut into access units by their start codes.
+    AnnexB {
+        bytes: n0_future::boxed::BoxStream<bytes::Bytes>,
+        split: moq_mux::codec::h264::Split,
+        import: moq_mux::codec::h264::Import,
+    },
+    /// Whole access units with their timestamps.
+    Avc1 {
+        frames: n0_future::boxed::BoxStream<EncodedFrame>,
+        import: moq_mux::import::Track,
+        offset: WallOffset,
+    },
+}
+
+impl EncodedImport {
+    /// Creates the rendition's track and the importer that fills it.
+    fn new(
+        producer: &moq_net::broadcast::Producer,
+        catalog: &moq_mux::catalog::Producer,
+        source: EncodedVideo,
+    ) -> Result<Self, Error> {
+        let info = catalog.track_info(hang::catalog::PRIORITY.video);
+        let duplicate = || Error::broadcast(moq_net::Error::Duplicate);
+        Ok(match source {
+            EncodedVideo::AnnexB(bytes) => {
+                let track = producer
+                    .create_track(ENCODED_RENDITION, Some(info))
+                    .ok_or_else(duplicate)?;
+                Self::AnnexB {
+                    bytes,
+                    split: moq_mux::codec::h264::Split::new(),
+                    import: moq_mux::codec::h264::Import::new(
+                        track,
+                        catalog.reserve(),
+                        Default::default(),
+                    )
+                    .map_err(Error::catalog)?,
+                }
+            }
+            EncodedVideo::Avc1 { avcc, frames } => {
+                let request = producer
+                    .reserve_track(ENCODED_RENDITION)
+                    .ok_or_else(duplicate)?;
+                let init =
+                    moq_mux::import::VideoInit::new(moq_mux::import::VideoFormat::Avc1, avcc);
+                Self::Avc1 {
+                    frames,
+                    import: moq_mux::import::Track::video(request, catalog.reserve(), init)
+                        .map_err(Error::catalog)?,
+                    offset: WallOffset::default(),
+                }
+            }
+            _ => {
+                return Err(Error::invalid(
+                    "this kind of pre-encoded video is not supported",
+                ));
+            }
+        })
+    }
+
+    /// Publishes what the source has next, and returns the sizes of the access units.
+    ///
+    /// Returns `None` once the source ends.
+    async fn next(&mut self, clock: &moq_mux::Clock) -> Result<Option<Vec<usize>>, Error> {
+        match self {
+            Self::AnnexB {
+                bytes,
+                split,
+                import,
+            } => {
+                let Some(chunk) = bytes.next().await else {
+                    return Ok(None);
+                };
+                let frames = split.decode(&chunk, None).map_err(Error::decoder)?;
+                let sizes = frames.iter().map(|frame| frame.payload.len()).collect();
+                import.decode(frames).map_err(Error::decoder)?;
+                Ok(Some(sizes))
+            }
+            Self::Avc1 {
+                frames,
+                import,
+                offset,
+            } => {
+                let Some(frame) = frames.next().await else {
+                    return Ok(None);
+                };
+                let size = frame.data.len();
+                let timestamp = offset.map(clock, &frame);
+                import
+                    .decode(frame.data, Some(timestamp))
+                    .map_err(Error::decoder)?;
+                Ok(Some(vec![size]))
+            }
+        }
+    }
+
+    /// Returns the name of the track the importer publishes.
+    fn track_name(&self) -> String {
+        match self {
+            Self::AnnexB { import, .. } => import.track().name().to_string(),
+            Self::Avc1 { import, .. } => import.name(),
+        }
+    }
+
+    /// Publishes what the importer still holds and finishes the track.
+    ///
+    /// Returns how many access units the end published. Dropping the
+    /// finished track releases it, as dropping the importer did.
+    fn finish(self) -> Result<u64, Error> {
+        match self {
+            Self::AnnexB {
+                mut split,
+                mut import,
+                ..
+            } => {
+                // The splitter holds the final access unit until the next start
+                // code, so the end of the stream has to flush it explicitly.
+                let tail = split.flush(None).map_err(Error::decoder)?;
+                let units = tail.len() as u64;
+                import.decode(tail).map_err(Error::decoder)?;
+                let _finished = import.finish().map_err(Error::catalog)?;
+                Ok(units)
+            }
+            Self::Avc1 { import, .. } => {
+                let _finished = import.finish().map_err(Error::catalog)?;
+                Ok(0)
+            }
         }
     }
 }
