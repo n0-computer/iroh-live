@@ -1220,8 +1220,12 @@ async fn subscribed(broadcast: &moq_net::broadcast::Consumer) -> moq_net::track:
     let mut reader = step(
         "track subscribe timeout",
         broadcast.track("data").expect("track").subscribe(
-            moq_net::track::Subscription::default()
-                .with_delay(moq_net::track::Delay::default().with_max(Duration::from_secs(5))),
+            moq_net::track::Subscription::default().with_ranges([moq_net::track::Range::from(
+                moq_net::track::Start::Live {
+                    min: Duration::from_secs(5),
+                    max: Some(Duration::from_secs(5)),
+                },
+            )]),
         ),
     )
     .await

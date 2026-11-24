@@ -3353,7 +3353,7 @@ dependencies = [
 [[package]]
 name = "hang"
 version = "0.21.11"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "bytes",
  "derive_more",
@@ -4890,7 +4890,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 [[package]]
 name = "kio"
 version = "0.6.2"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "crossbeam-epoch",
  "kio-macros",
@@ -4905,7 +4905,7 @@ dependencies = [
 [[package]]
 name = "kio-macros"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5414,7 +5414,7 @@ dependencies = [
 [[package]]
 name = "moq-audio"
 version = "0.1.10"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "block2 0.6.2",
  "bytes",
@@ -5445,7 +5445,7 @@ dependencies = [
 [[package]]
 name = "moq-auth"
 version = "0.2.1"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -5473,7 +5473,7 @@ dependencies = [
 [[package]]
 name = "moq-congestion"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "kio",
  "rand",
@@ -5483,7 +5483,7 @@ dependencies = [
 [[package]]
 name = "moq-crypto"
 version = "0.0.11"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "rind",
  "rind-rustls",
@@ -5613,7 +5613,7 @@ dependencies = [
 [[package]]
 name = "moq-json"
 version = "0.5.8"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "bytes",
  "kio",
@@ -5628,7 +5628,7 @@ dependencies = [
 [[package]]
 name = "moq-loc"
 version = "0.2.19"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "bytes",
  "moq-net",
@@ -5638,7 +5638,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.5.1"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "serde",
  "serde_json",
@@ -5648,7 +5648,7 @@ dependencies = [
 [[package]]
 name = "moq-mux"
 version = "0.10.11"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "base64 0.23.1",
  "bitstream-io",
@@ -5681,7 +5681,7 @@ dependencies = [
 [[package]]
 name = "moq-net"
 version = "0.3.10"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "arrayvec",
  "bytes",
@@ -5704,7 +5704,7 @@ dependencies = [
 [[package]]
 name = "moq-nvenc"
 version = "0.1.2"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "cudarc",
  "libloading 0.9.0",
@@ -5714,7 +5714,7 @@ dependencies = [
 [[package]]
 name = "moq-pattern"
 version = "0.1.2"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "serde",
 ]
@@ -5722,7 +5722,7 @@ dependencies = [
 [[package]]
 name = "moq-quic"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "bytes",
  "fastbloom",
@@ -5745,7 +5745,7 @@ dependencies = [
 [[package]]
 name = "moq-relay"
 version = "0.17.2"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "anyhow",
  "axum",
@@ -5794,7 +5794,7 @@ dependencies = [
 [[package]]
 name = "moq-sock"
 version = "0.2.0"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -5809,7 +5809,7 @@ dependencies = [
 [[package]]
 name = "moq-stats"
 version = "0.2.12"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "kio",
  "moq-json",
@@ -5826,7 +5826,7 @@ dependencies = [
 [[package]]
 name = "moq-tokio"
 version = "0.19.23"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "bytes",
  "dns-lookup",
@@ -5891,7 +5891,7 @@ dependencies = [
 [[package]]
 name = "moq-uring"
 version = "0.0.12"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "bytes",
  "futures",
@@ -5917,7 +5917,7 @@ dependencies = [
 [[package]]
 name = "moq-v4l"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
@@ -5926,7 +5926,7 @@ dependencies = [
 [[package]]
 name = "moq-vaapi"
 version = "0.2.1"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -5938,7 +5938,7 @@ dependencies = [
 [[package]]
 name = "moq-video"
 version = "0.1.10"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "anyhow",
  "ash",
@@ -8025,7 +8025,7 @@ dependencies = [
 [[package]]
 name = "qmux"
 version = "0.7.0"
-source = "git+https://github.com/moq-dev/moq?rev=1767f6d7f#1767f6d7fb7ab2343101ead590e225a369b38e61"
+source = "git+https://github.com/moq-dev/moq?rev=8d8195bda#8d8195bda81b4ab1637f0f3fe9cdca16b8d52238"
 dependencies = [
  "bytes",
  "futures",

@@ -35,17 +35,17 @@ iroh-gossip = "0.101.0"
 noq-proto = { version = "1.4", default-features = false }
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
-hang = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f" }
-moq-net = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f", features = ["async"] }
-moq-mux = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f" }
-moq-json = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f", features = ["async"] }
-moq-audio = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f", default-features = false }
-moq-video = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f", default-features = false }
-moq-auth = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f", default-features = false }
-moq-relay = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f", default-features = false }
-moq-tokio = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f", default-features = false }
+hang = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda" }
+moq-net = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda", features = ["async"] }
+moq-mux = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda" }
+moq-json = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda", features = ["async"] }
+moq-audio = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda", default-features = false }
+moq-video = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda", default-features = false }
+moq-auth = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda", default-features = false }
+moq-relay = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda", default-features = false }
+moq-tokio = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda", default-features = false }
 # moq-net's poll primitives (`Waiter`, `Bridge`, `wait`), no longer re-exported.
-kio = { git = "https://github.com/moq-dev/moq", rev = "1767f6d7f" }
+kio = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda" }
 
 # UI. egui-wgpu pins the wgpu major it links, and `moq_video::render` hands back
 # a `wgpu::Texture` from its own build of wgpu 30. A texture from a different
