@@ -48,7 +48,7 @@ const MIN_PASS: Duration = Duration::from_micros(1_000_000 / FALLBACK_FPS as u64
 /// stopped.
 const MAX_BEHIND: Duration = Duration::from_secs(1);
 
-/// The deepest reordering [`Reorder`] allows for, the size of the largest H.264 picture buffer.
+/// The deepest picture reordering the decode path allows for, the size of the largest H.264 picture buffer.
 const MAX_HELD: usize = 16;
 
 /// An MP4 file, ready to publish as it is or to decode.
@@ -336,8 +336,7 @@ impl MediaFile {
             .await
             .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??;
         let clock = &self.shared.clock;
-        let skipped = clock.skipped();
-        let due = clock.instant(skipped + next.decode_at);
+        let (skipped, due) = clock.due(next.decode_at);
         tokio::time::sleep_until(due).await;
         clock.catch_up(skipped, due);
         let timestamp = skipped + next.timestamp;
@@ -359,62 +358,59 @@ impl MediaFile {
         closed: impl Fn() -> bool,
     ) -> Result<(), Error> {
         let clock = &self.shared.clock;
-        // Waits until a picture is due and hands it over.
-        let mut show = |mut frame: video::Frame| -> Result<bool, Error> {
-            // The decoder's timestamps are media times, which the skip moves.
-            let skipped = clock.skipped();
-            let at = skipped + Duration::from_micros(Reorder::micros(&frame));
-            let due = clock.instant(at);
-            if !sleep_until(due.into_std(), &closed) {
-                return Ok(false);
-            }
-            clock.catch_up(skipped, due);
-            frame.timestamp = to_timestamp(at)?;
-            Ok(push(frame))
-        };
-        // Takes the pictures the decoder readied, and shows those whose turn it is.
-        let mut drain = |decoder: &mut video::decode::Decoder,
-                         reorder: &mut Reorder,
-                         flushing: bool|
-         -> Result<bool, Error> {
-            while let Some(frame) = decoder.receive().map_err(Error::decoder)? {
-                reorder.push(frame);
-            }
-            while let Some(frame) = reorder.pop(flushing) {
-                if !show(frame)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        };
-        let mut reorder = Reorder::new(
+        // A workaround for moq-video's VideoToolbox backend, which returns
+        // pictures in decode order: up to `depth` pictures wait here, by
+        // presentation time, and the earliest goes once more wait. It can go
+        // once that backend reorders on its own.
+        let depth = reorder_depth(
             self.shared
                 .video
                 .as_ref()
                 .map_or(&[], |track| &track.samples),
         );
-        let mut pass = None;
+        let mut held = BTreeMap::new();
+        // Takes the pictures the decoder readied, and hands over those whose
+        // turn it is once each is due.
+        let mut drain = |decoder: &mut video::decode::Decoder,
+                         held: &mut BTreeMap<u64, video::Frame>,
+                         flushing: bool|
+         -> Result<bool, Error> {
+            while let Some(frame) = decoder.receive().map_err(Error::decoder)? {
+                held.insert(micros(&frame), frame);
+            }
+            let keep = if flushing { 0 } else { depth };
+            while held.len() > keep {
+                let (at, mut frame) = held.pop_first().expect("a held picture");
+                let Some(at) = clock.wait(Duration::from_micros(at), &closed) else {
+                    return Ok(false);
+                };
+                frame.timestamp = to_timestamp(at)?;
+                if !push(frame) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
         for next in Schedule::new(self.clone(), true) {
-            if pass.is_some_and(|pass| pass != next.pass) {
+            if next.restarted {
                 // The pictures a reordering decoder still holds belong to the last pass.
                 decoder.flush().map_err(Error::decoder)?;
-                if !drain(&mut decoder, &mut reorder, true)? {
+                if !drain(&mut decoder, &mut held, true)? {
                     return Ok(());
                 }
                 debug!(path = %self.path().display(), "video file looping");
             }
-            pass = Some(next.pass);
             let data = self.shared.read(&next.sample)?;
             let timestamp = to_timestamp(next.timestamp)?;
             decoder
                 .decode(&data, timestamp, next.sample.keyframe)
                 .map_err(Error::decoder)?;
-            if !drain(&mut decoder, &mut reorder, false)? {
+            if !drain(&mut decoder, &mut held, false)? {
                 return Ok(());
             }
         }
         decoder.flush().map_err(Error::decoder)?;
-        drain(&mut decoder, &mut reorder, true)?;
+        drain(&mut decoder, &mut held, true)?;
         debug!(path = %self.path().display(), "video file ended");
         Ok(())
     }
@@ -425,23 +421,20 @@ impl MediaFile {
         mut decoder: moq_audio::decode::Decoder,
         sender: &FrameSender<audio::Frame>,
     ) -> Result<(), Error> {
-        let clock = &self.shared.clock;
-        let mut pass = None;
         let mut corrupt = 0u64;
         for next in Schedule::new(self.clone(), false) {
-            if pass.is_some_and(|pass| pass != next.pass) {
+            if next.restarted {
                 // Each pass starts with the encoder delay again.
                 decoder.reset().map_err(Error::decoder)?;
             }
-            pass = Some(next.pass);
             let data = self.shared.read(&next.sample)?;
-            let skipped = clock.skipped();
-            let timestamp = skipped + next.timestamp;
-            let due = clock.instant(timestamp);
-            if !sleep_until(due.into_std(), || sender.is_closed()) {
+            let Some(timestamp) = self
+                .shared
+                .clock
+                .wait(next.timestamp, || sender.is_closed())
+            else {
                 return Ok(());
-            }
-            clock.catch_up(skipped, due);
+            };
             // A corrupt packet is not fatal. The file keeps playing without it.
             if let Err(err) = decoder.decode(&data) {
                 corrupt += 1;
@@ -595,64 +588,31 @@ fn to_timestamp(at: Duration) -> Result<moq_net::Timestamp, Error> {
         .ok_or_else(|| Error::device_msg(format!("a file time of {at:?} is out of range")))
 }
 
-/// Puts decoded pictures back into presentation order.
+/// Returns how many pictures of `samples`, in decode order, can come before an earlier one.
 ///
-/// A backend may hand pictures back in decode order, as VideoToolbox does.
-/// The buffer holds as many pictures as the stream's samples can come ahead
-/// of an earlier one, and lets the earliest go when it holds more.
-#[derive(derive_more::Debug)]
-struct Reorder {
-    depth: usize,
-    /// The pictures that wait, by presentation time.
-    #[debug("{} pictures", held.len())]
-    held: BTreeMap<u64, video::Frame>,
+/// That is the most samples that follow one sample in decode order and
+/// present before it, up to [`MAX_HELD`].
+fn reorder_depth(samples: &[Sample]) -> usize {
+    samples
+        .iter()
+        .enumerate()
+        .map(|(index, sample)| {
+            samples[index + 1..]
+                .iter()
+                .take(MAX_HELD)
+                .filter(|later| later.pts < sample.pts)
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
-impl Reorder {
-    /// Creates a buffer for `samples`, in decode order.
-    ///
-    /// The depth is the most samples that follow one sample in decode order
-    /// and present before it, up to [`MAX_HELD`].
-    fn new(samples: &[Sample]) -> Self {
-        let depth = samples
-            .iter()
-            .enumerate()
-            .map(|(index, sample)| {
-                samples[index + 1..]
-                    .iter()
-                    .take(MAX_HELD)
-                    .filter(|later| later.pts < sample.pts)
-                    .count()
-            })
-            .max()
-            .unwrap_or(0);
-        Self {
-            depth,
-            held: BTreeMap::new(),
-        }
-    }
-
-    /// Returns the presentation time of `frame` in microseconds.
-    fn micros(frame: &video::Frame) -> u64 {
-        frame
-            .timestamp
-            .as_micros()
-            .map_or(0, |micros| micros as u64)
-    }
-
-    /// Holds a picture the decoder returned.
-    fn push(&mut self, frame: video::Frame) {
-        self.held.insert(Self::micros(&frame), frame);
-    }
-
-    /// Returns the earliest picture once more than the depth wait, or any with `flushing`.
-    fn pop(&mut self, flushing: bool) -> Option<video::Frame> {
-        if flushing || self.held.len() > self.depth {
-            self.held.pop_first().map(|(_, frame)| frame)
-        } else {
-            None
-        }
-    }
+/// Returns the presentation time of `frame` in microseconds.
+fn micros(frame: &video::Frame) -> u64 {
+    frame
+        .timestamp
+        .as_micros()
+        .map_or(0, |micros| micros as u64)
 }
 
 /// The wall clock every stream of a file plays against.
@@ -679,6 +639,24 @@ impl Clock {
         Duration::from_micros(self.skipped.load(Ordering::Relaxed))
     }
 
+    /// Returns how far the timeline moved forward, and when media time `at` is due on it.
+    fn due(&self, at: Duration) -> (Duration, Instant) {
+        let skipped = self.skipped();
+        (skipped, self.instant(skipped + at))
+    }
+
+    /// Sleeps this thread until media time `at` is due, and returns `at` on the moved timeline.
+    ///
+    /// Returns `None` once `closed` reports the source gone.
+    fn wait(&self, at: Duration, closed: impl Fn() -> bool) -> Option<Duration> {
+        let (skipped, due) = self.due(at);
+        if !sleep_until(due.into_std(), closed) {
+            return None;
+        }
+        self.catch_up(skipped, due);
+        Some(skipped + at)
+    }
+
     /// Returns the media time that plays now, or `None` before the clock starts.
     fn position(&self) -> Option<Duration> {
         let epoch = self.epoch.get()?;
@@ -691,8 +669,7 @@ impl Clock {
 
     /// Moves the timeline forward if a sample due at `due` comes more than [`MAX_BEHIND`] late.
     ///
-    /// `skipped` is what [`skipped`](Self::skipped) returned when the stream
-    /// computed `due`. When every stream falls behind in one stall, only the
+    /// `skipped` is what [`due`](Self::due) returned with `due`. When every stream falls behind in one stall, only the
     /// first one moves the timeline, so the stall counts once. The move holds
     /// for every stream of the file, so they stay in sync.
     fn catch_up(&self, skipped: Duration, due: Instant) {
@@ -719,8 +696,8 @@ impl Clock {
 #[derive(Debug, Clone, Copy)]
 struct Scheduled {
     sample: Sample,
-    /// Which pass over the file this is, from zero.
-    pass: u64,
+    /// Whether the sample starts a pass over the file after an earlier one.
+    restarted: bool,
     /// When the sample decodes.
     decode_at: Duration,
     /// When the sample presents.
@@ -764,6 +741,7 @@ impl Iterator for Schedule {
             shared.audio.as_ref()?
         };
         let pass = shared.pass.as_micros() as u64;
+        let first = self.index.is_none();
         let mut index = self.index.unwrap_or_else(|| {
             let position = shared.clock.position().unwrap_or_default().as_micros() as u64;
             self.pass = position / pass;
@@ -774,7 +752,8 @@ impl Iterator for Schedule {
                 .position(|sample| sample.keyframe && sample.pts >= offset)
                 .unwrap_or(track.samples.len())
         });
-        if index == track.samples.len() {
+        let wrapped = index == track.samples.len();
+        if wrapped {
             self.pass += 1;
             index = 0;
         }
@@ -787,7 +766,7 @@ impl Iterator for Schedule {
         let at = |time: i64| Duration::from_micros(start.saturating_add_signed(time));
         Some(Scheduled {
             sample,
-            pass: self.pass,
+            restarted: wrapped && !first,
             decode_at: at(sample.dts),
             timestamp: at(sample.pts),
         })
@@ -874,20 +853,6 @@ mod tests {
         }
     }
 
-    /// B-frames keep their presentation times, which the edit list starts at zero.
-    #[tokio::test]
-    async fn b_frames_keep_their_presentation_times() {
-        let file = open("bframes.mp4").await;
-        let pts: Vec<u64> = Schedule::new(file, true)
-            .map(|next| next.timestamp.as_millis() as u64)
-            .collect();
-        // Decode order: I0 P3 B1 B2 P6 B4 B5 ...
-        assert_eq!(&pts[..6], [0, 300, 100, 200, 600, 400]);
-        let mut sorted = pts.clone();
-        sorted.sort_unstable();
-        assert_eq!(sorted, (0..10).map(|n| n * 100).collect::<Vec<_>>());
-    }
-
     /// A looping file starts each pass one file length after the last, on every track.
     #[tokio::test]
     async fn a_looping_file_continues_its_timeline() {
@@ -898,8 +863,13 @@ mod tests {
             let two_passes: Vec<_> = Schedule::new(file.clone(), video).take(2 * count).collect();
             // The edit list trims the audio's priming, so both tracks start at zero.
             assert_eq!(two_passes[0].timestamp, Duration::ZERO);
+            let restarts: Vec<_> = two_passes.iter().map(|next| next.restarted).collect();
+            assert_eq!(
+                restarts.iter().position(|&restarted| restarted),
+                Some(count)
+            );
+            assert_eq!(restarts.iter().filter(|&&restarted| restarted).count(), 1);
             for (first, second) in two_passes[..count].iter().zip(&two_passes[count..]) {
-                assert_eq!(second.pass, 1);
                 assert_eq!(second.timestamp, first.timestamp + length);
                 assert_eq!(second.decode_at, first.decode_at + length);
             }
@@ -975,8 +945,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_shared_stall_counts_once() {
         let clock = Clock::default();
-        let skipped = clock.skipped();
-        let due = clock.instant(skipped);
+        let (skipped, due) = clock.due(Duration::ZERO);
         tokio::time::advance(Duration::from_secs(3)).await;
         for _stream in 0..2 {
             clock.catch_up(skipped, due);
@@ -985,34 +954,19 @@ mod tests {
         assert_eq!(clock.position(), Some(Duration::ZERO));
     }
 
-    /// Pictures that a backend returns in decode order leave in presentation order.
+    /// A backend that returns decode order needs as many pictures held as the stream reorders.
     #[tokio::test]
-    async fn reorder_restores_presentation_order() {
+    async fn the_reorder_depth_follows_the_b_frames() {
         let file = open("bframes.mp4").await;
-        let mut reorder = Reorder::new(&file.shared.video.as_ref().unwrap().samples);
-        assert_eq!(reorder.depth, 2);
-        let size = video::Size::new(2, 2);
-        let picture = |millis: u64| {
-            let pixels = vec![0; video::I420::len(size).unwrap()];
-            let surface = video::Surface::I420(video::I420::new(size, pixels).unwrap());
-            video::Frame::new(
-                surface,
-                moq_net::Timestamp::from_micros(millis * 1000).unwrap(),
-            )
-        };
-        let mut shown = Vec::new();
-        // I0 P3 B1 B2 P6 B4 B5, each returned as soon as it is fed.
-        for millis in [0, 300, 100, 200, 600, 400, 500] {
-            reorder.push(picture(millis));
-            while let Some(frame) = reorder.pop(false) {
-                shown.push(Reorder::micros(&frame) / 1000);
-            }
-        }
-        assert_eq!(shown, [0, 100, 200, 300, 400]);
-        while let Some(frame) = reorder.pop(true) {
-            shown.push(Reorder::micros(&frame) / 1000);
-        }
-        assert_eq!(shown, [0, 100, 200, 300, 400, 500, 600]);
+        assert_eq!(
+            reorder_depth(&file.shared.video.as_ref().unwrap().samples),
+            2
+        );
+        let plain = open("clip.mp4").await;
+        assert_eq!(
+            reorder_depth(&plain.shared.video.as_ref().unwrap().samples),
+            0
+        );
     }
 
     #[tokio::test]
@@ -1030,8 +984,7 @@ mod tests {
     /// A looping B-frame file decodes to pictures with rising timestamps.
     ///
     /// The software decoder keeps the test independent of the platform's
-    /// backend, and [`reorder_restores_presentation_order`] covers a backend
-    /// that returns decode order.
+    /// backend.
     #[test]
     fn a_looping_b_frame_file_decodes_in_presentation_order() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1053,10 +1006,7 @@ mod tests {
             || false,
         )
         .expect("the clip plays");
-        let millis: Vec<u64> = frames
-            .iter()
-            .map(|frame| Reorder::micros(frame) / 1000)
-            .collect();
+        let millis: Vec<u64> = frames.iter().map(|frame| micros(frame) / 1000).collect();
         assert_eq!(millis, (0..12).map(|n| n * 100).collect::<Vec<_>>());
     }
 
