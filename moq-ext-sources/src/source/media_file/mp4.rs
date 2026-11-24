@@ -18,7 +18,7 @@ use mp4_atom::{
     ReadAtom, ReadFrom, Trak, Udta,
 };
 use n0_error::{AnyError, StdResultExt, anyerr};
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// The sample flag that marks a sample as not a sync sample (ISO/IEC 14496-12, 8.8.3.1).
 const NON_SYNC: u32 = 0x0001_0000;
@@ -28,9 +28,11 @@ const AAC_OBJECT_TYPE: u8 = 0x40;
 
 /// The boxes of a `moov` or `trak` that hold metadata, which the index does not read.
 ///
-/// mp4-atom refuses a box that repeats where it expects at most one, and
-/// encoders often repeat the items of the `ilst` in `udta/meta`, so
-/// [`read_moov`] drops these boxes before mp4-atom decodes the rest.
+/// mp4-atom 0.17 refuses a repeated `cprt`, `covr` or `desc` item in the
+/// `ilst` of `udta/meta`, though players accept it, and some files repeat
+/// them. [`read_moov`] drops these boxes before mp4-atom decodes the rest.
+/// A `traf` in a fragment can hold them too, and the index leaves those, as
+/// no encoder is known to write metadata there.
 const METADATA: [FourCC; 2] = [Udta::KIND, Meta::KIND];
 
 /// One sample: where it lies, and when it decodes and presents, in microseconds.
@@ -106,8 +108,15 @@ pub(super) fn index(reader: &mut (impl Read + Seek)) -> Result<Vec<Track>, AnyEr
     let mut fragments = Vec::new();
     loop {
         let start = reader.stream_position()?;
-        // Some encoders leave a few bytes after the last box, too few for a box.
-        if len.saturating_sub(start) < 8 {
+        // Some files end in a few bytes after the last box, too few for a box
+        // header, such as a line break a download tool appended. A tail of 8
+        // bytes or more reads as a box header, and fails only if its size
+        // field is invalid or it claims to be a `moov` or `moof`.
+        let tail = len.saturating_sub(start);
+        if tail < 8 {
+            if tail > 0 {
+                debug!(bytes = tail, "skipping bytes after the last box");
+            }
             break;
         }
         let Some(header) = Option::<Header>::read_from(reader).anyerr()? else {
@@ -455,7 +464,7 @@ fn fragment(
     Ok(offset)
 }
 
-/// Reads the body of the `moov` box `header` starts and decodes it without its metadata boxes.
+/// Reads the body of the `moov` box that `header` opens, and decodes it without its metadata boxes.
 fn read_moov(header: &Header, reader: &mut impl Read) -> Result<Moov, AnyError> {
     let mut body = Vec::new();
     match header.size {
@@ -567,12 +576,17 @@ mod tests {
     /// The size of every test sample.
     const SIZE: u32 = 10;
 
+    /// Returns a box of `kind` around `body`.
+    fn mp4_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut data = (8 + body.len() as u32).to_be_bytes().to_vec();
+        data.extend_from_slice(kind);
+        data.extend_from_slice(body);
+        data
+    }
+
     /// Returns an `mdat` box with `samples` test samples.
     fn mdat(samples: u32) -> Vec<u8> {
-        let mut data = (8 + samples * SIZE).to_be_bytes().to_vec();
-        data.extend_from_slice(b"mdat");
-        data.resize(data.len() + (samples * SIZE) as usize, 0);
-        data
+        mp4_box(b"mdat", &vec![0; (samples * SIZE) as usize])
     }
 
     /// Returns sample tables of `count` samples of 100 ms in one chunk, which an `mdat` at the start holds.
@@ -809,14 +823,6 @@ mod tests {
         assert_eq!(millis(&samples), [0, 100, 200, 300, 400]);
     }
 
-    /// Returns a box of `kind` around `body`.
-    fn mp4_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
-        let mut data = (8 + body.len() as u32).to_be_bytes().to_vec();
-        data.extend_from_slice(kind);
-        data.extend_from_slice(body);
-        data
-    }
-
     /// Returns a `udta` whose `meta/ilst` repeats its copyright item, as some encoders write.
     fn duplicate_metadata() -> Vec<u8> {
         // A `data` box of text: type 1 for UTF-8, then the locale.
@@ -829,27 +835,33 @@ mod tests {
         mp4_box(b"udta", &meta)
     }
 
-    /// Repeated metadata items, in the `moov` and a `trak`, and bytes after the last box do not fail the index.
+    /// Repeated metadata items in the `moov` and a `trak` do not fail the index.
     #[test]
-    fn duplicate_metadata_and_trailing_bytes_are_skipped() {
-        let mut encoded = Vec::new();
-        moov(stbl(3), Vec::new()).encode(&mut encoded).unwrap();
+    fn duplicate_metadata_is_skipped() {
+        let atom::Moov { mvhd, trak, .. } = moov(stbl(3), Vec::new());
+        let mut mvhd_box = Vec::new();
+        mvhd.encode(&mut mvhd_box).unwrap();
+        let mut trak_body = Vec::new();
+        trak[0].encode(&mut trak_body).unwrap();
         // Rebuild the `moov` and its `trak` with the metadata after their other children.
-        let (mvhd, trak) = {
-            let body = &encoded[8..];
-            let mvhd_size = u32::from_be_bytes(body[..4].try_into().unwrap()) as usize;
-            body.split_at(mvhd_size)
-        };
-        assert_eq!(&mvhd[4..8], b"mvhd");
-        assert_eq!(&trak[4..8], b"trak");
-        let trak = mp4_box(b"trak", &[&trak[8..], &duplicate_metadata()].concat());
-        let moov = mp4_box(b"moov", &[mvhd, &trak, &duplicate_metadata()].concat());
+        let trak = mp4_box(b"trak", &[&trak_body[8..], &duplicate_metadata()].concat());
+        let moov = mp4_box(b"moov", &[mvhd_box, trak, duplicate_metadata()].concat());
         assert!(matches!(
             <atom::Moov as atom::Decode>::decode(&mut moov.as_slice()),
             Err(atom::Error::DuplicateBox(_))
         ));
 
-        let data = [mdat(3), moov, vec![0; 2]].concat();
+        let data = [mdat(3), moov].concat();
+        let tracks = index(&mut Cursor::new(data)).unwrap();
+        assert_eq!(millis(&tracks[0].samples), [0, 100, 200]);
+    }
+
+    /// Bytes after the last box, too few for a box header, do not fail the index.
+    #[test]
+    fn trailing_bytes_are_skipped() {
+        let mut data = mdat(3);
+        moov(stbl(3), Vec::new()).encode(&mut data).unwrap();
+        data.extend_from_slice(b"\r\n");
         let tracks = index(&mut Cursor::new(data)).unwrap();
         assert_eq!(millis(&tracks[0].samples), [0, 100, 200]);
     }
