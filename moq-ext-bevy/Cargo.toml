@@ -1,0 +1,61 @@
+[package]
+name = "moq-ext-bevy"
+version = "0.1.0"
+edition = "2024"
+description = "Video from moq broadcasts on Bevy textures"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# A workspace of its own, so the root workspace's `--workspace` runs never
+# compile Bevy. The in-repo crates come in by path and bring their git pins
+# with them. Check it with `cargo check --manifest-path moq-ext-bevy/Cargo.toml`.
+[workspace]
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }
+# Off here: every Bevy system parameter (`Res<T>`, `Query<..>`) elides one.
+elided_lifetimes_in_paths = "allow"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+or_fun_call = "warn"
+use_self = "warn"
+unused_async = "warn"
+manual_let_else = "warn"
+allow_attributes_without_reason = "warn"
+mod_module_files = "deny"
+
+# Bevy's usual dev profile: the game code builds fast, its dependencies run
+# optimized, so a debug build still plays and decodes video in real time.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[lints]
+workspace = true
+
+[dependencies]
+# Bevy 0.20 renders with wgpu 30, the same major as moq-video. No audio: Bevy's
+# alsa-sys clashes with cpal's.
+bevy = { version = "0.20.1", default-features = false, features = ["3d", "ui", "free_camera"] }
+moq-ext-sources = { path = "../moq-ext-sources", default-features = false }
+tracing = "0.1.44"
+
+[dev-dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+iroh = { version = "1.4.1", default-features = false }
+iroh-live = { path = "../iroh-live", features = ["player", "publisher", "capture", "file", "rooms", "pipewire"] }
+n0-error = "1.0.3"
+n0-future = "0.3.2"
+n0-watcher = "1.0.1"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.54.1", features = ["full"] }
+
+[[example]]
+name = "editor"
+path = "examples/editor.rs"

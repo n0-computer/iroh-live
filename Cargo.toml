@@ -17,6 +17,9 @@ members = [
     "demos/gles-yuv",
     "demos/pi-zero",
 ]
+# Bevy is large, so its crate is a workspace of its own and stays out of
+# `--workspace` runs.
+exclude = ["moq-ext-bevy"]
 resolver = "2"
 
 [profile.release]

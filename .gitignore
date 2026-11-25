@@ -1,4 +1,6 @@
 /target
+# The Bevy crate is a workspace of its own, with its own target.
+/moq-ext-bevy/target
 /plans
 /SANDBOX
 /.agents
