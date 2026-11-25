@@ -51,7 +51,6 @@ use iroh_live::{
         spec::{AudioSourceSpec, TestTone, VideoOpenOptions, VideoSourceSpec},
         video,
     },
-    moq_net::{self, broadcast},
     rooms::{Room, RoomTicket, Rooms, RoomsLayout, chat::Chat},
 };
 use moq_ext_bevy::{VideoTexture, VideoTexturePlugin};
@@ -176,7 +175,7 @@ struct Net {
     events: mpsc::Receiver<NetEvent>,
     events_tx: mpsc::Sender<NetEvent>,
     ticket: String,
-    _world: broadcast::Producer,
+    _world: LocalBroadcast,
     _follow: AbortOnDropHandle<()>,
 }
 
@@ -430,15 +429,9 @@ async fn connect(
     let ticket = ticket.unwrap_or_else(RoomTicket::generate);
     let room = rooms.join(&ticket, name).await?;
 
-    let world: broadcast::Producer = room.publish(WORLD)?;
-    let info = moq_net::track::Info::default().with_timescale(moq_net::Timescale::MILLI);
-    let track = world
-        .create_track(STATE, info)
-        .std_context("creating the state track")?;
-    let state = ValueWriter::new(track, Default::default());
-    state
-        .update(&MemberState::default())
-        .std_context("publishing the cubes")?;
+    let world: LocalBroadcast = room.publish(WORLD)?;
+    // `publish_state` writes the first state.
+    let state = world.value_track(STATE)?;
 
     let speaker = Engine::open(Default::default())
         .await
@@ -551,7 +544,8 @@ async fn play_video(
         .play(player_config(speaker))?;
     let video = NetEvent::Video(entity, name, Box::new(player), None);
     if tx.send(video).await.is_ok() {
-        subscription.broadcast().closed().await;
+        // The player follows the subscription when the publisher restarts.
+        subscription.closed().await;
     }
     Ok(())
 }
