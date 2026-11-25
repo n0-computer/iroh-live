@@ -93,6 +93,9 @@ struct Args {
     /// Places a cube with the test pattern at the start.
     #[arg(long)]
     video_cube: bool,
+    /// Converts video to RGBA on the CPU instead of drawing it on the GPU.
+    #[arg(long)]
+    cpu_video: bool,
 }
 
 /// What one member publishes: its cubes, and where it put them.
@@ -269,7 +272,9 @@ fn main() -> Result<()> {
                     ..default()
                 }),
         )
-        .add_plugins(VideoTexturePlugin)
+        .add_plugins(VideoTexturePlugin {
+            cpu_only: args.cpu_video,
+        })
         .insert_resource(net)
         .insert_resource(editor)
         .init_resource::<Pointer>()

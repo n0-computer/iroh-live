@@ -44,14 +44,18 @@ workspace = true
 # alsa-sys clashes with cpal's.
 bevy = { version = "0.20.1", default-features = false, features = ["3d", "ui"] }
 moq-ext-sources = { path = "../moq-ext-sources", default-features = false }
+# The GPU renderer. The rev matches the root workspace's pin, and its wgpu is
+# the one Bevy renders with, so the renderer draws on Bevy's own device.
+moq-video = { git = "https://github.com/moq-dev/moq", rev = "8d8195bda", default-features = false, features = ["render"] }
 tracing = "0.1.44"
+wgpu = { version = "30", default-features = false }
 
 [dev-dependencies]
 # The editor example sends `Transform`s over the wire.
 bevy = { version = "0.20.1", default-features = false, features = ["serialize"] }
 clap = { version = "4.6.7", features = ["derive"] }
 iroh = { version = "1.4.1", default-features = false }
-iroh-live = { path = "../iroh-live", features = ["player", "publisher", "capture", "file", "playback", "rooms", "pipewire"] }
+iroh-live = { path = "../iroh-live", features = ["player", "publisher", "capture", "file", "playback", "rooms", "pipewire", "vaapi"] }
 n0-error = "1.0.3"
 n0-future = "0.3.2"
 n0-watcher = "1.0.1"
