@@ -50,6 +50,15 @@ jobs:
       # On their own, so the CLI's features do not turn `media` back on.
       - run: cargo check --locked -p iroh-live-relay
       - run: cargo check --locked -p iroh-live --all-targets --no-default-features --features rooms
+      # Each side alone, and with its device and backend features. `--lib`,
+      # since the dev-dependencies build both sides.
+      - run: cargo check --locked -p iroh-live --lib --no-default-features --features player
+      - run: cargo check --locked -p iroh-live --lib --no-default-features --features publisher
+      - run: cargo check --locked -p iroh-live --lib --no-default-features --features player,playback,render,record,vaapi,nvidia,v4l2,pipewire,pulseaudio
+      - run: cargo check --locked -p iroh-live --lib --no-default-features --features publisher,capture,file,rpicam,vaapi,nvidia,v4l2,pipewire,pulseaudio
+      # Backends without a side build no media module.
+      - run: cargo check --locked -p iroh-live --lib --no-default-features --features vaapi,nvidia,v4l2,pipewire,pulseaudio
+      - run: cargo check --locked -p iroh-live --example subscribe_test --no-default-features --features player
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace
       # The qlog test needs its feature, which the workspace run leaves off.

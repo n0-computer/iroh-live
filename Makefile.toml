@@ -56,8 +56,39 @@ workspace = false
 command = "cargo"
 args = ["check", "--locked", "-p", "iroh-live", "--all-targets", "--no-default-features", "--features", "rooms"]
 
+# Each side of the facade alone, and with its device and backend features.
+[tasks.check-facade-player]
+workspace = false
+command = "cargo"
+args = ["check", "--locked", "-p", "iroh-live", "--lib", "--no-default-features", "--features", "player"]
+
+[tasks.check-facade-publisher]
+workspace = false
+command = "cargo"
+args = ["check", "--locked", "-p", "iroh-live", "--lib", "--no-default-features", "--features", "publisher"]
+
+[tasks.check-facade-player-full]
+workspace = false
+command = "cargo"
+args = ["check", "--locked", "-p", "iroh-live", "--lib", "--no-default-features", "--features", "player,playback,render,record,vaapi,nvidia,v4l2,pipewire,pulseaudio"]
+
+[tasks.check-facade-publisher-full]
+workspace = false
+command = "cargo"
+args = ["check", "--locked", "-p", "iroh-live", "--lib", "--no-default-features", "--features", "publisher,capture,file,rpicam,vaapi,nvidia,v4l2,pipewire,pulseaudio"]
+
+[tasks.check-facade-backends]
+workspace = false
+command = "cargo"
+args = ["check", "--locked", "-p", "iroh-live", "--lib", "--no-default-features", "--features", "vaapi,nvidia,v4l2,pipewire,pulseaudio"]
+
+[tasks.check-facade-subscribe-example]
+workspace = false
+command = "cargo"
+args = ["check", "--locked", "-p", "iroh-live", "--example", "subscribe_test", "--no-default-features", "--features", "player"]
+
 [tasks.check]
-description = "cargo check: all features, no-default-features, default features, relay and facade without media"
+description = "cargo check: all features, no-default-features, default features, relay, facade without media and each facade side"
 workspace = false
 dependencies = [
     "check-all-features",
@@ -65,6 +96,12 @@ dependencies = [
     "check-default-features",
     "check-relay",
     "check-facade-no-media",
+    "check-facade-player",
+    "check-facade-publisher",
+    "check-facade-player-full",
+    "check-facade-publisher-full",
+    "check-facade-backends",
+    "check-facade-subscribe-example",
 ]
 
 [tasks.clippy-all-features]
@@ -88,7 +125,7 @@ workspace = false
 dependencies = ["clippy-all-features", "clippy-no-default", "clippy-default-features"]
 
 [tasks.check-all]
-description = "Full pre-commit check: cargo check (5 configs), clippy -D warnings (3 configs), fmt"
+description = "Full pre-commit check: cargo check (11 configs), clippy -D warnings (3 configs), fmt"
 workspace = false
 dependencies = [
     "check-all-features",
@@ -96,6 +133,12 @@ dependencies = [
     "check-default-features",
     "check-relay",
     "check-facade-no-media",
+    "check-facade-player",
+    "check-facade-publisher",
+    "check-facade-player-full",
+    "check-facade-publisher-full",
+    "check-facade-backends",
+    "check-facade-subscribe-example",
     "clippy-all-features",
     "clippy-no-default",
     "clippy-default-features",
