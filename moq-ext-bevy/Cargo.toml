@@ -42,17 +42,21 @@ workspace = true
 [dependencies]
 # Bevy 0.20 renders with wgpu 30, the same major as moq-video. No audio: Bevy's
 # alsa-sys clashes with cpal's.
-bevy = { version = "0.20.1", default-features = false, features = ["3d", "ui", "free_camera"] }
+bevy = { version = "0.20.1", default-features = false, features = ["3d", "ui"] }
 moq-ext-sources = { path = "../moq-ext-sources", default-features = false }
 tracing = "0.1.44"
 
 [dev-dependencies]
+# The editor example sends `Transform`s over the wire.
+bevy = { version = "0.20.1", default-features = false, features = ["serialize"] }
 clap = { version = "4.6.7", features = ["derive"] }
 iroh = { version = "1.4.1", default-features = false }
-iroh-live = { path = "../iroh-live", features = ["player", "publisher", "capture", "file", "rooms", "pipewire"] }
+iroh-live = { path = "../iroh-live", features = ["player", "publisher", "capture", "file", "playback", "rooms", "pipewire"] }
 n0-error = "1.0.3"
 n0-future = "0.3.2"
 n0-watcher = "1.0.1"
+# The desktop's file dialog; on Linux through the XDG portal, with no GTK.
+rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.54.1", features = ["full"] }
 

@@ -1,11 +1,12 @@
-//! A shared scene editor: everyone in an iroh-live room places and moves cubes.
+//! A shared scene editor: everyone in an iroh-live room places cubes and puts video on them.
 //!
 //! Each member publishes its own cubes as one latest-value JSON track, the
 //! `state` track of its `world` broadcast, and reads every other member's.
-//! Only the owner moves a cube; the others see it glide to where the owner
-//! put it. A video cube publishes its own broadcast, `cube-<id>`, which the
-//! others play onto their copy of the cube. The chat is the room chat that
-//! `irl room` speaks too.
+//! Only the owner moves a cube or picks its video; the others see it glide to
+//! where the owner put it. A video cube publishes a broadcast of its own,
+//! which every member plays onto its copy of the cube, the owner included,
+//! with the sound fading with the distance to the camera. The chat is the room
+//! chat that `irl room` speaks too.
 //!
 //! ```sh
 //! cargo run --manifest-path moq-ext-bevy/Cargo.toml --example editor
@@ -15,19 +16,20 @@
 
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
-    f32::consts::FRAC_PI_2,
+    f32::consts::{FRAC_PI_2, PI},
+    path::PathBuf,
     time::Duration,
 };
 
 use bevy::{
-    camera_controller::free_camera::{FreeCamera, FreeCameraPlugin, FreeCameraState},
-    gizmos::transform_gizmo::{
-        TransformGizmoCamera, TransformGizmoFocus, TransformGizmoMode, TransformGizmoPlugin,
-        TransformGizmoSettings, TransformGizmoState,
+    input::{
+        ButtonState,
+        keyboard::{Key, KeyboardInput},
+        mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
     },
-    input::{ButtonState, keyboard::Key, keyboard::KeyboardInput},
     log::LogPlugin,
-    picking::{events::PointerClick, mesh_picking::MeshPickingPlugin, pointer::PointerButton},
+    math::Affine2,
+    picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings},
     prelude::*,
 };
 use clap::Parser;
@@ -36,19 +38,22 @@ use iroh_live::{
     EndpointConfig, Node, ValueWriter,
     layout::LiveLayout,
     media::{
-        LocalBroadcast, PlayerConfig, SubscriptionExt, VideoEncoding, VideoRendition,
-        spec::{VideoOpenOptions, VideoSourceSpec},
+        AudioMode, FileEnd, LocalBroadcast, MediaFile, Player, PlayerConfig, RemoteBroadcast,
+        SubscriptionExt, VideoEncoding, VideoRendition,
+        audio::playback::Engine,
+        audio_encoding,
+        spec::{AudioSourceSpec, TestTone, VideoOpenOptions, VideoSourceSpec},
         video,
     },
     moq_net::{self, broadcast},
     rooms::{Room, RoomTicket, Rooms, RoomsLayout, chat::Chat},
 };
-use moq_ext_bevy::{VideoFrames, VideoTexture, VideoTexturePlugin};
+use moq_ext_bevy::{VideoTexture, VideoTexturePlugin};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
 use serde::{Deserialize, Serialize};
-use tokio::{runtime::Handle, sync::mpsc};
+use tokio::{runtime, sync::mpsc};
 use tracing::{debug, info, warn};
 
 /// The broadcast each member publishes its cubes on.
@@ -59,10 +64,23 @@ const STATE: &str = "state";
 const SYNC_INTERVAL: Duration = Duration::from_millis(50);
 /// How many network events wait for the frame loop.
 const EVENT_QUEUE: usize = 256;
-/// How long a reader waits before reading a member again.
+/// How long a reader waits before it reads a broadcast again.
 const RETRY: Duration = Duration::from_secs(2);
 /// How many chat lines the panel shows.
 const CHAT_LINES: usize = 10;
+/// How far the pointer travels, in pixels, before a press counts as a drag.
+const DRAG_THRESHOLD: f32 = 5.0;
+/// Up to this distance from the camera a cube plays at full volume.
+const FULL_VOLUME_DISTANCE: f32 = 4.0;
+/// How far the arrow keys turn a cube: 15 degrees.
+const TURN_STEP: f32 = PI / 12.0;
+/// The video sources an own cube switches to: the key, the label, the source spec.
+const SOURCES: [(KeyCode, &str, Option<&str>); 4] = [
+    (KeyCode::Digit1, "cam", Some("cam")),
+    (KeyCode::Digit2, "screen", Some("screen")),
+    (KeyCode::Digit3, "test", Some("test:bounce")),
+    (KeyCode::Digit4, "none", None),
+];
 
 #[derive(Debug, Parser)]
 #[command(about = "Edit a scene of cubes together, over an iroh-live room")]
@@ -72,77 +90,66 @@ struct Args {
     /// The name the others see.
     #[arg(long)]
     name: Option<String>,
-    /// The video a cube placed with `V` shows, such as `test:bounce`, `cam` or `file:clip.mp4`.
-    #[arg(long, default_value = "test:bounce")]
-    video: String,
-    /// Places this many cubes at the start.
-    #[arg(long, default_value_t = 0)]
-    cubes: u32,
-    /// Places a video cube at the start.
+    /// Places a cube with the test pattern at the start.
     #[arg(long)]
     video_cube: bool,
 }
 
-/// What one member publishes: its cubes.
+/// What one member publishes: its cubes, and where it put them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct MemberState {
-    cubes: Vec<CubeState>,
+    cubes: Vec<(Cube, Transform)>,
 }
 
-/// One cube, as its owner placed it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct CubeState {
+/// A cube, and what its owner publishes about it besides the transform.
+#[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Cube {
+    /// The member who owns it, `None` for this member. A reader knows whose
+    /// state it reads, so it is not sent.
+    #[serde(skip)]
+    owner: Option<EndpointId>,
     id: u32,
-    translation: [f32; 3],
-    rotation: [f32; 4],
-    scale: [f32; 3],
     color: [f32; 3],
-    /// The source spec of a video cube, published as `cube-<id>`.
-    video: Option<String>,
+    video: Option<CubeVideo>,
+    /// Quarter turns of the picture on the faces.
+    turns: u8,
 }
 
-impl CubeState {
-    fn transform(&self) -> Transform {
-        Transform {
-            translation: Vec3::from_array(self.translation),
-            rotation: Quat::from_array(self.rotation).normalize(),
-            scale: Vec3::from_array(self.scale),
-        }
-    }
-}
-
-/// The name of the broadcast that carries cube `id`'s video.
-fn video_broadcast(id: u32) -> String {
-    format!("cube-{id}")
+/// The video on a cube: its source spec, and the broadcast that carries it.
+///
+/// Each switch of source publishes under a new name, so a reader never takes
+/// the old video for the new one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct CubeVideo {
+    source: String,
+    broadcast: String,
 }
 
 /// What the network tasks hand to the frame loop.
 enum NetEvent {
     /// The other members, by id, with the names to show.
     Members(BTreeMap<EndpointId, String>),
-    /// A member's newest cubes.
+    /// A member's newest cubes, or none once it left.
     State(EndpointId, MemberState),
-    /// A member left the room, with all its cubes.
-    Left(EndpointId),
-    /// A video for `entity`, with what must live as long as it plays.
-    Video {
-        entity: Entity,
-        frames: VideoFrames,
-        publication: Option<VideoPublication>,
-    },
+    /// A player for `entity` of the named broadcast, and for an own cube the
+    /// broadcast itself.
+    Video(Entity, String, Box<Player>, Option<LocalBroadcast>),
+    /// The file picked for own cube `entity`.
+    Picked(Entity, PathBuf),
 }
 
 /// The connection to the room, and the channels to the network tasks.
 #[derive(Resource)]
 struct Net {
-    tokio: Handle,
+    tokio: runtime::Handle,
     room: Room,
     chat: Chat,
+    /// The speaker every cube plays its sound on, if one opened.
+    speaker: Option<Engine>,
     state: ValueWriter<MemberState>,
     events: mpsc::Receiver<NetEvent>,
     events_tx: mpsc::Sender<NetEvent>,
     ticket: String,
-    /// The broadcasts this member publishes, held open while the app runs.
     _world: broadcast::Producer,
     _follow: AbortOnDropHandle<()>,
 }
@@ -151,53 +158,80 @@ struct Net {
 #[derive(Resource, Default)]
 struct Editor {
     next_id: u32,
+    /// Numbers the video broadcasts, which get a new name with each switch.
+    next_broadcast: u32,
+    /// The mesh every cube shares.
+    mesh: Handle<Mesh>,
     members: BTreeMap<EndpointId, String>,
     remote: HashMap<(EndpointId, u32), Entity>,
     chat_log: VecDeque<String>,
     /// The chat line being typed, while the chat has the keyboard.
     typing: Option<String>,
     sync: Timer,
-    video_spec: String,
-    /// The cubes to place at the start: plain ones, and whether a video one.
-    initial: (u32, bool),
+    /// Whether to place a video cube at the start.
+    video_cube: bool,
 }
 
-/// A cube this member owns and can move.
-#[derive(Component)]
-struct OwnCube {
-    id: u32,
-    color: [f32; 3],
-    video: Option<String>,
-}
-
-/// A cube another member owns, and where it is heading.
-#[derive(Component)]
-struct RemoteCube {
-    owner: EndpointId,
-    target: Transform,
-}
-
-/// A local video broadcast, which stops when the cube is gone.
-struct VideoPublication {
-    tokio: Handle,
-    room: Room,
-    name: String,
-    _broadcast: LocalBroadcast,
-}
-
-impl Drop for VideoPublication {
-    fn drop(&mut self) {
-        // Dropped on a Bevy thread, outside the runtime.
-        let _guard = self.tokio.enter();
-        let _ = self.room.unpublish(&self.name);
+impl Editor {
+    /// Returns the name member `id` goes by.
+    fn name(&self, id: EndpointId) -> String {
+        let name = self.members.get(&id).cloned();
+        name.unwrap_or_else(|| id.fmt_short().to_string())
     }
 }
 
-/// What keeps a cube's video playing or published: the task, the publication.
+/// What the left mouse button is doing.
+#[derive(Resource, Default)]
+struct Pointer {
+    /// Where the button went down, and the cube it went down on.
+    pressed_at: Option<Vec2>,
+    hit: Option<Entity>,
+    /// Whether the pointer moved past [`DRAG_THRESHOLD`] since.
+    dragging: bool,
+    /// The own cube being moved, and its offset from the point under the pointer.
+    moving: Option<(Entity, Vec3)>,
+}
+
+/// Where a remote cube is heading.
+#[derive(Component)]
+struct Glide(Transform);
+
+/// Marks the selected cube.
+#[derive(Component)]
+struct Selected;
+
+/// Marks a cube this member muted. Not synced.
+#[derive(Component)]
+struct Muted;
+
+/// What keeps a cube's video running: the task, the player, and for an own
+/// cube the broadcast, which ends when it drops.
 #[derive(Component)]
 struct VideoHold {
-    _task: Option<AbortOnDropHandle<()>>,
-    _publication: Option<VideoPublication>,
+    /// The broadcast held, to tell a stale player from the current one.
+    broadcast: String,
+    player: Option<Player>,
+    /// The volume last set on the player.
+    volume: f32,
+    _published: Option<LocalBroadcast>,
+    _task: AbortOnDropHandle<()>,
+}
+
+/// An orbit camera, which looks at `focus` from `distance` away.
+#[derive(Component)]
+struct Orbit {
+    focus: Vec3,
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+}
+
+impl Orbit {
+    fn transform(&self) -> Transform {
+        let rotation = Quat::from_euler(EulerRot::YXZ, self.yaw, self.pitch, 0.0);
+        Transform::from_translation(self.focus + rotation * Vec3::Z * self.distance)
+            .with_rotation(rotation)
+    }
 }
 
 /// The text panel.
@@ -213,8 +247,7 @@ fn main() -> Result<()> {
     let editor = Editor {
         next_id: 1,
         sync: Timer::new(SYNC_INTERVAL, TimerMode::Repeating),
-        video_spec: args.video.clone(),
-        initial: (args.cubes, args.video_cube),
+        video_cube: args.video_cube,
         ..Default::default()
     };
 
@@ -238,20 +271,24 @@ fn main() -> Result<()> {
                     ..default()
                 }),
         )
-        .add_plugins((
-            FreeCameraPlugin,
-            MeshPickingPlugin,
-            TransformGizmoPlugin,
-            VideoTexturePlugin,
-        ))
+        .add_plugins(VideoTexturePlugin)
         .insert_resource(net)
         .insert_resource(editor)
+        .init_resource::<Pointer>()
         .add_systems(Startup, setup)
+        .add_systems(Update, (keyboard, mouse, network).chain())
         .add_systems(
             Update,
-            (keyboard, network, glide, publish_state, draw_outlines, hud),
+            (
+                glide,
+                publish_state,
+                apply_looks,
+                set_volumes,
+                draw_outlines,
+                hud,
+            )
+                .after(network),
         )
-        .add_observer(select_on_click)
         .run();
 
     rt.block_on(async {
@@ -266,8 +303,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Binds a node, joins the room and publishes this member's world and chat.
-async fn connect(args: &Args, tokio: Handle) -> Result<(Net, Router)> {
+/// Binds a node, joins the room, publishes this member's world and opens the speaker.
+async fn connect(args: &Args, tokio: runtime::Handle) -> Result<(Net, Router)> {
     let endpoint = EndpointConfig::from_env()?.bind().await?;
     let node = Node::new(
         endpoint.clone(),
@@ -288,6 +325,10 @@ async fn connect(args: &Args, tokio: Handle) -> Result<(Net, Router)> {
         .update(&MemberState::default())
         .std_context("publishing the cubes")?;
 
+    let speaker = Engine::open(Default::default())
+        .await
+        .inspect_err(|err| warn!(error = %err, "no audio output, the cubes play silently"))
+        .ok();
     let chat = Chat::new(&room)?;
     let (events_tx, events) = mpsc::channel(EVENT_QUEUE);
     let follow = tokio::spawn(follow(room.clone(), events_tx.clone()));
@@ -297,6 +338,7 @@ async fn connect(args: &Args, tokio: Handle) -> Result<(Net, Router)> {
         ticket: room.ticket().to_string(),
         room,
         chat,
+        speaker,
         state,
         events,
         events_tx,
@@ -319,50 +361,51 @@ async fn follow(room: Room, tx: mpsc::Sender<NetEvent>) {
                 (*id, name.unwrap_or_else(|| id.fmt_short().to_string()))
             })
             .collect();
-        if tx.send(NetEvent::Members(names)).await.is_err() {
-            return;
-        }
+        tx.send(NetEvent::Members(names)).await.ok();
+        let has_world = |id: &EndpointId| {
+            members
+                .get(id)
+                .is_some_and(|m| m.broadcasts.contains(WORLD))
+        };
         let gone: Vec<_> = readers
             .keys()
-            .filter(|id| {
-                !members
-                    .get(*id)
-                    .is_some_and(|m| m.broadcasts.contains(WORLD))
-            })
+            .filter(|id| !has_world(id))
             .copied()
             .collect();
         for id in gone {
             readers.remove(&id);
-            if tx.send(NetEvent::Left(id)).await.is_err() {
-                return;
-            }
+            tx.send(NetEvent::State(id, MemberState::default()))
+                .await
+                .ok();
         }
-        for (id, member) in &members {
-            if member.broadcasts.contains(WORLD) && !readers.contains_key(id) {
-                let reader = tokio::spawn(read_world(room.clone(), *id, tx.clone()));
-                readers.insert(*id, AbortOnDropHandle::new(reader));
-            }
+        for id in members.keys().filter(|id| has_world(id)) {
+            readers.entry(*id).or_insert_with(|| {
+                let (room, peer, tx) = (room.clone(), *id, tx.clone());
+                let task = retry(tx, move |tx| read_world(room.clone(), peer, tx));
+                AbortOnDropHandle::new(tokio::spawn(task))
+            });
         }
-        if state.updated().await.is_err() {
+        if tx.is_closed() || state.updated().await.is_err() {
             return;
         }
     }
 }
 
-/// Reads member `peer`'s cubes into `tx`, again after each failure.
-async fn read_world(room: Room, peer: EndpointId, tx: mpsc::Sender<NetEvent>) {
-    loop {
-        if let Err(err) = read_world_once(&room, peer, &tx).await {
-            debug!(peer = %peer.fmt_short(), error = %err, "world read ended");
-        }
-        if tx.is_closed() {
-            return;
+/// Runs `attempt` again each time it ends, until the frame loop is gone.
+async fn retry<F>(tx: mpsc::Sender<NetEvent>, mut attempt: impl FnMut(mpsc::Sender<NetEvent>) -> F)
+where
+    F: Future<Output = Result<()>>,
+{
+    while !tx.is_closed() {
+        if let Err(err) = attempt(tx.clone()).await {
+            debug!(error = %err, "a read ended");
         }
         tokio::time::sleep(RETRY).await;
     }
 }
 
-async fn read_world_once(room: &Room, peer: EndpointId, tx: &mpsc::Sender<NetEvent>) -> Result<()> {
+/// Reads member `peer`'s cubes into `tx`.
+async fn read_world(room: Room, peer: EndpointId, tx: mpsc::Sender<NetEvent>) -> Result<()> {
     let subscription = room.subscribe(peer, WORLD).await?;
     let mut reader = subscription.value_track::<MemberState>(STATE)?;
     while let Some(state) = reader.latest().await.std_context("reading the cubes")? {
@@ -373,75 +416,78 @@ async fn read_world_once(room: &Room, peer: EndpointId, tx: &mpsc::Sender<NetEve
     Ok(())
 }
 
-/// Plays member `peer`'s video broadcast `name` onto `entity`, again after each end.
+/// Returns how every cube plays: with its sound on the speaker, if there is one.
+fn player_config(speaker: Option<Engine>) -> PlayerConfig {
+    PlayerConfig::default().with_audio(speaker.map_or(AudioMode::Off, AudioMode::Play))
+}
+
+/// Plays member `peer`'s video broadcast `name` onto `entity`, until it closes.
 async fn play_video(
     room: Room,
+    speaker: Option<Engine>,
     peer: EndpointId,
     name: String,
     entity: Entity,
     tx: mpsc::Sender<NetEvent>,
-) {
-    loop {
-        let played = async {
-            let subscription = room.subscribe(peer, &name).await?;
-            let broadcast = subscription.remote_broadcast();
-            let player = broadcast.play(PlayerConfig::default())?;
-            let video = NetEvent::Video {
-                entity,
-                frames: player.video_frames(),
-                publication: None,
-            };
-            if tx.send(video).await.is_ok() {
-                // The player decodes for as long as it lives.
-                subscription.broadcast().closed().await;
-            }
-            n0_error::Ok(())
-        };
-        if let Err(err) = played.await {
-            debug!(peer = %peer.fmt_short(), name, error = %err, "video ended");
-        }
-        if tx.is_closed() {
-            return;
-        }
-        tokio::time::sleep(RETRY).await;
+) -> Result<()> {
+    let subscription = room.subscribe(peer, &name).await?;
+    let player = subscription
+        .remote_broadcast()
+        .play(player_config(speaker))?;
+    let video = NetEvent::Video(entity, name, Box::new(player), None);
+    if tx.send(video).await.is_ok() {
+        subscription.broadcast().closed().await;
     }
+    Ok(())
 }
 
-/// Opens video source `spec` and publishes it into the room as `name`.
+/// Opens the source `video` names, publishes it into the room, and plays it back.
+///
+/// The owner plays its own broadcast, so it sees and hears what the others
+/// do. A file goes out as it is stored, sound included. The test pattern beeps
+/// once a second, which makes the volume easy to follow.
 async fn publish_video(
     room: Room,
-    spec: String,
-    name: String,
+    speaker: Option<Engine>,
+    video: CubeVideo,
     entity: Entity,
     tx: mpsc::Sender<NetEvent>,
-) {
-    let published = async {
-        let spec: VideoSourceSpec = spec.parse().std_context("parsing the video spec")?;
-        let options = VideoOpenOptions::default().with_size(video::Size::new(640, 360));
-        let source = spec
-            .open(&options)
-            .await?
-            .std_context("the spec names no video")?;
-        let frames = source.frames();
-        let broadcast: LocalBroadcast = room.publish(&name)?;
+) -> Result<()> {
+    let spec: VideoSourceSpec = video.source.parse().std_context("parsing the video spec")?;
+    let broadcast: LocalBroadcast = room.publish(&video.broadcast)?;
+    if let VideoSourceSpec::File { path, .. } = &spec {
+        let file = MediaFile::open(path).await?.with_end(FileEnd::Restart);
+        broadcast.set_encoded_file(&file)?;
+    } else {
+        let options = VideoOpenOptions::default()
+            .with_size(video::Size::new(640, 360))
+            .with_portal_grants("iroh-live-editor");
+        let source = spec.open(&options).await?.std_context("no video")?;
         broadcast.set_video(source, VideoEncoding::single(VideoRendition::p360()))?;
-        let publication = VideoPublication {
-            tokio: Handle::current(),
-            room: room.clone(),
-            name: name.clone(),
-            _broadcast: broadcast,
-        };
-        tx.send(NetEvent::Video {
-            entity,
-            frames,
-            publication: Some(publication),
-        })
-        .await
-        .ok();
-        n0_error::Ok(())
-    };
-    if let Err(err) = published.await {
-        warn!(spec, error = %err, "could not publish the video");
+        if matches!(spec, VideoSourceSpec::Test(_)) {
+            let beeps = AudioSourceSpec::Test(TestTone::Beeps).open().await?;
+            let beeps = beeps.std_context("no test tone")?;
+            broadcast.set_audio(beeps, audio_encoding::music())?;
+        }
+    }
+    let player =
+        RemoteBroadcast::from_consumer(broadcast.consume()).play(player_config(speaker))?;
+    let player = Box::new(player);
+    let video = NetEvent::Video(entity, video.broadcast, player, Some(broadcast));
+    tx.send(video).await.ok();
+    Ok(())
+}
+
+/// Asks for an MP4 file in the desktop's file dialog, for own cube `entity`.
+async fn pick_file(entity: Entity, tx: mpsc::Sender<NetEvent>) {
+    let file = rfd::AsyncFileDialog::new()
+        .set_title("A video for the cube")
+        .add_filter("MP4 video", &["mp4", "m4v", "mov"])
+        .pick_file()
+        .await;
+    if let Some(file) = file {
+        let path = file.path().to_path_buf();
+        tx.send(NetEvent::Picked(entity, path)).await.ok();
     }
 }
 
@@ -452,29 +498,18 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let (cubes, video_cube) = editor.initial;
-    let row = (0..cubes)
-        .map(|_| None)
-        .chain(video_cube.then(|| Some(editor.video_spec.clone())));
-    for (i, video) in row.enumerate() {
-        let transform = Transform::from_xyz(i as f32 * 1.5 - 2.0, 0.5, 0.0);
-        spawn_own(
-            &mut commands,
-            &mut editor,
-            &net,
-            transform,
-            video,
-            &mut meshes,
-            &mut materials,
-        );
+    editor.mesh = meshes.add(Cuboid::default());
+    if editor.video_cube {
+        let (at, test) = (Transform::from_xyz(0.0, 0.5, 0.0), SOURCES[2].2);
+        spawn_own(&mut commands, &mut editor, &net, at, test, &mut materials);
     }
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(6.0, 5.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
-        FreeCamera::default(),
-        // The gizmo renders through a camera of its own, so it needs to be told.
-        TransformGizmoCamera,
-    ));
+    let orbit = Orbit {
+        focus: Vec3::ZERO,
+        yaw: 0.5,
+        pitch: -0.45,
+        distance: 13.0,
+    };
+    commands.spawn((Camera3d::default(), orbit.transform(), orbit));
     commands.spawn((
         DirectionalLight {
             shadow_maps_enabled: true,
@@ -486,7 +521,6 @@ fn setup(
         Mesh3d(meshes.add(Plane3d::default().mesh().size(40.0, 40.0))),
         MeshMaterial3d(materials.add(Color::srgb(0.18, 0.19, 0.21))),
         Transform::from_xyz(0.0, -0.01, 0.0),
-        Pickable::IGNORE,
     ));
     commands.spawn((
         Hud,
@@ -508,13 +542,10 @@ fn keyboard(
     mut keys: MessageReader<KeyboardInput>,
     mut editor: ResMut<Editor>,
     net: Res<Net>,
-    mut settings: ResMut<TransformGizmoSettings>,
-    camera: Single<(&Transform, &mut FreeCameraState), With<Camera3d>>,
-    selected: Query<Entity, With<TransformGizmoFocus>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    orbit: Single<&Orbit>,
+    mut selected: Query<(Entity, &mut Cube, &mut Transform, Has<Muted>), With<Selected>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let (camera, mut camera_state) = camera.into_inner();
     for key in keys.read() {
         if key.state != ButtonState::Pressed {
             continue;
@@ -543,51 +574,163 @@ fn keyboard(
         if key.repeat {
             continue;
         }
+        let previous = selected.iter().map(|s| s.0).collect::<Vec<_>>();
         match key.key_code {
             KeyCode::Enter => editor.typing = Some(String::new()),
-            KeyCode::KeyN | KeyCode::KeyV => {
-                let video = (key.key_code == KeyCode::KeyV).then(|| editor.video_spec.clone());
-                let at = camera.translation + camera.forward() * 5.0;
-                let transform = Transform::from_translation(at.with_y(at.y.max(0.5)));
-                let entity = spawn_own(
-                    &mut commands,
-                    &mut editor,
-                    &net,
-                    transform,
-                    video,
-                    &mut meshes,
-                    &mut materials,
-                );
-                select(&mut commands, &selected, entity);
+            KeyCode::KeyN => {
+                let at = Transform::from_translation(orbit.focus.with_y(0.5));
+                let entity = spawn_own(&mut commands, &mut editor, &net, at, None, &mut materials);
+                select(&mut commands, previous, Some(entity));
             }
-            KeyCode::Delete | KeyCode::Backspace | KeyCode::KeyX => {
-                for entity in &selected {
-                    commands.entity(entity).despawn();
+            KeyCode::Escape => select(&mut commands, previous, None),
+            code => {
+                let Ok((entity, mut cube, mut transform, muted)) = selected.single_mut() else {
+                    continue;
+                };
+                if code == KeyCode::KeyM {
+                    if muted {
+                        commands.entity(entity).remove::<Muted>();
+                    } else {
+                        commands.entity(entity).insert(Muted);
+                    }
+                }
+                // The rest changes the cube, which only its owner may.
+                if cube.owner.is_some() {
+                    continue;
+                }
+                if let Some(&(_, _, source)) = SOURCES.iter().find(|s| s.0 == code) {
+                    let source = source.map(str::to_string);
+                    switch_video(&mut commands, &mut editor, &net, entity, &mut cube, source);
+                }
+                match code {
+                    KeyCode::KeyF => {
+                        net.tokio.spawn(pick_file(entity, net.events_tx.clone()));
+                    }
+                    KeyCode::KeyX => cube.turns = (cube.turns + 1) % 4,
+                    KeyCode::ArrowUp => transform.translation.y += 0.25,
+                    KeyCode::ArrowDown => transform.translation.y -= 0.25,
+                    KeyCode::ArrowLeft => transform.rotate_y(TURN_STEP),
+                    KeyCode::ArrowRight => transform.rotate_y(-TURN_STEP),
+                    KeyCode::Equal | KeyCode::NumpadAdd => transform.scale *= 1.25,
+                    KeyCode::Minus | KeyCode::NumpadSubtract => transform.scale /= 1.25,
+                    KeyCode::Delete | KeyCode::Backspace => commands.entity(entity).despawn(),
+                    _ => {}
                 }
             }
-            KeyCode::Escape => {
-                for entity in &selected {
-                    commands.entity(entity).remove::<TransformGizmoFocus>();
-                }
-            }
-            KeyCode::Digit1 => settings.mode = TransformGizmoMode::Translate,
-            KeyCode::Digit2 => settings.mode = TransformGizmoMode::Rotate,
-            KeyCode::Digit3 => settings.mode = TransformGizmoMode::Scale,
-            _ => {}
         }
     }
-    // The camera's WASD would steal the typed letters.
-    camera_state.enabled = editor.typing.is_none();
 }
 
-/// Spawns a cube this member owns, and starts its video if it has one.
+/// The mouse: orbits, pans and zooms the camera, picks a cube, moves an own cube.
+///
+/// A left press that stays within [`DRAG_THRESHOLD`] is a click, and selects
+/// the cube under it or nothing. A left drag orbits, unless it started on an
+/// own cube, which then follows the pointer over the ground. The right or
+/// middle button pans, and the wheel zooms.
+#[allow(clippy::too_many_arguments, reason = "a Bevy system")]
+fn mouse(
+    mut commands: Commands,
+    buttons: Res<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
+    scroll: Res<AccumulatedMouseScroll>,
+    mut pointer: ResMut<Pointer>,
+    window: Single<&Window>,
+    camera: Single<(&Camera, &GlobalTransform, &mut Transform, &mut Orbit)>,
+    mut ray_cast: MeshRayCast,
+    mut cubes: Query<(&Cube, &mut Transform), Without<Orbit>>,
+    selected: Query<Entity, With<Selected>>,
+) {
+    let (camera, view, mut camera_transform, mut orbit) = camera.into_inner();
+    let cursor = window.cursor_position();
+    let ray = cursor.and_then(|at| camera.viewport_to_world(view, at).ok());
+    let delta = motion.delta;
+
+    if buttons.just_pressed(MouseButton::Left) {
+        let is_cube = |entity: Entity| cubes.contains(entity);
+        let settings = MeshRayCastSettings::default().with_filter(&is_cube);
+        let hit = ray.and_then(|ray| ray_cast.cast_ray(ray, &settings).first().map(|h| h.0));
+        *pointer = Pointer {
+            pressed_at: cursor,
+            hit,
+            ..default()
+        };
+        if let Some(entity) = hit
+            && let Ok((cube, transform)) = cubes.get(entity)
+            && cube.owner.is_none()
+            && let Some(grab) = ray.and_then(|ray| ground_point(ray, transform.translation.y))
+        {
+            select(&mut commands, selected, Some(entity));
+            pointer.moving = Some((entity, (transform.translation - grab).with_y(0.0)));
+        }
+    }
+    if buttons.pressed(MouseButton::Left) {
+        if let (Some(from), Some(at)) = (pointer.pressed_at, cursor) {
+            pointer.dragging |= from.distance(at) > DRAG_THRESHOLD;
+        }
+        match pointer.moving {
+            _ if !pointer.dragging => {}
+            Some((entity, offset)) => {
+                if let Ok((_, mut transform)) = cubes.get_mut(entity)
+                    && let Some(at) = ray.and_then(|ray| ground_point(ray, transform.translation.y))
+                {
+                    let y = transform.translation.y;
+                    transform.translation = (at + offset).with_y(y);
+                }
+            }
+            None => {
+                orbit.yaw -= delta.x * 0.005;
+                orbit.pitch = (orbit.pitch - delta.y * 0.005).clamp(-1.5, -0.02);
+            }
+        }
+    }
+    if buttons.just_released(MouseButton::Left) {
+        if !pointer.dragging && pointer.moving.is_none() {
+            select(&mut commands, selected, pointer.hit);
+        }
+        *pointer = Pointer::default();
+    }
+    if buttons.any_pressed([MouseButton::Right, MouseButton::Middle]) {
+        // Pans over the ground, so the scene follows the pointer.
+        let turn = Quat::from_rotation_y(orbit.yaw);
+        let pan = turn * Vec3::new(-delta.x, 0.0, -delta.y);
+        let pan = pan * orbit.distance * 0.0015;
+        orbit.focus += pan;
+    }
+    let lines = match scroll.unit {
+        MouseScrollUnit::Line => scroll.delta.y,
+        MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
+    };
+    orbit.distance = (orbit.distance * 0.9_f32.powf(lines)).clamp(2.0, 80.0);
+    *camera_transform = orbit.transform();
+}
+
+/// Returns where `ray` meets the horizontal plane at height `y`.
+fn ground_point(ray: Ray3d, y: f32) -> Option<Vec3> {
+    let distance = ray.intersect_plane(Vec3::Y * y, InfinitePlane3d::new(Vec3::Y))?;
+    Some(ray.get_point(distance))
+}
+
+/// Moves the selection from `previous` to `entity`, or clears it.
+fn select(
+    commands: &mut Commands,
+    previous: impl IntoIterator<Item = Entity>,
+    entity: Option<Entity>,
+) {
+    for previous in previous {
+        commands.entity(previous).remove::<Selected>();
+    }
+    if let Some(entity) = entity {
+        commands.entity(entity).insert(Selected);
+    }
+}
+
+/// Spawns a cube this member owns, showing `source` if given.
 fn spawn_own(
     commands: &mut Commands,
     editor: &mut Editor,
     net: &Net,
     transform: Transform,
-    video: Option<String>,
-    meshes: &mut Assets<Mesh>,
+    source: Option<&str>,
     materials: &mut Assets<StandardMaterial>,
 ) -> Entity {
     let id = editor.next_id;
@@ -595,71 +738,70 @@ fn spawn_own(
     // Golden-angle hues keep neighbouring cubes apart.
     let color = Color::hsl((id as f32 * 137.5) % 360.0, 0.6, 0.55).to_srgba();
     let color = [color.red, color.green, color.blue];
-    let material = cube_material(color, video.is_some());
-    let entity = commands.spawn((
-        Mesh3d(meshes.add(Cuboid::default())),
-        MeshMaterial3d(materials.add(material)),
-        transform,
-        OwnCube {
-            id,
-            color,
-            video: video.clone(),
-        },
-    ));
-    if let Some(spec) = video {
-        let task = publish_video(
-            net.room.clone(),
-            spec,
-            video_broadcast(id),
-            entity.id(),
-            net.events_tx.clone(),
-        );
-        // The task ends once the video is published, and hands the
-        // publication to the cube.
-        net.tokio.spawn(task);
-    }
-    entity.id()
+    let mut cube = Cube {
+        owner: None,
+        id,
+        color,
+        video: None,
+        turns: 0,
+    };
+    let material = MeshMaterial3d(materials.add(StandardMaterial::default()));
+    let entity = commands
+        .spawn((Mesh3d(editor.mesh.clone()), material, transform))
+        .id();
+    let source = source.map(Into::into);
+    switch_video(commands, editor, net, entity, &mut cube, source);
+    commands.entity(entity).insert(cube);
+    entity
 }
 
-/// A cube's material: its color, or white and unlit for a video to show.
-fn cube_material(color: [f32; 3], video: bool) -> StandardMaterial {
-    if video {
-        StandardMaterial {
-            base_color: Color::WHITE,
-            unlit: true,
-            ..default()
-        }
-    } else {
-        Color::srgb(color[0], color[1], color[2]).into()
-    }
-}
-
-/// Moves the transform gizmo to `entity`.
-fn select(
+/// Switches own cube `cube` to `source`, published under a fresh broadcast name.
+fn switch_video(
     commands: &mut Commands,
-    selected: &Query<Entity, With<TransformGizmoFocus>>,
+    editor: &mut Editor,
+    net: &Net,
     entity: Entity,
+    cube: &mut Cube,
+    source: Option<String>,
 ) {
-    for previous in selected {
-        commands.entity(previous).remove::<TransformGizmoFocus>();
-    }
-    commands.entity(entity).insert(TransformGizmoFocus);
+    cube.video = source.map(|source| {
+        editor.next_broadcast += 1;
+        let broadcast = format!("cube-{}-{}", cube.id, editor.next_broadcast);
+        CubeVideo { source, broadcast }
+    });
+    start_video(commands, net, entity, cube);
 }
 
-/// Selects an own cube when it is clicked, unless the click was on the gizmo.
-fn select_on_click(
-    click: On<PointerClick>,
-    mut commands: Commands,
-    own: Query<(), With<OwnCube>>,
-    selected: Query<Entity, With<TransformGizmoFocus>>,
-    gizmo: Res<TransformGizmoState>,
-) {
-    if click.button != PointerButton::Primary || gizmo.active || gizmo.hovered_axis.is_some() {
+/// Replaces what `entity` plays with the video `cube` names.
+///
+/// An own cube publishes the video, a remote one subscribes to it.
+fn start_video(commands: &mut Commands, net: &Net, entity: Entity, cube: &Cube) {
+    let mut target = commands.entity(entity);
+    target.remove::<(VideoHold, VideoTexture)>();
+    let Some(video) = cube.video.clone() else {
         return;
-    }
-    if own.contains(click.entity) {
-        select(&mut commands, &selected, click.entity);
-    }
+    };
+    let (room, speaker, tx) = (net.room.clone(), net.speaker.clone(), net.events_tx.clone());
+    let broadcast = video.broadcast.clone();
+    let task = match cube.owner {
+        None => net.tokio.spawn(async move {
+            let source = video.source.clone();
+            if let Err(err) = publish_video(room, speaker, video, entity, tx).await {
+                warn!(source, error = %err, "could not publish the video");
+            }
+        }),
+        Some(peer) => net.tokio.spawn(retry(tx, move |tx| {
+            let name = video.broadcast.clone();
+            play_video(room.clone(), speaker.clone(), peer, name, entity, tx)
+        })),
+    };
+    target.insert(VideoHold {
+        broadcast,
+        player: None,
+        volume: -1.0,
+        _published: None,
+        _task: AbortOnDropHandle::new(task),
+    });
 }
 
 fn push_chat(editor: &mut Editor, line: String) {
@@ -669,100 +811,78 @@ fn push_chat(editor: &mut Editor, line: String) {
     }
 }
 
-/// Applies what the network tasks sent: members, remote cubes, videos, chat.
+/// Applies what the network tasks sent: members, remote cubes, videos, files, chat.
 fn network(
     mut commands: Commands,
     mut net: ResMut<Net>,
     mut editor: ResMut<Editor>,
-    mut remote: Query<&mut RemoteCube>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut cubes: Query<&mut Cube>,
+    mut holds: Query<&mut VideoHold>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let mesh = editor.mesh.clone();
     while let Some(message) = net.chat.try_recv() {
-        let name = editor
-            .members
-            .get(&message.from)
-            .cloned()
-            .unwrap_or_else(|| message.from.fmt_short().to_string());
-        push_chat(&mut editor, format!("{name}: {}", message.text));
+        let line = format!("{}: {}", editor.name(message.from), message.text);
+        push_chat(&mut editor, line);
     }
     while let Ok(event) = net.events.try_recv() {
         match event {
             NetEvent::Members(members) => editor.members = members,
-            NetEvent::Left(owner) => {
-                editor.remote.retain(|(from, _), entity| {
-                    if *from == owner {
-                        commands.entity(*entity).despawn();
-                    }
-                    *from != owner
-                });
-            }
             NetEvent::State(owner, state) => {
                 // Cubes the owner no longer lists are gone.
                 editor.remote.retain(|(from, id), entity| {
-                    let keep = *from != owner || state.cubes.iter().any(|cube| cube.id == *id);
+                    let keep = *from != owner || state.cubes.iter().any(|(cube, _)| cube.id == *id);
                     if !keep {
                         commands.entity(*entity).despawn();
                     }
                     keep
                 });
-                for cube in &state.cubes {
+                for (cube, transform) in state.cubes {
+                    let cube = Cube {
+                        owner: Some(owner),
+                        ..cube
+                    };
                     let key = (owner, cube.id);
-                    if let Some(&entity) = editor.remote.get(&key) {
-                        match remote.get_mut(entity) {
-                            Ok(mut existing) => existing.target = cube.transform(),
-                            // Spawned this frame, so not in the query yet.
-                            Err(_) => {
-                                commands.entity(entity).insert(RemoteCube {
-                                    owner,
-                                    target: cube.transform(),
-                                });
-                            }
-                        }
-                        continue;
+                    let previous = editor.remote.get(&key).and_then(|e| cubes.get(*e).ok());
+                    let previous = previous.map(|cube| (*cube).clone());
+                    let entity = *editor.remote.entry(key).or_insert_with(|| {
+                        info!(owner = %owner.fmt_short(), id = cube.id, "a remote cube appeared");
+                        let material = MeshMaterial3d(materials.add(StandardMaterial::default()));
+                        commands
+                            .spawn((Mesh3d(mesh.clone()), material, transform))
+                            .id()
+                    });
+                    if previous.as_ref().map(|p| &p.video) != Some(&cube.video) {
+                        start_video(&mut commands, &net, entity, &cube);
                     }
-                    info!(owner = %owner.fmt_short(), id = cube.id, video = ?cube.video, "a remote cube appeared");
-                    let material = cube_material(cube.color, cube.video.is_some());
-                    let mut entity = commands.spawn((
-                        Mesh3d(meshes.add(Cuboid::default())),
-                        MeshMaterial3d(materials.add(material)),
-                        cube.transform(),
-                        RemoteCube {
-                            owner,
-                            target: cube.transform(),
-                        },
-                    ));
-                    if cube.video.is_some() {
-                        let task = play_video(
-                            net.room.clone(),
-                            owner,
-                            video_broadcast(cube.id),
-                            entity.id(),
-                            net.events_tx.clone(),
-                        );
-                        entity.insert(VideoHold {
-                            _task: Some(AbortOnDropHandle::new(net.tokio.spawn(task))),
-                            _publication: None,
-                        });
+                    if previous.as_ref() != Some(&cube) {
+                        commands.entity(entity).insert(cube);
                     }
-                    editor.remote.insert(key, entity.id());
+                    commands.entity(entity).insert(Glide(transform));
                 }
             }
-            NetEvent::Video {
-                entity,
-                frames,
-                publication,
-            } => {
-                // A cube deleted meanwhile drops the publication here.
-                if let Ok(mut cube) = commands.get_entity(entity) {
-                    info!(remote = publication.is_none(), "a video cube plays");
-                    cube.insert(VideoTexture::new(frames));
-                    if let Some(publication) = publication {
-                        cube.insert(VideoHold {
-                            _task: None,
-                            _publication: Some(publication),
-                        });
-                    }
+            NetEvent::Video(entity, broadcast, player, published) => {
+                // A player for a cube deleted or switched meanwhile drops here.
+                let Ok(mut hold) = holds.get_mut(entity) else {
+                    continue;
+                };
+                if hold.broadcast != broadcast {
+                    continue;
+                }
+                info!(broadcast, own = published.is_some(), "a video cube plays");
+                let frames = VideoTexture::new(player.video_frames());
+                commands.entity(entity).insert(frames);
+                hold.player = Some(*player);
+                hold.volume = -1.0;
+                if published.is_some() {
+                    hold._published = published;
+                }
+            }
+            NetEvent::Picked(entity, path) => {
+                if let Ok(mut cube) = cubes.get_mut(entity) {
+                    let source = format!("file:{}:loop", path.display());
+                    let (editor, net) = (&mut editor, &net);
+                    switch_video(&mut commands, editor, net, entity, &mut cube, Some(source));
                 }
             }
         }
@@ -770,12 +890,12 @@ fn network(
 }
 
 /// Moves remote cubes smoothly toward where their owners put them.
-fn glide(time: Res<Time>, mut cubes: Query<(&mut Transform, &RemoteCube)>) {
+fn glide(time: Res<Time>, mut cubes: Query<(&mut Transform, &Glide)>) {
     let t = 1.0 - (-12.0 * time.delta_secs()).exp();
-    for (mut transform, cube) in &mut cubes {
-        transform.translation = transform.translation.lerp(cube.target.translation, t);
-        transform.rotation = transform.rotation.slerp(cube.target.rotation, t);
-        transform.scale = transform.scale.lerp(cube.target.scale, t);
+    for (mut transform, Glide(target)) in &mut cubes {
+        transform.translation = transform.translation.lerp(target.translation, t);
+        transform.rotation = transform.rotation.slerp(target.rotation, t);
+        transform.scale = transform.scale.lerp(target.scale, t);
     }
 }
 
@@ -784,93 +904,132 @@ fn publish_state(
     time: Res<Time>,
     mut editor: ResMut<Editor>,
     net: Res<Net>,
-    cubes: Query<(&OwnCube, &Transform)>,
+    cubes: Query<(&Cube, &Transform)>,
 ) {
     if !editor.sync.tick(time.delta()).just_finished() {
         return;
     }
     let mut cubes: Vec<_> = cubes
         .iter()
-        .map(|(cube, transform)| CubeState {
-            id: cube.id,
-            translation: transform.translation.to_array(),
-            rotation: transform.rotation.to_array(),
-            scale: transform.scale.to_array(),
-            color: cube.color,
-            video: cube.video.clone(),
-        })
+        .filter(|(cube, _)| cube.owner.is_none())
+        .map(|(cube, transform)| (cube.clone(), *transform))
         .collect();
-    cubes.sort_by_key(|cube| cube.id);
+    cubes.sort_by_key(|(cube, _)| cube.id);
     // Unchanged state writes nothing.
     if let Err(err) = net.state.update(&MemberState { cubes }) {
         warn!(error = %err, "could not publish the cubes");
     }
 }
 
-/// Draws the floor grid and an outline around every cube.
-fn draw_outlines(
-    mut gizmos: Gizmos,
-    own: Query<(&Transform, Has<TransformGizmoFocus>), With<OwnCube>>,
-    remote: Query<(&Transform, &RemoteCube)>,
+/// Sets the material of each changed cube: its color, or white and unlit for a
+/// video, with the picture turned by the cube's quarter turns.
+fn apply_looks(
+    cubes: Query<(&Cube, &MeshMaterial3d<StandardMaterial>), Changed<Cube>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    for (cube, material) in &cubes {
+        let Some(mut material) = materials.get_mut(&material.0) else {
+            continue;
+        };
+        let [r, g, b] = cube.color;
+        material.unlit = cube.video.is_some();
+        material.base_color = if material.unlit {
+            Color::WHITE
+        } else {
+            material.base_color_texture = None;
+            Color::srgb(r, g, b)
+        };
+        let center = Affine2::from_translation(Vec2::splat(0.5));
+        let turn = Affine2::from_angle(f32::from(cube.turns) * FRAC_PI_2);
+        material.uv_transform = center * turn * center.inverse();
+    }
+}
+
+/// Sets each video cube's volume by its distance to the camera, or to zero if muted.
+fn set_volumes(
+    camera: Single<&Transform, With<Orbit>>,
+    mut cubes: Query<(&Transform, &mut VideoHold, Has<Muted>), Without<Orbit>>,
+) {
+    for (transform, mut hold, muted) in &mut cubes {
+        let distance = transform.translation.distance(camera.translation);
+        let volume = (FULL_VOLUME_DISTANCE / distance).min(1.0);
+        let volume = if muted { 0.0 } else { volume };
+        if (volume - hold.volume).abs() > 0.01
+            && let Some(player) = &hold.player
+        {
+            player.set_volume(volume);
+            hold.volume = volume;
+        }
+    }
+}
+
+/// Draws the floor grid and an outline around every cube.
+fn draw_outlines(mut gizmos: Gizmos, cubes: Query<(&Transform, &Cube, Has<Selected>)>) {
     gizmos.grid(
         Isometry3d::from_rotation(Quat::from_rotation_x(FRAC_PI_2)),
         UVec2::splat(40),
         Vec2::ONE,
         Color::srgba(1.0, 1.0, 1.0, 0.08),
     );
-    for (transform, selected) in &own {
-        let color = if selected {
-            Color::srgb(1.0, 0.85, 0.2)
-        } else {
-            Color::WHITE
+    for (transform, cube, selected) in &cubes {
+        let color = match cube.owner {
+            _ if selected => Color::srgb(1.0, 0.85, 0.2),
+            None => Color::WHITE,
+            // A color per member.
+            Some(owner) => Color::hsl(f32::from(owner.as_bytes()[0]) / 255.0 * 360.0, 0.8, 0.6),
         };
         gizmos.cube(transform.with_scale(transform.scale * 1.02), color);
     }
-    for (transform, cube) in &remote {
-        gizmos.cube(
-            transform.with_scale(transform.scale * 1.02),
-            member_color(cube.owner),
-        );
-    }
 }
 
-/// A color per member, for the outlines of its cubes.
-fn member_color(id: EndpointId) -> Color {
-    let hue = f32::from(id.as_bytes()[0]) / 255.0 * 360.0;
-    Color::hsl(hue, 0.8, 0.6)
-}
-
-/// Writes the panel: the controls, the members, the chat.
+/// Writes the panel: the room, the keys for what is selected, the members, the chat.
 fn hud(
     editor: Res<Editor>,
     net: Res<Net>,
-    settings: Res<TransformGizmoSettings>,
+    selected: Query<(&Cube, Has<Muted>), With<Selected>>,
     mut text: Single<&mut Text, With<Hud>>,
 ) {
-    let mut out = String::new();
     let ticket = &net.ticket;
-    out.push_str(&format!(
-        "room {}…  (full ticket on stdout)\n",
+    let mut out = format!(
+        "room {}...  (full ticket on stdout)\n\
+         left drag: orbit   right/middle drag: pan   wheel: zoom\n",
         &ticket[..ticket.len().min(24)]
-    ));
-    out.push_str("right mouse: look   WASD/QE: fly   click: select own cube\n");
-    out.push_str(&format!(
-        "N: cube   V: video cube ({})   X/Del: delete   Esc: deselect\n",
-        editor.video_spec
-    ));
-    out.push_str(&format!(
-        "1/2/3: move/rotate/scale ({:?})   Enter: chat\n\n",
-        settings.mode
-    ));
-    out.push_str(&format!("{} others here\n", editor.members.len()));
+    );
+    match selected.single() {
+        Err(_) => out.push_str("click: select a cube   N: new cube   Enter: chat\n"),
+        Ok((cube, muted)) => {
+            let owner = cube
+                .owner
+                .map_or_else(|| "yours".into(), |id| editor.name(id));
+            // A file shows by its name.
+            let source = cube.video.as_ref().map(|v| v.source.as_str());
+            let label = source.map_or("none", |s| s.rsplit(['/', '\\']).next().unwrap_or(s));
+            out.push_str(&format!(
+                "\n> cube {} ({owner})   video: {label}   image: {} deg   sound: {}\n",
+                cube.id,
+                u32::from(cube.turns) * 90,
+                if muted { "muted" } else { "on" },
+            ));
+            if cube.owner.is_none() {
+                for (i, (_, name, spec)) in SOURCES.iter().enumerate() {
+                    let mark = if *spec == source { "*" } else { " " };
+                    out.push_str(&format!(" {mark}{} {name}", i + 1));
+                }
+                out.push_str("   F file\n");
+                out.push_str("  drag: move   up/down: height   left/right: turn   +/-: size\n");
+                out.push_str("  X: turn image   M: mute   Del: delete   Esc: deselect\n");
+            } else {
+                out.push_str("  M: mute   Esc: deselect   (the owner picks the video)\n");
+            }
+        }
+    }
+    out.push_str(&format!("\n{} others here\n", editor.members.len()));
     for name in editor.members.values() {
         out.push_str(&format!("  {name}\n"));
     }
     out.push('\n');
     for line in &editor.chat_log {
-        out.push_str(line);
-        out.push('\n');
+        out.push_str(&format!("{line}\n"));
     }
     if let Some(line) = &editor.typing {
         out.push_str(&format!("> {line}_\n"));
