@@ -26,16 +26,6 @@ const NON_SYNC: u32 = 0x0001_0000;
 /// The MPEG-4 object type of AAC in an `esds` box.
 const AAC_OBJECT_TYPE: u8 = 0x40;
 
-/// The boxes that hold metadata, which the index does not read.
-///
-/// mp4-atom 0.17 refuses a repeated `cprt`, `covr`, `desc`, `©too`, `name`
-/// or `day ` item in the `ilst` of `udta/meta`, a repeated child of `udta`,
-/// and a second `udta` or `meta` box, though players accept all of them,
-/// and some files repeat them. [`read_without_metadata`] drops these boxes
-/// from a `moov` or `moof` and from each `trak` or `traf` in it before
-/// mp4-atom decodes the rest.
-const METADATA: [FourCC; 2] = [Udta::KIND, Meta::KIND];
-
 /// One sample: where it lies, and when it decodes and presents, in microseconds.
 ///
 /// Both times are after the track's edit list, so presentation starts at
@@ -110,10 +100,10 @@ pub(super) fn index(reader: &mut (impl Read + Seek)) -> Result<Vec<Track>, AnyEr
     let mut fragments = Vec::new();
     loop {
         let start = reader.stream_position()?;
-        // Some files end in a few bytes after the last box, too few for a box
-        // header, such as a stray line break. A tail of 8
-        // bytes or more reads as a box header, and fails only if its size
-        // field is invalid or it claims to be a `moov` or `moof`.
+        // Some files end in a few bytes after the last box, too few for a
+        // box header, such as a stray line break. A tail of 8 bytes or more
+        // reads as a box header, and fails only if its size field is invalid
+        // or it claims to be a `moov` or `moof`.
         let tail = len.saturating_sub(start);
         if tail < 8 {
             if tail > 0 {
@@ -182,31 +172,28 @@ pub(super) fn index(reader: &mut (impl Read + Seek)) -> Result<Vec<Track>, AnyEr
         let declared = visual.map_or((0, 0), |visual| {
             (u32::from(visual.width), u32::from(visual.height))
         });
-        let (width, height) = match &codec {
-            Codec::H264(record) => match moq_mux::codec::h264::config(record) {
-                Ok(config) => config
-                    .coded_width
-                    .zip(config.coded_height)
-                    .unwrap_or(declared),
-                Err(err) => {
-                    debug!(
-                        track = id,
-                        ?declared,
-                        error = %err,
-                        "the avcC or its SPS does not parse, using the sample entry's picture size"
-                    );
-                    declared
-                }
-            },
-            _ => declared,
+        // moq-mux skips an SPS that does not parse and still returns the
+        // config, without a size.
+        let sps = match &codec {
+            Codec::H264(record) => moq_mux::codec::h264::config(record)
+                .ok()
+                .and_then(|config| config.coded_width.zip(config.coded_height)),
+            _ => None,
         };
-        if (width, height) != declared {
-            debug!(
+        let (width, height) = sps.unwrap_or(declared);
+        match sps {
+            None if matches!(codec, Codec::H264(_)) => debug!(
                 track = id,
                 ?declared,
-                sps = ?(width, height),
+                "the avcC has no SPS that parses, using the sample entry's picture size"
+            ),
+            Some(sps) if sps != declared => debug!(
+                track = id,
+                ?declared,
+                ?sps,
                 "the sample entry's picture size differs from the SPS, using the SPS"
-            );
+            ),
+            _ => {}
         }
         ids.insert(id, tracks.len());
         tracks.push(Track {
@@ -498,7 +485,9 @@ fn fragment(
     Ok(offset)
 }
 
-/// Reads the body of the `moov` or `moof` box that `header` opens, and decodes it without its metadata boxes.
+/// Reads the `moov` or `moof` box that `header` opens, without metadata.
+///
+/// Decodes the body after [`without_metadata`] drops its metadata boxes.
 fn read_without_metadata<T: Atom>(header: &Header, reader: &mut impl Read) -> Result<T, AnyError> {
     let mut body = Vec::new();
     match header.size {
@@ -521,7 +510,14 @@ fn read_without_metadata<T: Atom>(header: &Header, reader: &mut impl Read) -> Re
     T::decode_atom(&header, &mut body.as_slice()).anyerr()
 }
 
-/// Returns the child boxes in `body` without the [`METADATA`] boxes, also dropped inside each `trak` and `traf`.
+/// Returns the child boxes in `body` without their `udta` and `meta` boxes.
+///
+/// Drops them inside each `trak` and `traf` too, which the index does not
+/// read either. mp4-atom 0.17.1 refuses a repeated `ilst` item of a kind it
+/// knows, a second `chpl` or `meta` in a `udta`, and a second `udta` or
+/// `meta` in a `moov`, `trak` or `traf`. Players accept them, and some files
+/// repeat them. mp4-atom 0.17.0 kept the last of a repeated `ilst` item;
+/// 0.17.1 refuses it.
 fn without_metadata(mut body: &[u8]) -> Result<Vec<u8>, AnyError> {
     let mut kept = Vec::with_capacity(body.len());
     while let Some(header) = Header::decode_maybe(&mut body).anyerr()? {
@@ -530,12 +526,12 @@ fn without_metadata(mut body: &[u8]) -> Result<Vec<u8>, AnyError> {
             .split_at_checked(size)
             .ok_or_else(|| anyerr!("the {} box runs past the box that holds it", header.kind))?;
         body = rest;
-        let trak;
+        let filtered;
         let child = match header.kind {
-            kind if METADATA.contains(&kind) => continue,
+            Udta::KIND | Meta::KIND => continue,
             Trak::KIND | Traf::KIND => {
-                trak = without_metadata(child)?;
-                trak.as_slice()
+                filtered = without_metadata(child)?;
+                filtered.as_slice()
             }
             _ => child,
         };
@@ -976,6 +972,14 @@ mod tests {
         let avcc = find(&data, 0, b"avcC");
         let len = usize::from(u16::from_be_bytes([data[avcc + 10], data[avcc + 11]]));
         data[avcc + 13..avcc + 12 + len].fill(0);
-        assert_eq!(video_size(data), (64, 47));
+        let tracks = index(&mut Cursor::new(data)).unwrap();
+        let video = tracks.iter().find(|track| track.video).unwrap();
+        // moq-mux still reads the avcC, but finds no size in its SPS.
+        let Codec::H264(record) = &video.codec else {
+            panic!("the clip's video is H.264");
+        };
+        let config = moq_mux::codec::h264::config(record).unwrap();
+        assert_eq!(config.coded_width.zip(config.coded_height), None);
+        assert_eq!((video.width, video.height), (64, 47));
     }
 }

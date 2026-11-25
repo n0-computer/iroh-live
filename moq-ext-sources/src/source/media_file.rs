@@ -92,7 +92,7 @@ pub struct MediaInfo {
 pub struct VideoInfo {
     /// The codec's name, such as `H.264` or `H.265`.
     pub codec: &'static str,
-    /// The picture size the track declares.
+    /// The picture size, from the SPS for H.264 and otherwise from the sample entry.
     pub size: video::Size,
     /// The average frame rate over the whole track.
     pub rate: video::FrameRate,
