@@ -164,6 +164,8 @@ struct Editor {
     mesh: Handle<Mesh>,
     members: BTreeMap<EndpointId, String>,
     remote: HashMap<(EndpointId, u32), Entity>,
+    /// The selected cube, any member's.
+    selected: Option<Entity>,
     chat_log: VecDeque<String>,
     /// The chat line being typed, while the chat has the keyboard.
     typing: Option<String>,
@@ -195,10 +197,6 @@ struct Pointer {
 /// Where a remote cube is heading.
 #[derive(Component)]
 struct Glide(Transform);
-
-/// Marks the selected cube.
-#[derive(Component)]
-struct Selected;
 
 /// Marks a cube this member muted. Not synced.
 #[derive(Component)]
@@ -543,7 +541,7 @@ fn keyboard(
     mut editor: ResMut<Editor>,
     net: Res<Net>,
     orbit: Single<&Orbit>,
-    mut selected: Query<(Entity, &mut Cube, &mut Transform, Has<Muted>), With<Selected>>,
+    mut cubes: Query<(&mut Cube, &mut Transform, Has<Muted>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for key in keys.read() {
@@ -574,17 +572,19 @@ fn keyboard(
         if key.repeat {
             continue;
         }
-        let previous = selected.iter().map(|s| s.0).collect::<Vec<_>>();
         match key.key_code {
             KeyCode::Enter => editor.typing = Some(String::new()),
             KeyCode::KeyN => {
                 let at = Transform::from_translation(orbit.focus.with_y(0.5));
                 let entity = spawn_own(&mut commands, &mut editor, &net, at, None, &mut materials);
-                select(&mut commands, previous, Some(entity));
+                editor.selected = Some(entity);
             }
-            KeyCode::Escape => select(&mut commands, previous, None),
+            KeyCode::Escape => editor.selected = None,
             code => {
-                let Ok((entity, mut cube, mut transform, muted)) = selected.single_mut() else {
+                let Some(entity) = editor.selected else {
+                    continue;
+                };
+                let Ok((mut cube, mut transform, muted)) = cubes.get_mut(entity) else {
                     continue;
                 };
                 if code == KeyCode::KeyM {
@@ -629,7 +629,6 @@ fn keyboard(
 /// middle button pans, and the wheel zooms.
 #[allow(clippy::too_many_arguments, reason = "a Bevy system")]
 fn mouse(
-    mut commands: Commands,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
@@ -638,7 +637,7 @@ fn mouse(
     camera: Single<(&Camera, &GlobalTransform, &mut Transform, &mut Orbit)>,
     mut ray_cast: MeshRayCast,
     mut cubes: Query<(&Cube, &mut Transform), Without<Orbit>>,
-    selected: Query<Entity, With<Selected>>,
+    mut editor: ResMut<Editor>,
 ) {
     let (camera, view, mut camera_transform, mut orbit) = camera.into_inner();
     let cursor = window.cursor_position();
@@ -659,7 +658,7 @@ fn mouse(
             && cube.owner.is_none()
             && let Some(grab) = ray.and_then(|ray| ground_point(ray, transform.translation.y))
         {
-            select(&mut commands, selected, Some(entity));
+            editor.selected = Some(entity);
             pointer.moving = Some((entity, (transform.translation - grab).with_y(0.0)));
         }
     }
@@ -685,7 +684,7 @@ fn mouse(
     }
     if buttons.just_released(MouseButton::Left) {
         if !pointer.dragging && pointer.moving.is_none() {
-            select(&mut commands, selected, pointer.hit);
+            editor.selected = pointer.hit;
         }
         *pointer = Pointer::default();
     }
@@ -708,20 +707,6 @@ fn mouse(
 fn ground_point(ray: Ray3d, y: f32) -> Option<Vec3> {
     let distance = ray.intersect_plane(Vec3::Y * y, InfinitePlane3d::new(Vec3::Y))?;
     Some(ray.get_point(distance))
-}
-
-/// Moves the selection from `previous` to `entity`, or clears it.
-fn select(
-    commands: &mut Commands,
-    previous: impl IntoIterator<Item = Entity>,
-    entity: Option<Entity>,
-) {
-    for previous in previous {
-        commands.entity(previous).remove::<Selected>();
-    }
-    if let Some(entity) = entity {
-        commands.entity(entity).insert(Selected);
-    }
 }
 
 /// Spawns a cube this member owns, showing `source` if given.
@@ -964,16 +949,20 @@ fn set_volumes(
 }
 
 /// Draws the floor grid and an outline around every cube.
-fn draw_outlines(mut gizmos: Gizmos, cubes: Query<(&Transform, &Cube, Has<Selected>)>) {
+fn draw_outlines(
+    mut gizmos: Gizmos,
+    editor: Res<Editor>,
+    cubes: Query<(Entity, &Transform, &Cube)>,
+) {
     gizmos.grid(
         Isometry3d::from_rotation(Quat::from_rotation_x(FRAC_PI_2)),
         UVec2::splat(40),
         Vec2::ONE,
         Color::srgba(1.0, 1.0, 1.0, 0.08),
     );
-    for (transform, cube, selected) in &cubes {
+    for (entity, transform, cube) in &cubes {
         let color = match cube.owner {
-            _ if selected => Color::srgb(1.0, 0.85, 0.2),
+            _ if editor.selected == Some(entity) => Color::srgb(1.0, 0.85, 0.2),
             None => Color::WHITE,
             // A color per member.
             Some(owner) => Color::hsl(f32::from(owner.as_bytes()[0]) / 255.0 * 360.0, 0.8, 0.6),
@@ -986,7 +975,7 @@ fn draw_outlines(mut gizmos: Gizmos, cubes: Query<(&Transform, &Cube, Has<Select
 fn hud(
     editor: Res<Editor>,
     net: Res<Net>,
-    selected: Query<(&Cube, Has<Muted>), With<Selected>>,
+    cubes: Query<(&Cube, Has<Muted>)>,
     mut text: Single<&mut Text, With<Hud>>,
 ) {
     let ticket = &net.ticket;
@@ -995,9 +984,9 @@ fn hud(
          left drag: orbit   right/middle drag: pan   wheel: zoom\n",
         &ticket[..ticket.len().min(24)]
     );
-    match selected.single() {
-        Err(_) => out.push_str("click: select a cube   N: new cube   Enter: chat\n"),
-        Ok((cube, muted)) => {
+    match editor.selected.and_then(|entity| cubes.get(entity).ok()) {
+        None => out.push_str("click: select a cube   N: new cube   Enter: chat\n"),
+        Some((cube, muted)) => {
             let owner = cube
                 .owner
                 .map_or_else(|| "yours".into(), |id| editor.name(id));
