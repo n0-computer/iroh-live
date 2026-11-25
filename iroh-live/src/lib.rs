@@ -19,7 +19,7 @@
 //! the layout. [`Node::subscribe_ticket`] grants the ticket's publisher that
 //! one path while the subscription lives, so a viewer needs no layout.
 #![cfg_attr(
-    feature = "media",
+    all(feature = "play", feature = "publish"),
     doc = r#"
 This publishes a test pattern and plays someone else's broadcast:
 
@@ -80,7 +80,7 @@ router.shutdown().await?;
 //! - [`BroadcastTicket`]: a publisher's endpoint id and the path of a broadcast.
 //! - [`calls::Calls`]: one-to-one calls.
 #![cfg_attr(
-    feature = "media",
+    all(feature = "play", feature = "publish"),
     doc = "- [`LocalBroadcast`](media::LocalBroadcast) and [`RemoteBroadcast`](media::RemoteBroadcast), from [`media`]."
 )]
 //!
@@ -108,28 +108,36 @@ router.shutdown().await?;
 //!
 //! No feature is on by default. `full` turns on `media`, `capture`,
 //! `playback`, `render`, `record` and `sound-server`. `media` adds the `media`
-//! module. Without it
-//! the crate is the layout, calls and endpoint setup only. `playback`, `aec`,
-//! `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and codecs,
-//! and imply `media`. `rooms` re-exports `iroh-live-rooms`.
+//! module and is `play` and `publish` together. `play` alone subscribes,
+//! decodes and renders without building the publisher, for an app that only
+//! receives. Without any of them the crate is the layout, calls and endpoint
+//! setup only. `capture`, `file`, `aec`, `pipewire`, `sound-server` and
+//! `rpicam` add devices and imply `media`. `playback`, `render`, `record`,
+//! `vaapi`, `nvidia` and `v4l2` imply only `play`. `rooms` re-exports
+//! `iroh-live-rooms`.
 
 #![forbid(unsafe_code)]
 
 pub mod calls;
 mod error;
-#[cfg(feature = "media")]
+#[cfg(feature = "play")]
 mod network;
 
 /// Sources, broadcasts and players, with the codec stacks they sit on.
-#[cfg(feature = "media")]
+///
+/// The `play` feature brings the player and the decoders, `publish` the
+/// publisher, the encoders and the sources. `media` turns on both.
+#[cfg(any(feature = "play", feature = "publish"))]
 pub mod media {
     pub use moq_audio as audio;
+    #[cfg(feature = "play")]
     pub use moq_ext_player::{
         Adaptation, AudioFrame, AudioFrames, AudioMode, AudioPlaybackStats, Catalog,
         DEFAULT_LATENCY, Delay, FrameTiming, IMMEDIATE_LATENCY, MediaKind, NetworkSample,
         PlaybackStats, Player, PlayerConfig, PlayerStatus, RemoteBroadcast, RenditionMode,
         VideoBacklog, VideoPlaybackStats, video_rendition,
     };
+    #[cfg(feature = "publish")]
     pub use moq_ext_publisher::{
         AudioEncodeStats, EncodeStats, LocalBroadcast, PublishStats, PublishStatus, RenditionState,
         VideoEncoding, VideoRendition, audio_encoding,
@@ -139,9 +147,13 @@ pub mod media {
     #[cfg(feature = "capture")]
     pub use moq_ext_sources::screen_source;
     pub use moq_ext_sources::{
-        AudioFormat, AudioSource, Backend, BouncePattern, EncodedAudio, EncodedFrame, EncodedVideo,
-        Error, FileEnd, FrameSender, SlotState, SourceClosed, UnknownBackend, VideoFormat,
-        VideoFrames, VideoSource, VideoSwitch, spec,
+        AudioFormat, Backend, Error, SlotState, SourceClosed, UnknownBackend, VideoFormat,
+        VideoFrames,
+    };
+    #[cfg(feature = "publish")]
+    pub use moq_ext_sources::{
+        AudioSource, BouncePattern, EncodedAudio, EncodedFrame, EncodedVideo, FileEnd, FrameSender,
+        VideoSource, VideoSwitch, spec,
     };
     #[cfg(feature = "file")]
     pub use moq_ext_sources::{AudioInfo, MediaFile, MediaInfo, VideoFileConfig, VideoInfo};
@@ -156,6 +168,7 @@ pub mod media {
     #[cfg(feature = "render")]
     pub use wgpu;
 
+    #[cfg(feature = "play")]
     pub use crate::network::SubscriptionExt;
 }
 pub use iroh_live_node as node;
