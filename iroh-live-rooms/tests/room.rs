@@ -15,7 +15,7 @@ use std::{
 use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
 use iroh::EndpointId;
 use iroh_live_node::{Audience, Reach};
-use iroh_live_rooms::{Error, MemberConnection, Room, RoomState, RoomTicket};
+use iroh_live_rooms::{Error, MemberConnection, Room, RoomState, RoomTicket, chat::Chat};
 use moq_net::{Timestamp, announce, broadcast, track};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
@@ -667,6 +667,30 @@ async fn a_room_resyncs_after_its_map_subscription_restarts() {
         .expect("track failed")
         .expect("track ended");
 
+    room_b.leave().await;
+    room_a.leave().await;
+    peer_b.shutdown().await;
+    peer_a.shutdown().await;
+}
+
+/// A message sent through one member's [`Chat`] reaches the other's, and not its own.
+#[tokio::test]
+#[traced_test]
+async fn a_chat_message_reaches_the_other_member() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let mut chat_a = Chat::new(&room_a).expect("chat a");
+    let mut chat_b = Chat::new(&room_b).expect("chat b");
+    chat_b.send("hello");
+
+    let message = tokio::time::timeout(TIMEOUT, chat_a.recv())
+        .await
+        .expect("timed out on the message")
+        .expect("chat a closed");
+    assert_eq!(message.from, peer_b.id());
+    assert_eq!(message.text, "hello");
+    assert!(chat_b.try_recv().is_none(), "b heard its own message");
+
+    drop((chat_a, chat_b));
     room_b.leave().await;
     room_a.leave().await;
     peer_b.shutdown().await;
