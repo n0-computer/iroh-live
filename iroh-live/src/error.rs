@@ -29,9 +29,9 @@ pub enum Error {
     #[error(transparent)]
     Endpoint(iroh_live_node::EndpointError),
     /// A source, an encoder, a decoder or a recording failed.
-    #[cfg(feature = "media")]
+    #[cfg(any(feature = "player", feature = "publisher"))]
     #[error(transparent)]
-    Media(moq_ext_player::Error),
+    Media(moq_ext_sources::Error),
     /// A room failed.
     #[cfg(feature = "rooms")]
     #[error(transparent)]

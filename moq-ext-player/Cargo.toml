@@ -45,6 +45,10 @@ default = []
 record = []
 # Speaker output.
 playback = ["moq-audio/playback"]
+# Audio devices through PipeWire, checked at runtime. Linux only.
+pipewire = ["moq-audio/pipewire"]
+# Audio devices through PulseAudio, checked at runtime. Linux only.
+pulseaudio = ["moq-audio/pulseaudio"]
 # GPU rendering of decoded frames, through wgpu.
 render = ["moq-video/render"]
 # NVIDIA hardware decoding. Off by default to keep CUDA out.

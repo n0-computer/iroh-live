@@ -61,45 +61,44 @@ workspace = true
 
 [features]
 default = []
-# What an app that plays and publishes media wants: the media stack, device
-# capture, speaker playback, GPU rendering, the sound server and recording.
-full = ["media", "capture", "playback", "render", "sound-server", "record"]
-# The media stack: `iroh_live::media`, with `media::SubscriptionExt`. Without it
-# the crate is the node, the layout, calls and endpoint setup, with no codecs.
-media = ["dep:moq-ext-player", "dep:moq-ext-publisher", "dep:moq-ext-sources", "dep:moq-audio", "dep:moq-video"]
-# Recording a broadcast to a file.
-record = ["media", "moq-ext-player/record"]
-# Token verifiers in `iroh_live::node::policy`: JWTs and rcan chains.
+# The usual app set.
+full = ["media", "capture", "playback", "render", "record", "pipewire", "pulseaudio"]
+# `iroh_live::media` with both sides.
+media = ["player", "publisher"]
+# Receive side: `RemoteBroadcast`, the player, decoders, `SubscriptionExt`.
+player = ["dep:moq-ext-player", "dep:moq-ext-sources", "dep:moq-audio", "dep:moq-video"]
+# Send side: `LocalBroadcast`, encoders, sources, the test pattern.
+publisher = ["dep:moq-ext-publisher", "dep:moq-ext-sources", "moq-ext-sources/pattern", "dep:moq-audio", "dep:moq-video"]
+# Camera, screen and microphone.
+capture = ["publisher", "moq-ext-publisher/capture", "moq-ext-sources/capture"]
+# `MediaFile` and `AudioSource::file`.
+file = ["publisher", "moq-ext-publisher/file", "moq-ext-sources/file"]
+# The Raspberry Pi camera through `rpicam-vid`.
+rpicam = ["publisher", "moq-ext-publisher/rpicam", "moq-ext-sources/rpicam"]
+# Speaker output.
+playback = ["player", "moq-ext-player/playback"]
+# GPU rendering, re-exports `media::wgpu`.
+render = ["player", "moq-ext-player/render", "dep:wgpu"]
+# `RemoteBroadcast::mux_source`.
+record = ["player", "moq-ext-player/record"]
+# Echo cancellation.
+aec = ["capture", "playback", "moq-ext-player/aec", "moq-ext-publisher/aec", "moq-ext-sources/aec"]
+# PipeWire audio on either side. With `publisher` it also builds device capture,
+# with the portal's screen picker and PipeWire's camera.
+pipewire = ["moq-ext-player?/pipewire", "moq-ext-publisher?/pipewire"]
+# PulseAudio audio on either side.
+pulseaudio = ["moq-ext-player?/pulseaudio", "moq-ext-publisher?/pulseaudio"]
+# Hardware codecs: decode with `player`, encode with `publisher`.
+vaapi = ["moq-ext-player?/vaapi", "moq-ext-publisher?/vaapi"]
+nvidia = ["moq-ext-player?/nvidia", "moq-ext-publisher?/nvidia"]
+v4l2 = ["moq-ext-player?/v4l2", "moq-ext-publisher?/v4l2"]
+# Token verifiers in `node::policy`.
 jwt = ["iroh-live-node/jwt"]
 rcan = ["iroh-live-node/rcan"]
-# qlog traces of every connection, written into `QLOGDIR` if set.
+# qlog traces of every connection, into `QLOGDIR` if set.
 qlog = ["iroh-live-node/qlog"]
-# Re-exports `iroh-live-rooms` as `iroh_live::rooms`.
+# `iroh_live::rooms`.
 rooms = ["dep:iroh-live-rooms"]
-# Camera, screen, and microphone capture.
-capture = ["media", "moq-ext-publisher/capture", "moq-ext-sources/capture"]
-# Media files: `MediaFile` publishes an MP4's H.264 and AAC as they are or
-# decodes them, and `AudioSource::file` decodes WAV and MP3 too.
-file = ["media", "moq-ext-publisher/file", "moq-ext-sources/file"]
-# Speaker output.
-playback = ["media", "moq-ext-player/playback"]
-# Reach audio devices through PipeWire or PulseAudio rather than through their
-# ALSA compatibility plugin.
-sound-server = ["media", "moq-ext-publisher/sound-server", "moq-ext-sources/sound-server"]
-# Acoustic echo cancellation, for a call on a handset or a laptop speaker.
-aec = ["capture", "moq-ext-player/aec", "moq-ext-publisher/aec", "moq-ext-sources/aec"]
-# Linux screen capture through xdg-desktop-portal and PipeWire.
-pipewire = ["media", "moq-ext-publisher/pipewire", "moq-ext-sources/pipewire"]
-# GPU rendering of decoded frames.
-render = ["media", "moq-ext-player/render", "dep:wgpu"]
-# Raspberry Pi camera capture through `rpicam-vid`.
-rpicam = ["media", "moq-ext-publisher/rpicam", "moq-ext-sources/rpicam"]
-# Intel and AMD hardware H.264 encoding and decoding.
-vaapi = ["media", "moq-ext-player/vaapi", "moq-ext-publisher/vaapi"]
-# NVIDIA hardware encode and decode.
-nvidia = ["media", "moq-ext-player/nvidia", "moq-ext-publisher/nvidia"]
-# The V4L2 stateful memory-to-memory H.264 encoder and decoder on ARM SoCs.
-v4l2 = ["media", "moq-ext-player/v4l2", "moq-ext-publisher/v4l2"]
 
 # The example opens a camera and a microphone, so it needs the devices.
 [[example]]
@@ -123,4 +122,4 @@ required-features = ["file"]
 [[example]]
 name = "subscribe_test"
 path = "examples/subscribe_test.rs"
-required-features = ["media"]
+required-features = ["player"]

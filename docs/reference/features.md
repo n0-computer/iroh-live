@@ -6,31 +6,43 @@ through to the crates below it.
 
 ## iroh-live
 
-No feature is on by default.
+No feature is on by default. `player` is the receive side, `publisher` the
+send side. A device feature turns on its side; a backend or codec feature
+turns on no side and applies to whichever side is on.
 
 | Feature | Enables | Implies | Platform |
 |---|---|---|---|
-| `full` | What an app that publishes and plays wants | `media`, `capture`, `playback`, `render`, `sound-server`, `record` | all |
-| `media` | `iroh_live::media` and `media::SubscriptionExt`: sources, publisher, player, codecs. H.264 in software always works | | all |
-| `capture` | Camera, screen and microphone capture | `media` | all |
-| `playback` | Speaker output, `AudioMode::Play` | `media` | all |
-| `render` | GPU rendering of decoded frames through wgpu, re-exported as `media::wgpu` | `media` | all |
-| `record` | `RemoteBroadcast::mux_source`, for moq-mux exports | `media` | all |
-| `file` | `MediaFile` for MP4, `AudioSource::file` for WAV, MP3 and MP4 | `media` | all |
-| `sound-server` | Audio devices through PipeWire or PulseAudio, not only ALSA | `media` | Linux |
-| `aec` | Echo cancellation for the microphone | `capture`, and the player's speaker output | all |
-| `pipewire` | PipeWire's shared camera as the default camera, and the desktop portal's screen picker with `PortalGrant`, which keeps its grant across runs. Links `libpipewire-0.3` | `media`, and capture in the media crates | Linux |
-| `rpicam` | The Raspberry Pi camera through `rpicam-vid` | `media` | Linux |
-| `vaapi` | VA-API hardware encode and decode, Intel and AMD | `media` | Linux |
-| `nvidia` | NVENC and NVDEC | `media` | Linux |
-| `v4l2` | The V4L2 memory-to-memory H.264 codecs of ARM SoCs, such as a Pi 4 | `media` | Linux |
+| `full` | The usual app set | `media`, `capture`, `playback`, `render`, `record`, `pipewire`, `pulseaudio` | all |
+| `media` | Both sides of `iroh_live::media` | `player`, `publisher` | all |
+| `player` | Receive: `RemoteBroadcast`, `Player`, the decoders, `media::SubscriptionExt` | | all |
+| `publisher` | Send: `LocalBroadcast`, the encoders, the sources, the test pattern | | all |
+| `capture` | Camera, screen and microphone | `publisher` | all |
+| `file` | `MediaFile` for MP4, `AudioSource::file` for WAV, MP3 and MP4 | `publisher` | all |
+| `rpicam` | The Raspberry Pi camera through `rpicam-vid` | `publisher` | Linux |
+| `playback` | Speaker output, `AudioMode::Play` | `player` | all |
+| `render` | GPU rendering through wgpu, re-exported as `media::wgpu` | `player` | all |
+| `record` | `RemoteBroadcast::mux_source`, for moq-mux exports | `player` | all |
+| `aec` | Echo cancellation for the microphone | `capture`, `playback` | all |
+| `pipewire` | PipeWire audio devices. With `publisher` it also builds device capture, as `capture` does, with PipeWire's camera and the portal's screen picker through `PortalGrant`. Links `libpipewire-0.3` | no side; device capture with `publisher` | Linux |
+| `pulseaudio` | PulseAudio audio devices | no side | Linux |
+| `vaapi` | VA-API decode with `player`, encode with `publisher`, Intel and AMD | no side | Linux |
+| `nvidia` | NVDEC with `player`, NVENC with `publisher` | no side | Linux |
+| `v4l2` | The V4L2 memory-to-memory H.264 codec of ARM SoCs, such as a Pi 4 | no side | Linux |
 | `rooms` | `iroh_live::rooms`, the `iroh-live-rooms` crate | | all |
 | `jwt` | `policy::JwtVerifier`, which verifies moq-relay's JWTs | | all |
 | `rcan` | `policy::RcanVerifier`, which verifies rcan capability chains | | all |
 | `qlog` | A qlog trace of every QUIC connection, written into the directory `QLOGDIR` names. Without `QLOGDIR`, nothing is written | | all |
 
-Without `media`, `iroh-live` is the node, tickets, layouts and calls, with no
-codec dependency.
+Without `player` or `publisher`, `iroh-live` is the node, tickets, layouts
+and calls, with no codec dependency. A `player`-only build has no
+`moq-ext-publisher`; it still builds OpenH264's encoder, since moq-video
+vendors OpenH264 as one library.
+
+`player` decodes without a speaker; `playback` adds the speaker.
+
+The audio server behind `pipewire` and `pulseaudio` is checked at runtime,
+so a build with either still runs on a system without that server, and
+`full` can carry both.
 
 A Linux-only feature compiles to nothing on other platforms. macOS, Windows
 and Android get their capture and codec frameworks without a feature.
@@ -50,8 +62,8 @@ reach.
 | Feature | Default | Effect |
 |---|---|---|
 | `aec` | yes | Echo cancellation for `irl call` and `irl room` |
-| `sound-server` | yes | PipeWire and PulseAudio devices (Linux) |
-| `pipewire` | yes | PipeWire's camera as `cam`, and the portal's picker as `screen`, `screen:portal` and `window:portal` (Linux) |
+| `pipewire` | yes | PipeWire audio devices, PipeWire's camera as `cam`, and the portal's picker as `screen`, `screen:portal` and `window:portal` (Linux) |
+| `pulseaudio` | yes | PulseAudio audio devices (Linux) |
 | `rpicam` | yes | `--video rpicam` (Linux) |
 | `vaapi`, `nvidia` | yes | Hardware encode and decode (Linux) |
 | `v4l2` | yes | `--encoder v4l2` and the matching decoder (Linux) |
@@ -67,9 +79,9 @@ define them:
 
 | Crate | Features | Default |
 |---|---|---|
-| `moq-ext-publisher` | `capture`, `sound-server`, `aec`, `pipewire`, `file`, `rpicam`, `vaapi`, `nvidia`, `v4l2` | none |
-| `moq-ext-player` | `playback`, `render`, `record`, `aec`, `vaapi`, `nvidia`, `v4l2` | none |
-| `moq-ext-sources` | `pattern`, `file`, `capture`, `sound-server`, `aec`, `pipewire`, `rpicam`, `serde` | `pattern` |
+| `moq-ext-publisher` | `capture`, `pulseaudio`, `aec`, `pipewire`, `file`, `rpicam`, `vaapi`, `nvidia`, `v4l2` | none |
+| `moq-ext-player` | `playback`, `render`, `record`, `aec`, `pipewire`, `pulseaudio`, `vaapi`, `nvidia`, `v4l2` | none |
+| `moq-ext-sources` | `pattern`, `file`, `capture`, `pulseaudio`, `aec`, `pipewire`, `rpicam`, `serde` | `pattern` |
 | `moq-ext-access` | `jwt`, `rcan` | none |
 | `iroh-live-node` | `jwt`, `rcan`, forwarded to `moq-ext-access`, and `qlog`, forwarded to `iroh` | none |
 

@@ -46,16 +46,17 @@ file = ["dep:symphonia", "dep:mp4-atom", "dep:moq-mux", "moq-video/openh264"]
 # Camera, screen and microphone capture. Off for a build that only publishes
 # frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
 capture = ["moq-video/capture", "moq-audio/capture"]
-# Audio devices through PipeWire or PulseAudio instead of ALSA. Does nothing
-# off Linux and the BSDs.
-sound-server = ["moq-audio/pipewire", "moq-audio/pulseaudio"]
+# Audio devices through PulseAudio instead of ALSA. Checked at runtime, so a
+# build with it still runs without PulseAudio. Linux only.
+pulseaudio = ["moq-audio/pulseaudio"]
 # Echo cancellation for the microphone. moq-audio only has the canceller
 # handle on its capture config when playback is on too, since the canceller
 # comes from a playback engine.
 aec = ["capture", "moq-audio/playback"]
-# Linux screen capture through xdg-desktop-portal, and PipeWire's camera as the
-# default camera. Links libpipewire-0.3.
-pipewire = ["capture", "moq-video/pipewire"]
+# Portal screen capture, PipeWire's camera as the default camera, and PipeWire
+# audio. Links libpipewire-0.3. The audio server is checked at runtime, so a
+# build with it still runs without a PipeWire server.
+pipewire = ["capture", "moq-video/pipewire", "moq-audio/pipewire"]
 # The Raspberry Pi camera through `rpicam-vid`, which must be on PATH. Linux
 # only.
 rpicam = ["dep:moq-mux", "tokio/process", "tokio/io-util"]

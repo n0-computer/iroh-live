@@ -12,7 +12,7 @@
 //! their figures is the playout hold. The assertions are loose sanity bounds.
 //! Run with `--nocapture` to see the figures.
 
-#![cfg(feature = "media")]
+#![cfg(all(feature = "player", feature = "publisher"))]
 
 use std::{
     collections::HashMap,

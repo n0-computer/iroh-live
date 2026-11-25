@@ -61,7 +61,10 @@ Vulkan.
 
 `moq-ext-publisher` and `moq-ext-player` define the device, hardware codec
 and graphics features, and `iroh-live` passes them through with no default
-features. In `iroh-live`, `media` turns the media stack on, and each device
-feature implies it. `full` turns on `media`, `capture`, `render`,
-`sound-server` and `record`. `iroh-live-cli` always captures and renders, and
+features. In `iroh-live`, `player` is the receive side (player and
+decoders), `publisher` the send side (publisher, encoders and sources), and
+`media` both. Each device feature implies its side, while `pipewire`,
+`pulseaudio` and the hardware codecs apply to whichever side is on. `full`
+turns on `media`, `capture`, `playback`, `render`, `record`, `pipewire` and
+`pulseaudio`. `iroh-live-cli` always captures and renders, and
 turns every other feature on by default.
