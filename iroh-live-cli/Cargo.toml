@@ -98,6 +98,9 @@ nvidia = ["iroh-live/nvidia"]
 # `--encoder v4l2` and the matching decoder, for an ARM SoC's M2M codec node.
 # Linux only.
 v4l2 = ["iroh-live/v4l2"]
+# qlog traces of every connection, written into `QLOGDIR` if set. Off by
+# default, for diagnosing a connection.
+qlog = ["iroh-live/qlog"]
 
 [lints]
 workspace = true

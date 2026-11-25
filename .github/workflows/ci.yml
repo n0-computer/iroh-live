@@ -52,6 +52,8 @@ jobs:
       - run: cargo check --locked -p iroh-live --all-targets --no-default-features --features rooms
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace
+      # The qlog test needs its feature, which the workspace run leaves off.
+      - run: cargo nextest run --locked -p iroh-live-node --features qlog --test qlog
       # nextest does not run doctests.
       - run: cargo test --doc --locked --workspace --all-features
       - run: cargo doc --locked --workspace --all-features --no-deps

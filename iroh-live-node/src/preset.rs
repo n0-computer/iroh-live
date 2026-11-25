@@ -9,6 +9,10 @@ use iroh::endpoint::{Builder, QuicTransportConfig, presets};
 use n0_error::stack_error;
 use noq_proto::congestion::{Bbr3Config, ControllerFactory, CubicConfig, NewRenoConfig};
 
+/// The prefix of the qlog file names [`Congestion::transport_config`] writes.
+#[cfg(feature = "qlog")]
+const QLOG_PREFIX: &str = "iroh-live";
+
 /// iroh's [`N0`](presets::N0) preset with BBR3 congestion control.
 ///
 /// Works anywhere iroh takes a preset:
@@ -25,6 +29,9 @@ use noq_proto::congestion::{Bbr3Config, ControllerFactory, CubicConfig, NewRenoC
 /// under CUBIC, iroh's default, its window grows until something is lost, so
 /// the estimate shows room to spare on a full link. BBR3 sizes the window from
 /// the delivery rate it measures, so the estimate tracks the link.
+///
+/// With the `qlog` feature, the endpoint writes a qlog trace of each
+/// connection into `QLOGDIR`, see [`Congestion::transport_config`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MoqPreset;
 
@@ -83,11 +90,27 @@ impl Congestion {
     ///
     /// Pass it to an endpoint builder's `transport_config`, or to one dial in
     /// `iroh::endpoint::ConnectOptions`.
+    ///
+    /// With the `qlog` feature, the config writes a qlog trace of every
+    /// connection into the directory the `QLOGDIR` environment variable names.
+    /// This call reads `QLOGDIR` and creates the directory, so setting it
+    /// afterwards has no effect, and without it nothing is written.
+    ///
+    /// Each side writes one file per connection, named
+    /// `iroh-live-<unix ms>-<connection id>-<client|server>.qlog`. The
+    /// connection id is the client's first destination id, so both ends of a
+    /// connection name their file with the same id.
+    ///
+    /// The traces log every packet, so a file grows about as large as the
+    /// data its connection sends, and nothing rotates or caps them. They
+    /// also hold the peers' IP addresses. `QLOGDIR` is a shared name that
+    /// quiche, ngtcp2 and curl read too, so set it only while you diagnose.
     #[must_use]
     pub fn transport_config(self) -> QuicTransportConfig {
-        QuicTransportConfig::builder()
-            .congestion_controller_factory(self.factory())
-            .build()
+        let builder = QuicTransportConfig::builder().congestion_controller_factory(self.factory());
+        #[cfg(feature = "qlog")]
+        let builder = builder.qlog_from_env(QLOG_PREFIX);
+        builder.build()
     }
 
     /// Returns the factory that builds this controller for each path.
