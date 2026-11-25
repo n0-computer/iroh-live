@@ -50,6 +50,11 @@ dirs = "7"
 percent-encoding = "2"
 url = "2"
 
+[features]
+# qlog traces of every iroh connection, written into `QLOGDIR` if set. This
+# does not cover the browsers' connections, which moq-relay serves.
+qlog = ["iroh-live-node/qlog"]
+
 [dev-dependencies]
 # The shared test endpoint, node and wait helpers.
 iroh-live-node = { workspace = true, features = ["test-util"] }

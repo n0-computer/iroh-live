@@ -83,15 +83,35 @@ API.
 
 With `qlog` on, every endpoint bound with `MoqPreset` or `EndpointConfig`, or
 given `Congestion::transport_config`, writes one qlog file per QUIC connection
-into the directory the `QLOGDIR` environment variable names. The directory is
-created if missing, and without `QLOGDIR` nothing is written. Each file is
-named `iroh-live-<unix ms>-<connection id>-<client|server>.qlog`, and tools
-such as [qvis](https://qvis.quictools.info/) show its packets, losses,
-congestion window and RTT. The traces show where a stalled connection stops
-sending, and they grow with the traffic, so leave `QLOGDIR` unset when not
-diagnosing.
+into the directory the `QLOGDIR` environment variable names. The variable is
+read, and the directory created, when the transport config is built: as
+`EndpointConfig::bind` binds, or as `MoqPreset` is applied to a builder.
+Without `QLOGDIR` nothing is written, and setting it later has no effect on an
+endpoint already built.
+`iroh-live`, `irl` (`iroh-live-cli`) and `iroh-live-relay` forward the
+feature. The relay traces its iroh connections, but not the browsers'.
+
+Each file is named `iroh-live-<unix ms>-<connection id>-<client|server>.qlog`.
+The connection id is the client's first destination id, so the client and
+server files of one connection share it, and you can pair the two ends. Tools
+such as [qvis](https://qvis.quictools.info/) show the packets, losses,
+congestion window and RTT, and so where a stalled connection stops sending.
 
 ```sh
 cargo install --path iroh-live-cli --features qlog
 QLOGDIR=./qlog irl publish
 ```
+
+Disk use has no limit. The trace logs every packet each side sends and
+receives, so a file is about as large as the data of its connection, and
+nothing rotates, caps or deletes the files. A publisher that sends 3 Mbit/s
+writes about 1.3 GB per hour for each subscriber. Set `QLOGDIR` only while
+you diagnose, and do not leave it set on a long-running node.
+
+Two more things to know before you turn it on:
+
+- `QLOGDIR` is a shared name. quiche, ngtcp2 and curl read it too, so a
+  `QLOGDIR` set for one of them in a shell profile or service unit also
+  starts the traces here.
+- The traces hold the peers' IP addresses. Check that before you attach one
+  to a public issue.

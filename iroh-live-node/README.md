@@ -126,4 +126,6 @@ account's space on an rcan capability chain. Run it with
 ## Features
 
 `jwt` and `rcan` add the token verifiers to `policy`. `qlog` writes a qlog
-trace of every connection into the directory `QLOGDIR` names. [Cargo features](../docs/reference/features.md) lists them.
+trace of every connection into the directory `QLOGDIR` names.
+[Cargo features](../docs/reference/features.md) lists them, and says how
+much disk the traces take.

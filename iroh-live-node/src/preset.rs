@@ -92,10 +92,19 @@ impl Congestion {
     /// `iroh::endpoint::ConnectOptions`.
     ///
     /// With the `qlog` feature, the config writes a qlog trace of every
-    /// connection into the directory the `QLOGDIR` environment variable names,
-    /// read when this is called. The files are named
-    /// `iroh-live-<unix ms>-<connection id>-<client|server>.qlog`. Without
-    /// `QLOGDIR`, nothing is written.
+    /// connection into the directory the `QLOGDIR` environment variable names.
+    /// This call reads `QLOGDIR` and creates the directory, so setting it
+    /// afterwards has no effect, and without it nothing is written.
+    ///
+    /// Each side writes one file per connection, named
+    /// `iroh-live-<unix ms>-<connection id>-<client|server>.qlog`. The
+    /// connection id is the client's first destination id, so both ends of a
+    /// connection name their file with the same id.
+    ///
+    /// The traces log every packet, so a file grows about as large as the
+    /// data its connection sends, and nothing rotates or caps them. They
+    /// also hold the peers' IP addresses. `QLOGDIR` is a shared name that
+    /// quiche, ngtcp2 and curl read too, so set it only while you diagnose.
     #[must_use]
     pub fn transport_config(self) -> QuicTransportConfig {
         let builder = QuicTransportConfig::builder().congestion_controller_factory(self.factory());
