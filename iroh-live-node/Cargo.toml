@@ -16,7 +16,7 @@ derive_more = { version = "2.1.1", features = ["display", "debug", "from"] }
 data-encoding = "2.11.1"
 iroh = { workspace = true }
 # mDNS address lookup for `EndpointConfig`, for networks without internet access.
-iroh-mdns-peer-lookup = "0.1.2"
+iroh-mdns-address-lookup = "0.6.1"
 # The clock and poll helpers that drive moq's connect policy for iroh relay links.
 kio = { workspace = true }
 # `test-support` for `RouteInfo::entered_from`, the one public read of the
