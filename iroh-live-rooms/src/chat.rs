@@ -1,20 +1,28 @@
 //! Room chat: one more broadcast every member publishes into the room.
 //!
-//! The broadcast carries a `chat` track, a JSON window of the last ten seconds
-//! of messages, which `@moq/room` reads too. It is the format moq-room wrote
-//! before upstream removed that crate.
+//! The broadcast is named [`NAME`] and carries a `chat` track, a JSON window
+//! of the last ten seconds of messages, which `@moq/room` reads too.
+//!
+//! [`Chat`] is the whole thing in one handle: it publishes this member's chat,
+//! reads every other member's, and hands their messages over through
+//! [`Chat::try_recv`] or [`Chat::recv`]. [`Writer`] and [`read`] are the
+//! parts, for an application that follows the membership itself.
 
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::Duration,
+};
 
-use eframe::egui;
 use iroh::EndpointId;
-use iroh_live::rooms::Room;
 use moq_json::window;
 use moq_net::{broadcast, track};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
+use n0_watcher::Watcher;
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, warn};
+
+use crate::Room;
 
 /// The name of the track that carries the chat window.
 const TRACK: &str = "chat";
@@ -29,10 +37,13 @@ const HISTORY: Duration = Duration::from_secs(10);
 type Event = window::Event<String>;
 
 /// The name of the chat broadcast.
-pub(super) const NAME: &str = "chat";
+pub const NAME: &str = "chat";
 
 /// How many typed messages wait for the writer task.
 const SEND_QUEUE: usize = 16;
+
+/// How many received messages wait for the application in [`Chat`].
+const RECV_QUEUE: usize = 64;
 
 /// How long a reader waits before reading a member again.
 const RETRY: Duration = Duration::from_secs(2);
@@ -41,14 +52,96 @@ const RETRY: Duration = Duration::from_secs(2);
 const REMEMBERED: usize = 64;
 
 /// A message another member sent.
+#[derive(Debug, Clone)]
+pub struct Message {
+    /// The member that sent it.
+    pub from: EndpointId,
+    /// The message text.
+    pub text: String,
+}
+
+/// This member's chat in a room, and every other member's.
+///
+/// Dropping it withdraws this member's chat and stops the readers.
 #[derive(Debug)]
-pub(super) struct Message {
-    pub(super) from: EndpointId,
-    pub(super) text: String,
+pub struct Chat {
+    writer: Writer,
+    rx: mpsc::Receiver<Message>,
+    _follow: AbortOnDropHandle<()>,
+}
+
+impl Chat {
+    /// Publishes this member's chat into `room` and starts reading the others.
+    ///
+    /// Keeps one reader per member that publishes [`NAME`], as the
+    /// membership changes.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the chat broadcast cannot be published.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
+    pub fn new(room: &Room) -> Result<Self> {
+        let writer = Writer::new(room.publish(NAME)?)?;
+        let (tx, rx) = mpsc::channel(RECV_QUEUE);
+        let follow = tokio::spawn(follow(room.clone(), tx));
+        Ok(Self {
+            writer,
+            rx,
+            _follow: AbortOnDropHandle::new(follow),
+        })
+    }
+
+    /// Sends `text` to the room, unless the writer is backed up.
+    ///
+    /// Other members' copies come back through [`recv`](Self::recv), this
+    /// member's own do not.
+    pub fn send(&self, text: impl Into<String>) {
+        self.writer.send(text.into());
+    }
+
+    /// Returns the next received message, if one is waiting.
+    pub fn try_recv(&mut self) -> Option<Message> {
+        self.rx.try_recv().ok()
+    }
+
+    /// Waits for the next received message.
+    ///
+    /// Returns `None` once the room was left. Cancel safe.
+    pub async fn recv(&mut self) -> Option<Message> {
+        self.rx.recv().await
+    }
+}
+
+/// Keeps one chat reader per member that publishes chat, until `tx` closes.
+async fn follow(room: Room, tx: mpsc::Sender<Message>) {
+    let mut state = room.state();
+    let mut readers: HashMap<EndpointId, AbortOnDropHandle<()>> = HashMap::new();
+    loop {
+        let members = state.get().members;
+        readers.retain(|id, _| {
+            members
+                .get(id)
+                .is_some_and(|member| member.broadcasts.contains(NAME))
+        });
+        for (id, member) in &members {
+            if member.broadcasts.contains(NAME) && !readers.contains_key(id) {
+                let reader = tokio::spawn(read(room.clone(), *id, tx.clone()));
+                readers.insert(*id, AbortOnDropHandle::new(reader));
+            }
+        }
+        tokio::select! {
+            changed = state.updated() => if changed.is_err() { return },
+            () = tx.closed() => return,
+        }
+    }
 }
 
 /// This member's chat broadcast, and the task that writes and expires it.
-pub(super) struct Writer {
+#[derive(Debug)]
+pub struct Writer {
     tx: mpsc::Sender<String>,
     _task: AbortOnDropHandle<()>,
 }
@@ -64,7 +157,15 @@ impl Drop for ClosesOnDrop {
 
 impl Writer {
     /// Writes the chat into `producer`, the broadcast published into the room.
-    pub(super) fn new(mut producer: broadcast::Producer) -> Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Fails if the chat track cannot be created on `producer`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
+    pub fn new(mut producer: broadcast::Producer) -> Result<Self> {
         let mut publisher = Publisher::create(&mut producer)?;
         let (tx, mut rx) = mpsc::channel::<String>(SEND_QUEUE);
         let task = tokio::spawn(async move {
@@ -95,26 +196,21 @@ impl Writer {
     }
 
     /// Sends `text` to the room, unless the writer is backed up.
-    pub(super) fn send(&self, text: String) {
+    pub fn send(&self, text: String) {
         if self.tx.try_send(text).is_err() {
             warn!("the chat writer is backed up, dropping a message");
         }
     }
 }
 
-/// Reads member `from`'s chat into `tx` until the task is dropped.
+/// Reads member `from`'s chat into `tx` until `tx` closes or the task is dropped.
 ///
-/// Retries after [`RETRY`] when a read ends. A new read replays the member's
-/// window, and messages delivered already are skipped.
-pub(super) async fn read(
-    room: Room,
-    from: EndpointId,
-    tx: mpsc::Sender<Message>,
-    ctx: egui::Context,
-) {
+/// Retries after two seconds when a read ends. A new read replays the
+/// member's window, and messages delivered already are skipped.
+pub async fn read(room: Room, from: EndpointId, tx: mpsc::Sender<Message>) {
     let mut delivered = VecDeque::new();
     loop {
-        if let Err(err) = read_once(&room, from, &mut delivered, &tx, &ctx).await {
+        if let Err(err) = read_once(&room, from, &mut delivered, &tx).await {
             debug!(peer = %from.fmt_short(), error = %err, "chat read ended");
         }
         if tx.is_closed() {
@@ -130,7 +226,6 @@ async fn read_once(
     from: EndpointId,
     delivered: &mut VecDeque<(u64, String)>,
     tx: &mpsc::Sender<Message>,
-    ctx: &egui::Context,
 ) -> Result<()> {
     let subscription = room.subscribe(from, NAME).await?;
     let broadcast = subscription.broadcast();
@@ -153,7 +248,6 @@ async fn read_once(
         if tx.send(Message { from, text }).await.is_err() {
             return Ok(());
         }
-        ctx.request_repaint();
     }
 }
 

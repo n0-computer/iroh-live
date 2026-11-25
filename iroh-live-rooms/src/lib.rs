@@ -4,7 +4,8 @@
 //! the broadcasts they publish into the room. [`Rooms`] owns the gossip
 //! instance, and [`Rooms::join`] returns a [`Room`]. Its membership is a
 //! watched [`RoomState`], and [`Room::subscribe`] reads a member's broadcast
-//! on demand. Nothing here knows what the broadcasts carry.
+//! on demand. The rooms know nothing of what the broadcasts carry, apart
+//! from [`chat`], a text chat every member can publish next to its media.
 //!
 //! A member stays in the room while its gossip lease holds. It renews the
 //! lease every thirty seconds, and drops out about two minutes after the last
@@ -73,6 +74,7 @@
 #![forbid(unsafe_code)]
 
 mod actor;
+pub mod chat;
 mod room;
 mod rooms;
 mod ticket;

@@ -19,6 +19,8 @@ iroh-gossip = { workspace = true }
 iroh-live-node = { workspace = true }
 iroh-smol-kv = { workspace = true }
 iroh-tickets = { workspace = true }
+# The chat window track, see `chat`.
+moq-json = { workspace = true }
 moq-net = { workspace = true }
 n0-error = "1.0.3"
 n0-future = "0.3.2"

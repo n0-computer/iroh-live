@@ -1,7 +1,8 @@
 //! `irl room`: a multi-party room with a video grid and a chat.
 //!
 //! Members announce their broadcast names over gossip, and this window plays
-//! each one in a grid. Chat is one more broadcast per member, see [`chat`].
+//! each one in a grid. Chat is one more broadcast per member, see
+//! [`iroh_live::rooms::chat`].
 //! Every participant subscribes to every other, so this suits small groups.
 
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use crate::{
     transport::{self, SharedNode},
 };
 
-mod chat;
+use iroh_live::rooms::chat;
 
 /// The name this node publishes its camera under in the room.
 ///
@@ -370,7 +371,7 @@ mod window {
             });
             for (remote, peer) in members {
                 if peer.broadcasts.contains(chat::NAME) && !self.chat_readers.contains_key(remote) {
-                    let reader = chat::read(
+                    let reader = read_chat(
                         self.room.clone(),
                         *remote,
                         self.chat_tx.clone(),
@@ -599,6 +600,25 @@ mod window {
             self.chat_writer.send(text.clone());
             self.chat.push(self.display_name.clone(), text);
         }
+    }
+
+    /// Reads member `from`'s chat into `tx`, waking the window on each message.
+    async fn read_chat(
+        room: Room,
+        from: EndpointId,
+        tx: mpsc::Sender<chat::Message>,
+        ctx: egui::Context,
+    ) {
+        let (read_tx, mut read_rx) = mpsc::channel(1);
+        let forward = async move {
+            while let Some(message) = read_rx.recv().await {
+                if tx.send(message).await.is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+            }
+        };
+        tokio::join!(chat::read(room, from, read_tx), forward);
     }
 
     /// Wakes the window whenever the room's state changes.

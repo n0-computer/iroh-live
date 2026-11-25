@@ -4509,6 +4509,7 @@ dependencies = [
  "iroh-live-rooms",
  "iroh-smol-kv",
  "iroh-tickets",
+ "moq-json",
  "moq-net",
  "n0-error",
  "n0-future",
