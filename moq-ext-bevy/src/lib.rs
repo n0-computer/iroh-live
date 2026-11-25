@@ -59,8 +59,9 @@ use tracing::{debug, info, warn};
 /// Adds the systems that draw each [`VideoTexture`] into its material.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct VideoTexturePlugin {
-    /// Converts every frame to RGBA on the CPU instead of drawing it on the
-    /// GPU, which downloads hardware-decoded frames. Meant for comparing the
+    /// Whether to convert every frame to RGBA on the CPU instead of on the GPU.
+    ///
+    /// This downloads hardware-decoded frames. It is meant for comparing the
     /// two paths and for working around a driver whose import misbehaves.
     pub cpu_only: bool,
 }
@@ -281,14 +282,15 @@ fn draw_videos(
         if let Some(path) = path
             && state.path != Some(path)
         {
-            info!(entity = %video.entity, ?path, decoded = surface_kind(&frame.surface), "video texture path");
+            info!(entity = %video.entity, ?path, "video texture path");
             state.path = Some(path);
         }
     }
 }
 
-/// Draws `frame` into `target` and returns the path it took, or `None` when
-/// it failed even on the CPU.
+/// Draws `frame` into `target` and returns the path it took.
+///
+/// Returns `None` when even the CPU conversion failed.
 fn draw(
     renderer: Option<&mut Renderer>,
     device: &wgpu::Device,
@@ -298,7 +300,9 @@ fn draw(
 ) -> Option<Path> {
     let rendered = renderer.map(|renderer| renderer.render(frame));
     match rendered {
-        Some(Ok(texture)) => {
+        // The output follows the frame's size, which the caller matched with
+        // the target's; a copy out of bounds would be a device error.
+        Some(Ok(texture)) if texture.size() == target.size() => {
             let mut encoder = device.create_command_encoder(&Default::default());
             encoder.copy_texture_to_texture(
                 texture.as_image_copy(),
@@ -312,7 +316,7 @@ fn draw(
             });
         }
         Some(Err(err)) => debug!(error = %err, "GPU video render failed, converting on the CPU"),
-        None => {}
+        _ => {}
     }
     let rgba = frame
         .surface
@@ -330,18 +334,4 @@ fn draw(
         target.size(),
     );
     Some(Path::Cpu)
-}
-
-/// Names a surface's kind for the path log.
-fn surface_kind(surface: &Surface) -> &'static str {
-    match surface {
-        Surface::I420(_) => "cpu i420",
-        #[cfg(target_os = "linux")]
-        Surface::DmaBuf(_) => "dma-buf",
-        #[allow(
-            unreachable_patterns,
-            reason = "other surfaces exist only on some platforms"
-        )]
-        _ => "gpu surface",
-    }
 }
