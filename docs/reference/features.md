@@ -11,26 +11,36 @@ No feature is on by default.
 | Feature | Enables | Implies | Platform |
 |---|---|---|---|
 | `full` | What an app that publishes and plays wants | `media`, `capture`, `playback`, `render`, `sound-server`, `record` | all |
-| `media` | `iroh_live::media` and `media::SubscriptionExt`: sources, publisher, player, codecs. H.264 in software always works | | all |
+| `media` | `iroh_live::media` and `media::SubscriptionExt`: sources, publisher, player, codecs. H.264 in software always works | `play`, `publish` | all |
+| `play` | The player half of `iroh_live::media`: `RemoteBroadcast`, `Player`, `media::SubscriptionExt` and the decoders, without `moq-ext-publisher` | | all |
+| `publish` | The publisher half of `iroh_live::media`: `LocalBroadcast`, the encoders and the sources, the test pattern among them, without `moq-ext-player` | | all |
 | `capture` | Camera, screen and microphone capture | `media` | all |
-| `playback` | Speaker output, `AudioMode::Play` | `media` | all |
-| `render` | GPU rendering of decoded frames through wgpu, re-exported as `media::wgpu` | `media` | all |
-| `record` | `RemoteBroadcast::mux_source`, for moq-mux exports | `media` | all |
+| `playback` | Speaker output, `AudioMode::Play` | `play` | all |
+| `render` | GPU rendering of decoded frames through wgpu, re-exported as `media::wgpu` | `play` | all |
+| `record` | `RemoteBroadcast::mux_source`, for moq-mux exports | `play` | all |
 | `file` | `MediaFile` for MP4, `AudioSource::file` for WAV, MP3 and MP4 | `media` | all |
 | `sound-server` | Audio devices through PipeWire or PulseAudio, not only ALSA | `media` | Linux |
 | `aec` | Echo cancellation for the microphone | `capture`, and the player's speaker output | all |
 | `pipewire` | PipeWire's shared camera as the default camera, and the desktop portal's screen picker with `PortalGrant`, which keeps its grant across runs. Links `libpipewire-0.3` | `media`, and capture in the media crates | Linux |
 | `rpicam` | The Raspberry Pi camera through `rpicam-vid` | `media` | Linux |
-| `vaapi` | VA-API hardware encode and decode, Intel and AMD | `media` | Linux |
-| `nvidia` | NVENC and NVDEC | `media` | Linux |
-| `v4l2` | The V4L2 memory-to-memory H.264 codecs of ARM SoCs, such as a Pi 4 | `media` | Linux |
+| `vaapi` | VA-API hardware decode, and encode with `publish`, Intel and AMD | `play` | Linux |
+| `nvidia` | NVDEC, and NVENC with `publish` | `play` | Linux |
+| `v4l2` | The V4L2 memory-to-memory H.264 decoder of ARM SoCs, such as a Pi 4, and the encoder with `publish` | `play` | Linux |
 | `rooms` | `iroh_live::rooms`, the `iroh-live-rooms` crate | | all |
 | `jwt` | `policy::JwtVerifier`, which verifies moq-relay's JWTs | | all |
 | `rcan` | `policy::RcanVerifier`, which verifies rcan capability chains | | all |
 | `qlog` | A qlog trace of every QUIC connection, written into the directory `QLOGDIR` names. Without `QLOGDIR`, nothing is written | | all |
 
-Without `media`, `iroh-live` is the node, tickets, layouts and calls, with no
-codec dependency.
+Without `media`, `play` or `publish`, `iroh-live` is the node, tickets,
+layouts and calls, with no codec dependency.
+
+An app that only subscribes and decodes, such as a server that receives
+streams, takes `play` instead of `media`, plus `render`, `vaapi` or `nvidia`
+as it needs them. It then builds no `moq-ext-publisher` and no test pattern.
+It still builds OpenH264's encoder: moq-video's `openh264` feature vendors
+OpenH264 as one C library, encoder and decoder together, and has no
+decode-only option. The device features, `capture`, `file`, `sound-server`,
+`pipewire` and `rpicam`, imply all of `media`.
 
 A Linux-only feature compiles to nothing on other platforms. macOS, Windows
 and Android get their capture and codec frameworks without a feature.

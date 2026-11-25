@@ -16,6 +16,13 @@ it is not on crates.io. Depend on it through git:
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["full"] }
 ```
 
+An app that only subscribes and decodes, such as a server that receives
+streams, takes `play` instead, which builds no publisher:
+
+```toml
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["play"] }
+```
+
 ## Example
 
 Publish a camera, and share the ticket:

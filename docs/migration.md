@@ -21,7 +21,10 @@ behavior.
   releases. iroh-live is a git dependency, see
   [Install](getting-started/install.md#use-the-library).
 - **Features.** `iroh-live` has no default features. Ask for `full`, or pick
-  from the [features reference](reference/features.md).
+  from the [features reference](reference/features.md). `media` is `play`
+  and `publish` together. `playback`, `render`, `record`, `vaapi`, `nvidia`
+  and `v4l2` imply only `play`, so an app that names one of them and
+  publishes adds `media` or `publish`.
 
 ## Crates
 
