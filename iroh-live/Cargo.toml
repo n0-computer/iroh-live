@@ -83,7 +83,8 @@ render = ["player", "moq-ext-player/render", "dep:wgpu"]
 record = ["player", "moq-ext-player/record"]
 # Echo cancellation.
 aec = ["capture", "playback", "moq-ext-player/aec", "moq-ext-publisher/aec", "moq-ext-sources/aec"]
-# PipeWire audio on either side; portal screen and PipeWire camera when publishing.
+# PipeWire audio on either side. With `publisher` it also builds device capture,
+# with the portal's screen picker and PipeWire's camera.
 pipewire = ["moq-ext-player?/pipewire", "moq-ext-publisher?/pipewire"]
 # PulseAudio audio on either side.
 pulseaudio = ["moq-ext-player?/pulseaudio", "moq-ext-publisher?/pulseaudio"]
@@ -91,8 +92,6 @@ pulseaudio = ["moq-ext-player?/pulseaudio", "moq-ext-publisher?/pulseaudio"]
 vaapi = ["moq-ext-player?/vaapi", "moq-ext-publisher?/vaapi"]
 nvidia = ["moq-ext-player?/nvidia", "moq-ext-publisher?/nvidia"]
 v4l2 = ["moq-ext-player?/v4l2", "moq-ext-publisher?/v4l2"]
-# Android MediaCodec.
-mediacodec = ["moq-video?/mediacodec"]
 # Token verifiers in `node::policy`.
 jwt = ["iroh-live-node/jwt"]
 rcan = ["iroh-live-node/rcan"]

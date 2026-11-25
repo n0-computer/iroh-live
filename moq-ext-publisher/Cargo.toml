@@ -43,12 +43,14 @@ default = []
 # Camera, screen and microphone capture. Off for a build that only publishes
 # frames it makes itself, since the device stack needs V4L2 and ALSA on Linux.
 capture = ["moq-ext-sources/capture", "moq-video/capture", "moq-audio/capture"]
-# Audio devices through PulseAudio instead of ALSA. Linux only.
+# Audio devices through PulseAudio instead of ALSA. Checked at runtime, so a
+# build with it still runs without PulseAudio. Linux only.
 pulseaudio = ["moq-ext-sources/pulseaudio", "moq-audio/pulseaudio"]
 # Echo cancellation: removes the output mix from the microphone.
 aec = ["capture", "moq-ext-sources/aec"]
 # Portal screen capture, PipeWire's camera and PipeWire audio. Links
-# libpipewire-0.3.
+# libpipewire-0.3. The audio server is checked at runtime, so a build with it
+# still runs without a PipeWire server.
 pipewire = ["capture", "moq-ext-sources/pipewire", "moq-video/pipewire", "moq-audio/pipewire"]
 # LocalBroadcast::set_encoded_file, which publishes an MP4 file as it is.
 file = ["moq-ext-sources/file"]

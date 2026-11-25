@@ -31,9 +31,15 @@ behavior.
   | `capture`, `file`, `rpicam` | send side only; add `player` to also play |
   | `playback`, `render`, `record` | receive side only; add `publisher` to also publish |
   | `vaapi`, `nvidia`, `v4l2` | no side of their own; add `player` or `publisher` |
-  | `pipewire` | no side of their own; with `capture` it also routes audio through PipeWire |
+  | `pipewire` | no side of its own; routes audio through PipeWire, and with `publisher` also builds device capture |
   | `sound-server` | `pipewire` and `pulseaudio` |
   | `full` | `full`, now with `pipewire` and `pulseaudio` |
+
+  `moq-ext-publisher` and `moq-ext-sources` drop `sound-server` the same
+  way, for `pipewire` and `pulseaudio`. Their `pipewire` now routes audio
+  through PipeWire as well, so a build that had `pipewire` without
+  `sound-server` changes audio backend. `irl` drops `sound-server` too:
+  install with `--features pipewire,pulseaudio` instead.
 
 ## Crates
 

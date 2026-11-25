@@ -8,7 +8,7 @@ through to the crates below it.
 
 No feature is on by default. `player` is the receive side, `publisher` the
 send side. A device feature turns on its side; a backend or codec feature
-turns on no side and applies to whichever side is on, as in moq-cli.
+turns on no side and applies to whichever side is on.
 
 | Feature | Enables | Implies | Platform |
 |---|---|---|---|
@@ -23,12 +23,11 @@ turns on no side and applies to whichever side is on, as in moq-cli.
 | `render` | GPU rendering through wgpu, re-exported as `media::wgpu` | `player` | all |
 | `record` | `RemoteBroadcast::mux_source`, for moq-mux exports | `player` | all |
 | `aec` | Echo cancellation for the microphone | `capture`, `playback` | all |
-| `pipewire` | PipeWire audio devices; with `publisher` also PipeWire's camera and the portal's screen picker with `PortalGrant`. Links `libpipewire-0.3` | no side | Linux |
+| `pipewire` | PipeWire audio devices. With `publisher` it also builds device capture, as `capture` does, with PipeWire's camera and the portal's screen picker through `PortalGrant`. Links `libpipewire-0.3` | no side; device capture with `publisher` | Linux |
 | `pulseaudio` | PulseAudio audio devices | no side | Linux |
 | `vaapi` | VA-API decode with `player`, encode with `publisher`, Intel and AMD | no side | Linux |
 | `nvidia` | NVDEC with `player`, NVENC with `publisher` | no side | Linux |
 | `v4l2` | The V4L2 memory-to-memory H.264 codec of ARM SoCs, such as a Pi 4 | no side | Linux |
-| `mediacodec` | Android MediaCodec | no side | Android |
 | `rooms` | `iroh_live::rooms`, the `iroh-live-rooms` crate | | all |
 | `jwt` | `policy::JwtVerifier`, which verifies moq-relay's JWTs | | all |
 | `rcan` | `policy::RcanVerifier`, which verifies rcan capability chains | | all |
@@ -40,6 +39,10 @@ and calls, with no codec dependency. A `player`-only build has no
 vendors OpenH264 as one library.
 
 `player` decodes without a speaker; `playback` adds the speaker.
+
+The audio server behind `pipewire` and `pulseaudio` is checked at runtime,
+so a build with either still runs on a system without that server, and
+`full` can carry both.
 
 A Linux-only feature compiles to nothing on other platforms. macOS, Windows
 and Android get their capture and codec frameworks without a feature.

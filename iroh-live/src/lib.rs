@@ -114,7 +114,8 @@ router.shutdown().await?;
 //! `media`, `publisher` the send side, and `media` both. Device features
 //! turn on their side: `capture`, `file` and `rpicam` imply `publisher`,
 //! `playback`, `render` and `record` imply `player`. `pipewire`,
-//! `pulseaudio` and the hardware codecs apply to whichever side is on.
+//! `pulseaudio` and the hardware codecs apply to whichever side is on;
+//! `pipewire` with `publisher` also builds device capture.
 //! `full` is the usual app set, and `rooms` re-exports `iroh-live-rooms`.
 //! Without a side the crate is the node, the layout, calls and endpoint
 //! setup.
@@ -147,7 +148,7 @@ pub mod media {
     };
     #[cfg(all(target_os = "linux", feature = "pipewire", feature = "publisher"))]
     pub use moq_ext_sources::PortalGrant;
-    #[cfg(feature = "capture")]
+    #[cfg(any(feature = "capture", all(feature = "pipewire", feature = "publisher")))]
     pub use moq_ext_sources::screen_source;
     pub use moq_ext_sources::{
         AudioFormat, Backend, Error, SlotState, SourceClosed, UnknownBackend, VideoFormat,
