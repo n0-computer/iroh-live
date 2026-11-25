@@ -8,7 +8,7 @@
 //! Linux only, built on unprivileged user namespaces. Run with
 //! `cargo make test-patchbay`, which includes the ignored tests.
 
-#![cfg(all(target_os = "linux", feature = "media"))]
+#![cfg(all(target_os = "linux", feature = "player", feature = "publisher"))]
 
 use std::{
     sync::Arc,

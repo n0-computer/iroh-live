@@ -4,7 +4,7 @@
 //! connection. Timestamps, group sequences and catalog updates cross the wire
 //! here, so a switch that works in-process can still stall a remote viewer.
 
-#![cfg(feature = "media")]
+#![cfg(all(feature = "player", feature = "publisher"))]
 
 use std::{future::ready, time::Instant};
 

@@ -19,7 +19,7 @@
 //! the layout. [`Node::subscribe_ticket`] grants the ticket's publisher that
 //! one path while the subscription lives, so a viewer needs no layout.
 #![cfg_attr(
-    all(feature = "play", feature = "publish"),
+    all(feature = "player", feature = "publisher"),
     doc = r#"
 This publishes a test pattern and plays someone else's broadcast:
 
@@ -80,8 +80,12 @@ router.shutdown().await?;
 //! - [`BroadcastTicket`]: a publisher's endpoint id and the path of a broadcast.
 //! - [`calls::Calls`]: one-to-one calls.
 #![cfg_attr(
-    all(feature = "play", feature = "publish"),
-    doc = "- [`LocalBroadcast`](media::LocalBroadcast) and [`RemoteBroadcast`](media::RemoteBroadcast), from [`media`]."
+    feature = "publisher",
+    doc = "- [`LocalBroadcast`](media::LocalBroadcast): a broadcast this node publishes, from [`media`]."
+)]
+#![cfg_attr(
+    feature = "player",
+    doc = "- [`RemoteBroadcast`](media::RemoteBroadcast): a broadcast this node plays, from [`media`]."
 )]
 //!
 //! The futures differ in what dropping them leaves behind:
@@ -106,43 +110,42 @@ router.shutdown().await?;
 //! rooms, and [`calls::Error`] from calls. Each one converts into [`Error`], so
 //! `?` works in a function that returns it.
 //!
-//! No feature is on by default. `full` turns on `media`, `capture`,
-//! `playback`, `render`, `record` and `sound-server`. `media` adds the `media`
-//! module and is `play` and `publish` together. `play` alone subscribes,
-//! decodes and renders without building the publisher, for an app that only
-//! receives. Without any of them the crate is the layout, calls and endpoint
-//! setup only. `capture`, `file`, `aec`, `pipewire`, `sound-server` and
-//! `rpicam` add devices and imply `media`. `playback`, `render`, `record`,
-//! `vaapi`, `nvidia` and `v4l2` imply only `play`. `rooms` re-exports
-//! `iroh-live-rooms`.
+//! No feature is on by default. `player` builds the receive side of
+//! `media`, `publisher` the send side, and `media` both. Device features
+//! turn on their side: `capture`, `file` and `rpicam` imply `publisher`,
+//! `playback`, `render` and `record` imply `player`. `pipewire`,
+//! `pulseaudio` and the hardware codecs apply to whichever side is on.
+//! `full` is the usual app set, and `rooms` re-exports `iroh-live-rooms`.
+//! Without a side the crate is the node, the layout, calls and endpoint
+//! setup.
 
 #![forbid(unsafe_code)]
 
 pub mod calls;
 mod error;
-#[cfg(feature = "play")]
+#[cfg(feature = "player")]
 mod network;
 
 /// Sources, broadcasts and players, with the codec stacks they sit on.
 ///
-/// The `play` feature brings the player and the decoders, `publish` the
+/// The `player` feature brings the player and the decoders, `publisher` the
 /// publisher, the encoders and the sources. `media` turns on both.
-#[cfg(any(feature = "play", feature = "publish"))]
+#[cfg(any(feature = "player", feature = "publisher"))]
 pub mod media {
     pub use moq_audio as audio;
-    #[cfg(feature = "play")]
+    #[cfg(feature = "player")]
     pub use moq_ext_player::{
         Adaptation, AudioFrame, AudioFrames, AudioMode, AudioPlaybackStats, Catalog,
         DEFAULT_LATENCY, Delay, FrameTiming, IMMEDIATE_LATENCY, MediaKind, NetworkSample,
         PlaybackStats, Player, PlayerConfig, PlayerStatus, RemoteBroadcast, RenditionMode,
         VideoBacklog, VideoPlaybackStats, video_rendition,
     };
-    #[cfg(feature = "publish")]
+    #[cfg(feature = "publisher")]
     pub use moq_ext_publisher::{
         AudioEncodeStats, EncodeStats, LocalBroadcast, PublishStats, PublishStatus, RenditionState,
         VideoEncoding, VideoRendition, audio_encoding,
     };
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    #[cfg(all(target_os = "linux", feature = "pipewire", feature = "publisher"))]
     pub use moq_ext_sources::PortalGrant;
     #[cfg(feature = "capture")]
     pub use moq_ext_sources::screen_source;
@@ -152,7 +155,7 @@ pub mod media {
     };
     #[cfg(feature = "file")]
     pub use moq_ext_sources::{AudioInfo, MediaFile, MediaInfo, VideoFileConfig, VideoInfo};
-    #[cfg(feature = "publish")]
+    #[cfg(feature = "publisher")]
     pub use moq_ext_sources::{
         AudioSource, BouncePattern, EncodedAudio, EncodedFrame, EncodedVideo, FileEnd, FrameSender,
         VideoSource, VideoSwitch, spec,
@@ -168,7 +171,7 @@ pub mod media {
     #[cfg(feature = "render")]
     pub use wgpu;
 
-    #[cfg(feature = "play")]
+    #[cfg(feature = "player")]
     pub use crate::network::SubscriptionExt;
 }
 pub use iroh_live_node as node;
