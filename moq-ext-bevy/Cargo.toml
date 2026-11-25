@@ -51,8 +51,9 @@ tracing = "0.1.44"
 wgpu = { version = "30", default-features = false }
 
 [dev-dependencies]
-# The editor example sends `Transform`s over the wire.
-bevy = { version = "0.20.1", default-features = false, features = ["serialize"] }
+# The editor example sends `Transform`s over the wire, and copies and pastes
+# room tickets through the desktop's clipboard (on Wayland too).
+bevy = { version = "0.20.1", default-features = false, features = ["serialize", "system_clipboard"] }
 clap = { version = "4.6.7", features = ["derive"] }
 iroh = { version = "1.4.1", default-features = false }
 iroh-live = { path = "../iroh-live", features = ["player", "publisher", "capture", "file", "playback", "rooms", "pipewire", "vaapi"] }

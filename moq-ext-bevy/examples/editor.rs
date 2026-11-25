@@ -8,8 +8,11 @@
 //! with the sound fading with the distance to the camera. The chat is the room
 //! chat that `irl room` speaks too.
 //!
+//! Without a ticket or a name on the command line, a start screen asks for
+//! them. C copies the room ticket, Ctrl+V pastes one.
+//!
 //! ```sh
-//! cargo run --manifest-path moq-ext-bevy/Cargo.toml --example editor
+//! cargo run --manifest-path moq-ext-bevy/Cargo.toml --example editor -- --name a
 //! # in a second terminal, with the ticket the first one printed
 //! cargo run --manifest-path moq-ext-bevy/Cargo.toml --example editor -- <TICKET>
 //! ```
@@ -18,10 +21,12 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     f32::consts::{FRAC_PI_2, PI},
     path::PathBuf,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
 use bevy::{
+    clipboard::Clipboard,
     input::{
         ButtonState,
         keyboard::{Key, KeyboardInput},
@@ -29,6 +34,7 @@ use bevy::{
     },
     log::LogPlugin,
     math::Affine2,
+    picking::events::PointerClick,
     picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings},
     prelude::*,
 };
@@ -53,8 +59,12 @@ use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
 use serde::{Deserialize, Serialize};
-use tokio::{runtime, sync::mpsc, task::JoinHandle};
-use tracing::{debug, info, warn};
+use tokio::{
+    runtime,
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
+use tracing::{debug, error, info, warn};
 
 /// The broadcast each member publishes its cubes on.
 const WORLD: &str = "world";
@@ -78,14 +88,15 @@ const TURN_STEP: f32 = PI / 12.0;
 const SOURCES: [(KeyCode, &str, Option<&str>); 4] = [
     (KeyCode::Digit1, "cam", Some("cam")),
     (KeyCode::Digit2, "screen", Some("screen")),
-    (KeyCode::Digit3, "test", Some("test:bounce")),
+    (KeyCode::Digit3, "test pattern", Some("test:bounce")),
     (KeyCode::Digit4, "none", None),
 ];
 
 #[derive(Debug, Parser)]
 #[command(about = "Edit a scene of cubes together, over an iroh-live room")]
 struct Args {
-    /// The room to join. Without one, a new room is opened.
+    /// The room to join. Without one, a new room is opened, and without a
+    /// name either, a start screen asks.
     ticket: Option<RoomTicket>,
     /// The name the others see.
     #[arg(long)]
@@ -184,9 +195,9 @@ struct Editor {
     chat_log: VecDeque<String>,
     /// The chat line being typed, while the chat has the keyboard.
     typing: Option<String>,
+    /// A short note for the panel, and until when it shows, in app seconds.
+    note: Option<(String, f32)>,
     sync: Timer,
-    /// Whether to place a video cube at the start.
-    video_cube: bool,
 }
 
 impl Editor {
@@ -266,20 +277,77 @@ impl Orbit {
     }
 }
 
-/// The text panel.
+/// A text panel: the room at the top left, the selected cube at the bottom left.
+#[derive(Component, PartialEq)]
+enum Hud {
+    Room,
+    Selection,
+}
+
+/// How the editor gets into a room: the start screen's form, then the connection.
+#[derive(Resource)]
+struct Launch {
+    tokio: runtime::Handle,
+    /// The room and the router once joined, to leave after the window closes.
+    joined: Arc<OnceLock<(Room, Router)>>,
+    connecting: Option<oneshot::Receiver<Result<Net>>>,
+    name: String,
+    ticket: String,
+    /// Whether the ticket field has the keyboard, else the name field.
+    on_ticket: bool,
+    status: String,
+    /// Whether to place a video cube once in the room.
+    video_cube: bool,
+}
+
+impl Launch {
+    /// Joins the room of `ticket`, or opens a new one.
+    fn connect(&mut self, ticket: Option<RoomTicket>) {
+        let (tx, rx) = oneshot::channel();
+        let (tokio, joined) = (self.tokio.clone(), self.joined.clone());
+        let name = Some(self.name.trim().to_string()).filter(|name| !name.is_empty());
+        self.tokio.spawn(async move {
+            tx.send(connect(name, ticket, tokio, joined).await).ok();
+        });
+        self.connecting = Some(rx);
+        self.status = "connecting...".into();
+    }
+}
+
+/// The start screen.
 #[derive(Component)]
-struct Hud;
+struct StartScreen;
+
+/// A line of the start screen; all but the status take clicks.
+#[derive(Component, Clone, Copy, PartialEq)]
+enum FormLine {
+    Name,
+    Create,
+    Ticket,
+    Join,
+    Status,
+}
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let rt = tokio::runtime::Runtime::new().std_context("starting tokio")?;
-    let (net, router) = rt.block_on(connect(&args, rt.handle().clone()))?;
-    println!("room ticket: {}", net.ticket);
-    let room = net.room.clone();
+    let mut launch = Launch {
+        tokio: rt.handle().clone(),
+        joined: Default::default(),
+        connecting: None,
+        name: args.name.clone().unwrap_or_default(),
+        ticket: String::new(),
+        on_ticket: false,
+        status: "Tab: next field   Enter: go   Ctrl+V: paste".into(),
+        video_cube: args.video_cube,
+    };
+    if args.ticket.is_some() || args.name.is_some() {
+        launch.connect(args.ticket.clone());
+    }
+    let joined = launch.joined.clone();
     let editor = Editor {
         next_id: 1,
         sync: Timer::new(SYNC_INTERVAL, TimerMode::Repeating),
-        video_cube: args.video_cube,
         ..Default::default()
     };
 
@@ -298,7 +366,7 @@ fn main() -> Result<()> {
                 })
                 .set(LogPlugin {
                     filter: "wgpu=error,naga=warn,iroh=warn,iroh_quinn=warn,iroh_relay=warn,\
-                             iroh_gossip=warn,iroh_smol_kv=warn"
+                             iroh_gossip=warn,iroh_smol_kv=warn,arboard=error"
                         .into(),
                     ..default()
                 }),
@@ -306,39 +374,52 @@ fn main() -> Result<()> {
         .add_plugins(VideoTexturePlugin {
             cpu_only: args.cpu_video,
         })
-        .insert_resource(net)
+        .insert_resource(launch)
         .insert_resource(editor)
         .init_resource::<Pointer>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (keyboard, mouse, network).chain())
+        .add_systems(
+            Update,
+            (start_form, poll_launch)
+                .chain()
+                .run_if(resource_exists::<Launch>),
+        )
         .add_systems(
             Update,
             (
-                glide,
-                publish_state,
-                apply_looks,
-                set_volumes,
-                draw_outlines,
-                hud,
+                (keyboard, mouse, network).chain(),
+                (
+                    glide,
+                    publish_state,
+                    apply_looks,
+                    set_volumes,
+                    draw_outlines,
+                    hud,
+                )
+                    .after(network),
             )
-                .after(network),
+                .run_if(resource_exists::<Net>),
         )
         .run();
 
-    rt.block_on(async {
+    if let Some((room, router)) = joined.get() {
         let shutdown = async {
             room.leave().await;
             router.shutdown().await.ok();
         };
-        tokio::time::timeout(Duration::from_secs(2), shutdown)
-            .await
+        rt.block_on(tokio::time::timeout(Duration::from_secs(2), shutdown))
             .ok();
-    });
+    }
     Ok(())
 }
 
 /// Binds a node, joins the room, publishes this member's world and opens the speaker.
-async fn connect(args: &Args, tokio: runtime::Handle) -> Result<(Net, Router)> {
+async fn connect(
+    name: Option<String>,
+    ticket: Option<RoomTicket>,
+    tokio: runtime::Handle,
+    joined: Arc<OnceLock<(Room, Router)>>,
+) -> Result<Net> {
     let endpoint = EndpointConfig::from_env()?.bind().await?;
     let node = Node::new(
         endpoint.clone(),
@@ -346,8 +427,8 @@ async fn connect(args: &Args, tokio: runtime::Handle) -> Result<(Net, Router)> {
     );
     let rooms = Rooms::new(&node);
     let router = rooms.mount(node.mount(Router::builder(endpoint))).spawn();
-    let ticket = args.ticket.clone().unwrap_or_else(RoomTicket::generate);
-    let room = rooms.join(&ticket, args.name.clone()).await?;
+    let ticket = ticket.unwrap_or_else(RoomTicket::generate);
+    let room = rooms.join(&ticket, name).await?;
 
     let world: broadcast::Producer = room.publish(WORLD)?;
     let info = moq_net::track::Info::default().with_timescale(moq_net::Timescale::MILLI);
@@ -367,7 +448,8 @@ async fn connect(args: &Args, tokio: runtime::Handle) -> Result<(Net, Router)> {
     let (events_tx, events) = mpsc::channel(EVENT_QUEUE);
     let follow = tokio::spawn(follow(room.clone(), events_tx.clone()));
     info!(ticket = %room.ticket(), "joined the room");
-    let net = Net {
+    joined.set((room.clone(), router)).ok();
+    Ok(Net {
         tokio,
         ticket: room.ticket().to_string(),
         room,
@@ -378,8 +460,7 @@ async fn connect(args: &Args, tokio: runtime::Handle) -> Result<(Net, Router)> {
         events_tx,
         _world: world,
         _follow: AbortOnDropHandle::new(follow),
-    };
-    Ok((net, router))
+    })
 }
 
 /// Reports the membership, and keeps one world reader per member that has one.
@@ -534,16 +615,11 @@ async fn pick_file(entity: Entity, tx: mpsc::Sender<NetEvent>) {
 fn setup(
     mut commands: Commands,
     mut editor: ResMut<Editor>,
-    net: Res<Net>,
+    launch: Res<Launch>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     editor.mesh = meshes.add(Cuboid::default());
-    if editor.video_cube {
-        let at = Transform::from_xyz(0.0, 0.5, 0.0);
-        let test = Some(("test".into(), Source::Spec("test:bounce")));
-        spawn_own(&mut commands, &mut editor, &net, at, test, &mut materials);
-    }
     let orbit = Orbit {
         focus: Vec3::ZERO,
         yaw: 0.5,
@@ -563,17 +639,171 @@ fn setup(
         MeshMaterial3d(materials.add(Color::srgb(0.18, 0.19, 0.21))),
         Transform::from_xyz(0.0, -0.01, 0.0),
     ));
-    commands.spawn((
-        Hud,
-        Text::default(),
-        TextFont::from_font_size(14.0),
-        bevy::ui::Node {
+    let panel = |hud, top, bottom| {
+        let at = bevy::ui::Node {
             position_type: PositionType::Absolute,
-            top: px(10),
             left: px(10),
+            top,
+            bottom,
             ..default()
+        };
+        (hud, Text::default(), TextFont::from_font_size(14.0), at)
+    };
+    commands.spawn(panel(Hud::Room, px(10), Val::Auto));
+    commands.spawn(panel(Hud::Selection, Val::Auto, px(10)));
+    if launch.connecting.is_some() {
+        return;
+    }
+    let screen = bevy::ui::Node {
+        width: percent(100),
+        height: percent(100),
+        flex_direction: FlexDirection::Column,
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        row_gap: px(6),
+        ..default()
+    };
+    let shade = BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75));
+    commands
+        .spawn((StartScreen, screen, shade))
+        .with_children(|ui| {
+            let title = TextFont::from_font_size(22.0);
+            ui.spawn((Text::new("iroh-live editor\n"), title));
+            let (name, ticket, status) = (FormLine::Name, FormLine::Ticket, FormLine::Status);
+            for line in [name, FormLine::Create, ticket, FormLine::Join, status] {
+                let padding = UiRect::axes(px(8), px(3));
+                let pad = bevy::ui::Node {
+                    padding,
+                    ..default()
+                };
+                ui.spawn((line, Text::default(), BackgroundColor::DEFAULT, pad));
+            }
+        });
+}
+
+/// Types `key` into `line`: text, Backspace, and Ctrl+V to paste.
+fn type_into(
+    line: &mut String,
+    key: &KeyboardInput,
+    held: &ButtonInput<KeyCode>,
+    clip: &mut Clipboard,
+) {
+    let ctrl = held.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let text = match (ctrl, key.key_code) {
+        (true, KeyCode::KeyV) => clip.fetch_text().poll_result().and_then(|text| {
+            text.inspect_err(|err| warn!(error = %err, "could not paste"))
+                .ok()
+        }),
+        (false, KeyCode::Backspace) => {
+            line.pop();
+            None
+        }
+        (false, _) => key.text.as_ref().map(ToString::to_string),
+        (true, _) => None,
+    };
+    line.extend(text.unwrap_or_default().chars().filter(|c| !c.is_control()));
+}
+
+/// The start screen: typing into its fields, Tab, Enter, and clicks.
+fn start_form(
+    mut launch: ResMut<Launch>,
+    mut keys: MessageReader<KeyboardInput>,
+    mut clicks: MessageReader<PointerClick>,
+    held: Res<ButtonInput<KeyCode>>,
+    mut clipboard: ResMut<Clipboard>,
+    mut lines: Query<(&FormLine, &mut Text, &mut BackgroundColor)>,
+) {
+    if launch.connecting.is_some() {
+        keys.clear();
+        clicks.clear();
+    }
+    // Whether to join a room, or to open one.
+    let mut go = None;
+    for key in keys.read().filter(|key| key.state == ButtonState::Pressed) {
+        let launch = &mut *launch;
+        match key.logical_key {
+            Key::Enter => go = Some(launch.on_ticket),
+            Key::Tab => launch.on_ticket = !launch.on_ticket,
+            _ if launch.on_ticket => type_into(&mut launch.ticket, key, &held, &mut clipboard),
+            _ => type_into(&mut launch.name, key, &held, &mut clipboard),
+        }
+    }
+    for click in clicks.read() {
+        match lines.get(click.entity).map(|(line, ..)| *line) {
+            Ok(FormLine::Name) => launch.on_ticket = false,
+            Ok(FormLine::Ticket) => launch.on_ticket = true,
+            Ok(FormLine::Create) => go = Some(false),
+            Ok(FormLine::Join) => go = Some(true),
+            _ => {}
+        }
+    }
+    match go {
+        Some(false) => launch.connect(None),
+        Some(true) => match launch.ticket.trim().parse::<RoomTicket>() {
+            Ok(ticket) => launch.connect(Some(ticket)),
+            Err(err) => launch.status = format!("not a room ticket: {err}"),
         },
-    ));
+        None => {}
+    }
+    let (on_ticket, cursor) = (launch.on_ticket, |on: bool| if on { "_" } else { "" });
+    // The end of a long ticket, which is where the typing happens.
+    let (name, ticket) = (&launch.name, &launch.ticket);
+    let ticket = ticket
+        .get(ticket.len().saturating_sub(40)..)
+        .unwrap_or(ticket);
+    for (line, mut text, mut background) in &mut lines {
+        let (out, lit) = match line {
+            FormLine::Name => (format!("name    {name}{}", cursor(!on_ticket)), !on_ticket),
+            FormLine::Create => ("[ create room ]".into(), false),
+            FormLine::Ticket => (format!("ticket  {ticket}{}", cursor(on_ticket)), on_ticket),
+            FormLine::Join => ("[ join room ]".into(), false),
+            FormLine::Status => (format!("\n{}", launch.status), false),
+        };
+        if text.0 != out {
+            text.0 = out;
+        }
+        let lit = Color::srgba(1.0, 1.0, 1.0, if lit { 0.15 } else { 0.0 });
+        background.set_if_neq(BackgroundColor(lit));
+    }
+}
+
+/// Takes the connection once it is up: into the editor, or back to the form if it failed.
+fn poll_launch(
+    mut commands: Commands,
+    mut launch: ResMut<Launch>,
+    mut editor: ResMut<Editor>,
+    screen: Query<Entity, With<StartScreen>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Some(Ok(result)) = launch.connecting.as_mut().map(|rx| rx.try_recv()) else {
+        return;
+    };
+    launch.connecting = None;
+    let net = match result {
+        Ok(net) => net,
+        Err(err) if screen.is_empty() => {
+            error!(error = %err, "could not join the room");
+            exit.write(AppExit::error());
+            return;
+        }
+        Err(err) => {
+            launch.status = format!("could not connect: {err}");
+            return;
+        }
+    };
+    println!("room ticket: {}", net.ticket);
+    for entity in &screen {
+        commands.entity(entity).despawn();
+    }
+    if launch.video_cube {
+        let at = Transform::from_xyz(0.0, 0.5, 0.0);
+        let (_, label, spec) = SOURCES[2];
+        let video = spec.map(|spec| (label.to_string(), Source::Spec(spec)));
+        spawn_own(&mut commands, &mut editor, &net, at, video, &mut materials);
+    }
+    commands.insert_resource(net);
+    commands.remove_resource::<Launch>();
 }
 
 /// The editor keys, or the chat line while it has the keyboard.
@@ -581,6 +811,9 @@ fn setup(
 fn keyboard(
     mut commands: Commands,
     mut keys: MessageReader<KeyboardInput>,
+    held: Res<ButtonInput<KeyCode>>,
+    mut clipboard: ResMut<Clipboard>,
+    time: Res<Time>,
     mut editor: ResMut<Editor>,
     net: Res<Net>,
     orbit: Single<&Orbit>,
@@ -601,14 +834,7 @@ fn keyboard(
                     }
                 }
                 Key::Escape => editor.typing = None,
-                Key::Backspace => {
-                    line.pop();
-                }
-                _ => {
-                    if let Some(text) = &key.text {
-                        line.extend(text.chars().filter(|c| !c.is_control()));
-                    }
-                }
+                _ => type_into(line, key, &held, &mut clipboard),
             }
             continue;
         }
@@ -617,6 +843,13 @@ fn keyboard(
         }
         match key.key_code {
             KeyCode::Enter => editor.typing = Some(String::new()),
+            KeyCode::KeyC => {
+                let note = match clipboard.set_text(net.ticket.as_str()) {
+                    Ok(()) => "ticket copied".to_string(),
+                    Err(err) => format!("could not copy: {err}"),
+                };
+                editor.note = Some((note, time.elapsed_secs() + 3.0));
+            }
             KeyCode::KeyN => {
                 let at = Transform::from_translation(orbit.focus.with_y(0.5));
                 let entity = spawn_own(&mut commands, &mut editor, &net, at, None, &mut materials);
@@ -664,14 +897,17 @@ fn keyboard(
     }
 }
 
-/// The mouse: orbits, pans and zooms the camera, picks a cube, moves an own cube.
+/// The mouse and WASD: moves the camera, picks a cube, moves an own cube.
 ///
 /// A left press that stays within [`DRAG_THRESHOLD`] is a click, and selects
 /// the cube under it or nothing. A left drag orbits, unless it started on an
 /// own cube, which then follows the pointer over the ground. The right or
-/// middle button pans, and the wheel zooms.
+/// middle button pans, and the wheel zooms. WASD moves the camera along the
+/// ground the way it faces, Q and E down and up, unless the chat is typed in.
 #[allow(clippy::too_many_arguments, reason = "a Bevy system")]
 fn mouse(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
@@ -731,12 +967,21 @@ fn mouse(
         }
         *pointer = Pointer::default();
     }
+    let (turn, distance) = (Quat::from_rotation_y(orbit.yaw), orbit.distance);
     if buttons.any_pressed([MouseButton::Right, MouseButton::Middle]) {
         // Pans over the ground, so the scene follows the pointer.
-        let turn = Quat::from_rotation_y(orbit.yaw);
         let pan = turn * Vec3::new(-delta.x, 0.0, -delta.y);
-        let pan = pan * orbit.distance * 0.0015;
-        orbit.focus += pan;
+        orbit.focus += pan * distance * 0.0015;
+    }
+    if editor.typing.is_none() {
+        let axis =
+            |plus, minus| f32::from(i8::from(keys.pressed(plus)) - i8::from(keys.pressed(minus)));
+        let walk = Vec3::new(
+            axis(KeyCode::KeyD, KeyCode::KeyA),
+            axis(KeyCode::KeyE, KeyCode::KeyQ),
+            axis(KeyCode::KeyS, KeyCode::KeyW),
+        );
+        orbit.focus += turn * walk * distance.max(4.0) * 0.6 * time.delta_secs();
     }
     let lines = match scroll.unit {
         MouseScrollUnit::Line => scroll.delta.y,
@@ -1031,57 +1276,68 @@ fn draw_outlines(
     }
 }
 
-/// Writes the panel: the room, the keys for what is selected, the members, the chat.
+/// Writes the panels: the room, the members and the chat at the top, the
+/// selected cube and its keys at the bottom.
 fn hud(
+    time: Res<Time>,
     editor: Res<Editor>,
     net: Res<Net>,
     cubes: Query<(&Cube, Has<Muted>)>,
-    mut text: Single<&mut Text, With<Hud>>,
+    mut texts: Query<(&Hud, &mut Text)>,
 ) {
-    let ticket = &net.ticket;
-    let mut out = format!(
-        "room {}...  (full ticket on stdout)\n\
-         left drag: orbit   right/middle drag: pan   wheel: zoom\n",
-        &ticket[..ticket.len().min(24)]
+    let note = editor
+        .note
+        .as_ref()
+        .filter(|(_, until)| *until > time.elapsed_secs());
+    let mut top = format!(
+        "room {}...   C: copy ticket   {}\n\
+         WASD: move   Q/E: down/up   drag: orbit   right drag: pan   wheel: zoom\n\
+         click: select   N: new cube   Enter: chat\n",
+        &net.ticket[..net.ticket.len().min(24)],
+        note.map_or("", |(note, _)| note.as_str()),
     );
-    match editor.selected.and_then(|entity| cubes.get(entity).ok()) {
-        None => out.push_str("click: select a cube   N: new cube   Enter: chat\n"),
-        Some((cube, muted)) => {
-            let owner = cube
-                .owner
-                .map_or_else(|| "yours".into(), |id| editor.name(id));
-            let label = cube.video.as_ref().map_or("none", |v| v.label.as_str());
-            out.push_str(&format!(
-                "\n> cube {} ({owner})   video: {label}   image: {} deg   sound: {}\n",
-                cube.id,
-                u32::from(cube.turns) * 90,
-                if muted { "muted" } else { "on" },
-            ));
-            if cube.owner.is_none() {
-                for (i, (_, name, _)) in SOURCES.iter().enumerate() {
-                    let mark = if *name == label { "*" } else { " " };
-                    out.push_str(&format!(" {mark}{} {name}", i + 1));
-                }
-                out.push_str("   F file\n");
-                out.push_str("  drag: move   up/down: height   left/right: turn   +/-: size\n");
-                out.push_str("  X: turn image   M: mute   Del: delete   Esc: deselect\n");
-            } else {
-                out.push_str("  M: mute   Esc: deselect   (the owner picks the video)\n");
-            }
-        }
-    }
-    out.push_str(&format!("\n{} others here\n", editor.members.len()));
+    top.push_str(&format!("\n{} others here\n", editor.members.len()));
     for name in editor.members.values() {
-        out.push_str(&format!("  {name}\n"));
+        top.push_str(&format!("  {name}\n"));
     }
-    out.push('\n');
+    top.push('\n');
     for line in &editor.chat_log {
-        out.push_str(&format!("{line}\n"));
+        top.push_str(&format!("{line}\n"));
     }
     if let Some(line) = &editor.typing {
-        out.push_str(&format!("> {line}_\n"));
+        top.push_str(&format!("> {line}_\n"));
     }
-    if text.0 != out {
-        text.0 = out;
+
+    let mut bottom = String::new();
+    if let Some((cube, muted)) = editor.selected.and_then(|entity| cubes.get(entity).ok()) {
+        let label = cube.video.as_ref().map_or("none", |v| v.label.as_str());
+        let mute = format!("M mute: {}\n", if muted { "on" } else { "off" });
+        if let Some(owner) = cube.owner {
+            let name = editor.name(owner);
+            bottom = format!("cube {} of {name}\nvideo: {label}\n{mute}", cube.id);
+        } else {
+            bottom = format!("cube {}, yours\n", cube.id);
+            let mut file = true;
+            for (i, (_, name, _)) in SOURCES.iter().enumerate() {
+                let mark = if *name == label { ">" } else { " " };
+                file &= *name != label;
+                bottom.push_str(&format!("{mark} {} {name}\n", i + 1));
+            }
+            if file {
+                bottom.push_str(&format!("> F file: {label}\n"));
+            } else {
+                bottom.push_str("  F file...\n");
+            }
+            let turn = u32::from(cube.turns) * 90;
+            bottom.push_str(&format!("X turn image: {turn} deg\n{mute}drag: move\n"));
+            bottom.push_str("up/down: height\nleft/right: turn\n+/-: size\nDel: delete\n");
+        }
+        bottom.push_str("Esc: deselect");
+    }
+    for (hud, mut text) in &mut texts {
+        let out = if *hud == Hud::Room { &top } else { &bottom };
+        if text.0 != *out {
+            text.0 = out.clone();
+        }
     }
 }
