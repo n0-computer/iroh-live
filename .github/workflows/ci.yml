@@ -50,15 +50,18 @@ jobs:
       # On their own, so the CLI's features do not turn `media` back on.
       - run: cargo check --locked -p iroh-live-relay
       - run: cargo check --locked -p iroh-live --all-targets --no-default-features --features rooms
-      # Each side alone, and with its device and backend features. `--lib`,
-      # since the dev-dependencies build both sides.
+      # Each side alone, and with its device and backend features. `--lib`
+      # keeps the dev-dependencies out, whose features would unify into the
+      # media crates below and build both sides there.
       - run: cargo check --locked -p iroh-live --lib --no-default-features --features player
       - run: cargo check --locked -p iroh-live --lib --no-default-features --features publisher
       - run: cargo check --locked -p iroh-live --lib --no-default-features --features player,playback,render,record,vaapi,nvidia,v4l2,pipewire,pulseaudio
       - run: cargo check --locked -p iroh-live --lib --no-default-features --features publisher,capture,file,rpicam,vaapi,nvidia,v4l2,pipewire,pulseaudio
       # Backends without a side build no media module.
       - run: cargo check --locked -p iroh-live --lib --no-default-features --features vaapi,nvidia,v4l2,pipewire,pulseaudio
-      - run: cargo check --locked -p iroh-live --example subscribe_test --no-default-features --features player
+      # The tests and examples with each side alone.
+      - run: cargo check --locked -p iroh-live --tests --examples --no-default-features --features player
+      - run: cargo check --locked -p iroh-live --tests --examples --no-default-features --features publisher
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace
       # The qlog test needs its feature, which the workspace run leaves off.
@@ -97,6 +100,9 @@ jobs:
       - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets
       - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets --all-features
       - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets --no-default-features
+      # Each side alone, since some re-exports pair a side with Linux.
+      - run: cargo check --locked -p iroh-live --lib --no-default-features --features player
+      - run: cargo check --locked -p iroh-live --lib --no-default-features --features publisher
       - run: cargo clippy --locked --workspace --exclude pi-zero-demo --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace --exclude pi-zero-demo
 
