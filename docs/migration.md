@@ -21,10 +21,19 @@ behavior.
   releases. iroh-live is a git dependency, see
   [Install](getting-started/install.md#use-the-library).
 - **Features.** `iroh-live` has no default features. Ask for `full`, or pick
-  from the [features reference](reference/features.md). `media` is `play`
-  and `publish` together. `playback`, `render`, `record`, `vaapi`, `nvidia`
-  and `v4l2` imply only `play`, so an app that names one of them and
-  publishes adds `media` or `publish`.
+  from the [features reference](reference/features.md). `media` is now
+  `player` and `publisher` together, and each device feature turns on only
+  its own side:
+
+  | Before | Now |
+  |---|---|
+  | `media` | `media`, or `player` / `publisher` for one side |
+  | `capture`, `file`, `rpicam` | send side only; add `player` to also play |
+  | `playback`, `render`, `record` | receive side only; add `publisher` to also publish |
+  | `vaapi`, `nvidia`, `v4l2` | no side of their own; add `player` or `publisher` |
+  | `pipewire` | no side of their own; with `capture` it also routes audio through PipeWire |
+  | `sound-server` | `pipewire` and `pulseaudio` |
+  | `full` | `full`, now with `pipewire` and `pulseaudio` |
 
 ## Crates
 

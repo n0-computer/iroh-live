@@ -17,10 +17,11 @@ iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["ful
 ```
 
 An app that only subscribes and decodes, such as a server that receives
-streams, takes `play` instead, which builds no publisher:
+streams, takes `player` instead, which builds no publisher (`publisher` is
+the send side alone):
 
 ```toml
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["play"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", features = ["player"] }
 ```
 
 ## Example
