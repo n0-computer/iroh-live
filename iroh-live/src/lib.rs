@@ -150,13 +150,13 @@ pub mod media {
         AudioFormat, Backend, Error, SlotState, SourceClosed, UnknownBackend, VideoFormat,
         VideoFrames,
     };
+    #[cfg(feature = "file")]
+    pub use moq_ext_sources::{AudioInfo, MediaFile, MediaInfo, VideoFileConfig, VideoInfo};
     #[cfg(feature = "publish")]
     pub use moq_ext_sources::{
         AudioSource, BouncePattern, EncodedAudio, EncodedFrame, EncodedVideo, FileEnd, FrameSender,
         VideoSource, VideoSwitch, spec,
     };
-    #[cfg(feature = "file")]
-    pub use moq_ext_sources::{AudioInfo, MediaFile, MediaInfo, VideoFileConfig, VideoInfo};
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     pub use moq_ext_sources::{RpicamConfig, rpicam_h264};
     pub use moq_net::bandwidth::Rate;
