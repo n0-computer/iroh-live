@@ -28,7 +28,7 @@ n0-future = "0.3.2"
 
 # QR code generation. Only the encoder: the default features render to `image`
 # and SVG, and the e-paper driver draws the modules itself.
-qrcode = { version = "0.14", default-features = false }
+qrcode = { version = "0.15", default-features = false }
 
 # E-paper display
 embedded-graphics = "0.8"

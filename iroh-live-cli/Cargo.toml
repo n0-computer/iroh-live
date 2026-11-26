@@ -36,7 +36,7 @@ qr2term = "0.3"
 # QR encoding for the ticket a call window shows its peer, and for the codes the
 # scan tests decode. Only the encoder itself is wanted: the default features
 # render to `image` and to SVG, and what we draw into is an egui texture.
-qrcode = { version = "0.14", default-features = false }
+qrcode = { version = "0.15", default-features = false }
 # QR decoding for `irl watch --scan`: the zxing port, which reads a grayscale
 # buffer and through about twice the defocus quirc's port (rqrr) does. QR only:
 # the default feature set pulls in image formats, serde and a URI parser for
