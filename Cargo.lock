@@ -4419,7 +4419,7 @@ dependencies = [
  "n0-future",
  "n0-watcher",
  "qr2term",
- "qrcode",
+ "qrcode 0.15.0",
  "rxing",
  "serde",
  "tempfile",
@@ -7450,7 +7450,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7620,7 +7620,7 @@ dependencies = [
  "linux-embedded-hal",
  "n0-error",
  "n0-future",
- "qrcode",
+ "qrcode 0.15.0",
  "raw-window-handle",
  "tokio",
  "tracing",
@@ -8065,7 +8065,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6867c60b38e9747a079a19614dbb5981a53f21b9a56c265f3bfdf6011a50a957"
 dependencies = [
  "crossterm",
- "qrcode",
+ "qrcode 0.14.1",
 ]
 
 [[package]]
@@ -8073,6 +8073,12 @@ name = "qrcode"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
+name = "qrcode"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ace1a365f55004297f2cf24acfd96d02966246ca423385273b58a7dc873ee14d"
 
 [[package]]
 name = "quick-error"
