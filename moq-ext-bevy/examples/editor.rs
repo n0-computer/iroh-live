@@ -51,7 +51,7 @@ use iroh_live::{
         spec::{AudioSourceSpec, TestTone, VideoOpenOptions, VideoSourceSpec},
         video,
     },
-    rooms::{Room, RoomTicket, Rooms, RoomsLayout, chat::Chat},
+    rooms::{Room, RoomState, RoomTicket, Rooms, RoomsLayout, chat::Chat},
 };
 use moq_ext_bevy::{VideoTexture, VideoTexturePlugin};
 use n0_error::{Result, StdResultExt};
@@ -151,8 +151,6 @@ enum Source {
 
 /// What the network tasks hand to the frame loop.
 enum NetEvent {
-    /// The other members, by id, with the names to show.
-    Members(BTreeMap<EndpointId, String>),
     /// A member's newest cubes, or none once it left.
     State(EndpointId, MemberState),
     /// A player of the named broadcast for `entity`.
@@ -175,6 +173,8 @@ struct Net {
     events: mpsc::Receiver<NetEvent>,
     events_tx: mpsc::Sender<NetEvent>,
     ticket: String,
+    /// The other members, as of this frame.
+    members: n0_watcher::Direct<RoomState>,
     _world: LocalBroadcast,
     _follow: AbortOnDropHandle<()>,
 }
@@ -187,7 +187,6 @@ struct Editor {
     next_broadcast: u32,
     /// The mesh every cube shares.
     mesh: Handle<Mesh>,
-    members: BTreeMap<EndpointId, String>,
     remote: HashMap<(EndpointId, u32), Entity>,
     /// The selected cube, any member's.
     selected: Option<Entity>,
@@ -199,10 +198,11 @@ struct Editor {
     sync: Timer,
 }
 
-impl Editor {
+impl Net {
     /// Returns the name member `id` goes by.
     fn name(&self, id: EndpointId) -> String {
-        let name = self.members.get(&id).cloned();
+        let member = self.members.peek().members.get(&id);
+        let name = member.and_then(|member| member.display_name.clone());
         name.unwrap_or_else(|| id.fmt_short().to_string())
     }
 }
@@ -445,6 +445,7 @@ async fn connect(
     Ok(Net {
         tokio,
         ticket: room.ticket().to_string(),
+        members: room.state(),
         room,
         chat,
         speaker,
@@ -456,20 +457,12 @@ async fn connect(
     })
 }
 
-/// Reports the membership, and keeps one world reader per member that has one.
+/// Keeps one world reader per member that has one.
 async fn follow(room: Room, tx: mpsc::Sender<NetEvent>) {
     let mut state = room.state();
     let mut readers: HashMap<EndpointId, AbortOnDropHandle<()>> = HashMap::new();
     loop {
         let members = state.get().members;
-        let names = members
-            .iter()
-            .map(|(id, member)| {
-                let name = member.display_name.clone();
-                (*id, name.unwrap_or_else(|| id.fmt_short().to_string()))
-            })
-            .collect();
-        tx.send(NetEvent::Members(names)).await.ok();
         let has_world = |id: &EndpointId| {
             members
                 .get(id)
@@ -1086,7 +1079,7 @@ fn push_chat(editor: &mut Editor, line: String) {
     }
 }
 
-/// Applies what the network tasks sent: members, remote cubes, videos, files, chat.
+/// Applies what the network tasks sent: remote cubes, videos, files, chat.
 fn network(
     mut commands: Commands,
     mut net: ResMut<Net>,
@@ -1096,8 +1089,9 @@ fn network(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let mesh = editor.mesh.clone();
+    net.members.update();
     while let Some(message) = net.chat.try_recv() {
-        let line = format!("{}: {}", editor.name(message.from), message.text);
+        let line = format!("{}: {}", net.name(message.from), message.text);
         push_chat(&mut editor, line);
     }
     // Only a member's newest state counts. Applying two in one frame would
@@ -1105,7 +1099,6 @@ fn network(
     let mut states = BTreeMap::new();
     while let Ok(event) = net.events.try_recv() {
         match event {
-            NetEvent::Members(members) => editor.members = members,
             NetEvent::State(owner, state) => {
                 states.insert(owner, state);
             }
@@ -1290,9 +1283,10 @@ fn hud(
         &net.ticket[..net.ticket.len().min(24)],
         note.map_or("", |(note, _)| note.as_str()),
     );
-    top.push_str(&format!("\n{} others here\n", editor.members.len()));
-    for name in editor.members.values() {
-        top.push_str(&format!("  {name}\n"));
+    let members = &net.members.peek().members;
+    top.push_str(&format!("\n{} others here\n", members.len()));
+    for id in members.keys() {
+        top.push_str(&format!("  {}\n", net.name(*id)));
     }
     top.push('\n');
     for line in &editor.chat_log {
@@ -1307,7 +1301,7 @@ fn hud(
         let label = cube.video.as_ref().map_or("none", |v| v.label.as_str());
         let mute = format!("M mute: {}\n", if muted { "on" } else { "off" });
         if let Some(owner) = cube.owner {
-            let name = editor.name(owner);
+            let name = net.name(owner);
             bottom = format!("cube {} of {name}\nvideo: {label}\n{mute}", cube.id);
         } else {
             bottom = format!("cube {}, yours\n", cube.id);
